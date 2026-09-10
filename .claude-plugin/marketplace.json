@@ -1,0 +1,30 @@
+{
+  "name": "kairo",
+  "description": "Kairo — citation-grounded research automation for Claude Code: literature search, hypothesis vetting, frozen preregistration, mechanical experiment analysis, and replication-gated confidence tracking.",
+  "owner": {
+    "name": "Hugo Gómez",
+    "url": "https://github.com/hugoomez"
+  },
+  "plugins": [
+    {
+      "name": "kairo",
+      "source": ".",
+      "description": "Citation-grounded research automation: literature search with PRISMA-style counts, single-critic hypothesis vetting, frozen preregistration, mechanical experiment analysis, and a strict confidence state machine with replication-gated promotion.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Hugo Gómez"
+      },
+      "homepage": "https://github.com/hugoomez/kairo",
+      "repository": "https://github.com/hugoomez/kairo",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "research",
+        "science",
+        "preregistration",
+        "replication",
+        "literature-review"
+      ]
+    }
+  ]
+}

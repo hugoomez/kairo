@@ -1,0 +1,23 @@
+{
+  "name": "kairo",
+  "displayName": "Kairo",
+  "version": "1.0.0",
+  "description": "Citation-grounded research automation for Claude Code: hypotheses that must cite specific papers, preregistration frozen before any experiment runs, and independent replication before a claim is promoted. Runs on a Claude subscription — no API keys.",
+  "author": {
+    "name": "Hugo Gómez",
+    "url": "https://github.com/hugoomez"
+  },
+  "homepage": "https://github.com/hugoomez/kairo",
+  "repository": "https://github.com/hugoomez/kairo",
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "science",
+    "literature-review",
+    "preregistration",
+    "hypothesis",
+    "replication",
+    "meta-analysis",
+    "obsidian"
+  ]
+}
