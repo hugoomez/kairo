@@ -1,15 +1,28 @@
 ---
 name: hypothesis-cycle
-description: Use when turning a research gap or a researcher's one-line claim into a vetted hypothesis note for a project in a Kairo vault — the v1 single-critic vetting cycle. Invoked by create-project for gap-derived candidates, or directly when the user proposes a claim. Runs dedup, falsifiability/novelty, known-failure, and severe-test checks with a short refinement loop before creating a `propuesta` note.
+description: Use when turning a research gap or a researcher's one-line claim into a vetted hypothesis note for a project in a Kairo vault. Runs dedup, falsifiability/novelty, known-failure, and severe-test checks with a short refinement loop before creating a `propuesta` note. v1 (default) is a single-critic cycle. v2 (opt-in, needs `DEEPINFRA_TOKEN`) adds a second, independent critic on Checks 3/4 and escalates any disagreement to human review instead of resolving it automatically. Invoked by create-project for gap-derived candidates, or directly when the user proposes a claim.
 ---
 
 # Hypothesis Cycle
 
 ## Overview
 
-v1 **single-critic** cycle: take a candidate, run four cheap-first checks with a
-short refinement loop, and either create a `propuesta` hypothesis note or discard
-it with a logged reason so it isn't proposed again.
+Take a candidate, run four cheap-first checks with a short refinement loop, and
+either create a `propuesta` hypothesis note or discard it with a logged reason
+so it isn't proposed again.
+
+**v1 (default): single-critic.** The orchestrating session runs all four checks
+itself.
+
+**v2 (opt-in): dual-critic on Checks 3 and 4.** Adds an independent second
+critic — the `second-critic` subagent, which calls a cloud model on DeepInfra —
+running the *same* Check 3 / Check 4 text in parallel with, and without seeing,
+the primary critic's own verdict. See "## v2 mode — second, parallel critic"
+below. Use v2 when the researcher asks for it, or by default once
+`DEEPINFRA_TOKEN` is configured and the project's stakes warrant it (a
+`linea_publicacion` candidate, or the researcher's general preference) — v1
+remains correct and complete on its own; v2 is an added independence check, not
+a replacement for the primary critic's own reasoning.
 
 Binding rules (Kairo core principles):
 
@@ -131,6 +144,66 @@ were false** — or does it merely measure something correlated with it?
   **`## Hipótesis rival descartada`** section of the created note — not just
   reasoned about in passing. If you cannot name a concrete rival to write, the
   test is not yet severe (*refinable*).
+
+## v2 mode — second, parallel critic
+
+Applies only when v2 is in use (see Overview). Checks 1 and 2 are unchanged —
+they're retrieval-heavy (dedup, literature novelty), not adversarial judgement
+calls, so a second critic adds little there. Checks 3 and 4 change as follows.
+
+### Running the second critic
+
+1. **Pick the tier.** `high_stakes` if the candidate is (or will be)
+   `linea_publicacion: true`, or the researcher explicitly asks for it this
+   run; `default` otherwise. Decide this once, at cycle intake — the flag may
+   not exist yet on any note (the candidate has none until it passes), so ask
+   the researcher if it's genuinely ambiguous rather than guessing.
+2. **Dispatch `second-critic`** with the candidate package (claim + test
+   sketch), the check number (3 or 4), and the tier — **before** forming your
+   own verdict on that check, or at least without showing it the package
+   knowing what you concluded. It must never see your verdict; that
+   contamination would make the comparison meaningless (see the agent's own
+   "independence" note).
+3. **Independently run the check yourself**, exactly as v1 describes it.
+4. **Compare.** Both verdicts are one of `pass` / `refinable` / `clear_fail`.
+
+### On agreement vs. disagreement
+
+| Outcome | Action |
+|---|---|
+| **Agree** | Proceed exactly as v1 for this check (continue the gate, refine, or discard). |
+| **Disagree** | **Stop immediately** — do not average, do not let the primary's verdict win by default, do not continue to the next check. This is the "dudoso" signal for the autonomy dial: something a human should look at, not something the pipeline resolves on its own. |
+
+**On disagreement:** treat it like the existing "rounds exhausted, no clear
+verdict" outcome (see "Loop and stopping rule") — save as `status: propuesta`
+anyway, set `needs_human_review: true`, and write the **full** exchange (both
+verdicts, both `reasoning` blocks, the rival/discriminating-prediction fields
+if it was Check 4) into `## Revisión del ciclo`. Flag it to the user
+explicitly as a critic disagreement, not a generic "rounds exhausted" — those
+are different situations and the note should say which one happened.
+
+If `second-critic` returns `status: unavailable` (no `DEEPINFRA_TOKEN`, the
+call failed, etc.), **do not silently fall back to treating it as agreement or
+as v1.** Say so plainly, and either retry once or drop to v1 for this run —
+never invent a verdict to fill the gap. Whichever you choose, note it in the
+cycle output so the vetting record doesn't silently read as "two critics
+agreed" when only one ran.
+
+### Logging every comparison
+
+After each Check 3/4 comparison (agree or disagree), run:
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/second_critic/agreement_log.py record \
+  --log <vault>/Scripts/second-critic-log.jsonl --project <PROJ-XXX> \
+  --hypothesis "<claim or H-XXXX>" --check <3|4> --tier <default|high_stakes> \
+  --primary <verdict> --second <verdict> --cost-usd <second-critic's cost_usd>
+```
+At the end of the run, also run `... summary --log <same path>` and surface its
+output (agreement rate, cumulative cost, and the high-agreement warning if it
+fires) to the researcher — this is how a rubber-stamping second critic gets
+noticed instead of quietly trusted. Never skip the `record` call because the
+outcome seemed obvious; the log's value is in *every* comparison, not a
+curated subset.
 
 ## Citation requirement
 
@@ -263,15 +336,22 @@ Sections:
   Omitted only for a clean first-pass.
 - `## Lección` stays empty until the hypothesis is resolved.
 
-## v1 scope
+## v1 / v2 scope
 
-**In:** one critic, cheap-first checks (incl. auxiliary-assumption / Duhem), ≤3
-rounds, note-creation at `propuesta` or discard, human entry point.
+**In v1:** one critic, cheap-first checks (incl. auxiliary-assumption / Duhem),
+≤3 rounds, note-creation at `propuesta` or discard, human entry point.
 
-**Not in v1 (v2):** tournament or head-to-head ranking of competing candidates;
-a second local critic; evolution / meta-review of the critic; formal power
-analysis. Budget overflow → `update-confidence` marks `en_cola` in generation
-order — no ranking.
+**In v2 (opt-in, on top of v1):** a second, independent critic on Checks 3/4
+only (`second-critic`, cloud-hosted, tiered by stakes), with disagreement
+escalating to `needs_human_review: true` rather than being resolved
+automatically; a persistent agreement/cost log.
+
+**Not in v1 or v2:** tournament or head-to-head ranking of competing
+candidates; evolution / meta-review of the critic itself; formal power
+analysis of *this* skill's own checks (the `completo` preregistration tier's
+power analysis is a different thing — see `preregister-experiment`). Budget
+overflow → `update-confidence` marks `en_cola` in generation order — no
+ranking.
 
 ## Common mistakes
 
@@ -298,6 +378,17 @@ order — no ranking.
   `## Hipótesis rival descartada` section.
 - **Looping more than 3 rounds.** Exhausted → `propuesta` + `needs_human_review`,
   not another round.
+- **(v2) Letting the primary critic's verdict win on disagreement.** Disagreement
+  escalates to human review; it is never resolved by trusting one critic over
+  the other, averaging, or majority-of-one.
+- **(v2) Showing `second-critic` the primary's verdict before it answers.** That
+  contaminates the independence the whole mode exists for.
+- **(v2) Skipping the `agreement_log.py record` call on an "obvious" agreement.**
+  The log's warning only works if every comparison is logged, not a curated
+  subset that looks interesting.
+- **(v2) Treating `second-critic: unavailable` as agreement.** A failed or
+  missing call is not a verdict — say so and either retry once or drop to v1
+  for that run.
 - **Writing `en_cola` (or any transition) directly.** This skill only creates
   notes at `propuesta`; budget overflow and everything after go through
   `update-confidence` (trigger `budget overflow`, then `evidence result` etc.).

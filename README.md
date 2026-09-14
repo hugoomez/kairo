@@ -17,11 +17,15 @@ plain Markdown with YAML frontmatter — but nothing here depends on it.
 
 ## Core principles
 
-1. **No API keys — runs on a Claude subscription.** The pipeline uses Claude
-   Code's own model access. The public literature sources it queries (arXiv,
-   Semantic Scholar, Crossref) need no key. US-patent search (only for
-   product-oriented projects) uses a free PatentsView key if you have one, and
-   is skipped otherwise.
+1. **No API keys required — runs on a Claude subscription.** The core pipeline
+   uses Claude Code's own model access. The public literature sources it
+   queries (arXiv, Semantic Scholar, Crossref) need no key. US-patent search
+   (only for product-oriented projects) uses a free PatentsView key if you have
+   one, and is skipped otherwise. The one exception is `hypothesis-cycle`'s
+   **v2 dual-critic mode**, which is entirely **opt-in** and needs a separate,
+   small-cost `DEEPINFRA_TOKEN` (never an Anthropic key) — see "Optional
+   companion: DeepInfra" below. v1 (default) needs nothing beyond your Claude
+   subscription, same as every other skill.
 2. **Citation-grounded hypotheses.** Every hypothesis carries a justification
    that cites specific papers, with section / table / figure references where
    possible. An agent-generated claim with no citable support does not get
@@ -67,12 +71,13 @@ claude --plugin-dir /path/to/kairo
 |---|---|
 | `kairo:create-project` | Bootstraps one research project end to end: a hub note, the folder scaffold, a literature sweep, ingested paper notes, a state-of-the-art map, and 3–5 seed hypotheses, then one commit. |
 | `kairo:literature-search` | Multi-facet search across arXiv, Semantic Scholar, and (for product projects) US patents, with citation-graph snowballing, retraction / withdrawal checks, and PRISMA-style counts. Returns a ranked, deduplicated, justified candidate list. |
-| `kairo:hypothesis-cycle` | Single-critic vetting of a candidate claim: semantic dedup → falsifiability & novelty → known-failure checklist (including a Duhem / auxiliary-assumption check) → severe-test evaluation, with a short refinement loop. Creates a `propuesta` note or logs a discard so it is not re-proposed. |
+| `kairo:hypothesis-cycle` | Vetting of a candidate claim: semantic dedup → falsifiability & novelty → known-failure checklist (including a Duhem / auxiliary-assumption check) → severe-test evaluation, with a short refinement loop. v1 (default): single critic. v2 (opt-in): a second, independent critic on the known-failure and severe-test checks, tiered by stakes, with disagreement escalated to human review rather than resolved automatically. Creates a `propuesta` note or logs a discard so it is not re-proposed. |
 | `kairo:spawn-hypothesis` | Turns a product / engineering task that hit genuine technical uncertainty into a hypothesis, runs it through the *same* `hypothesis-cycle` gate (no reduced rigor), and cross-links the task and the hypothesis. |
 | `kairo:preregister-experiment` | Writes and freezes a preregistration for one hypothesis: exact prediction, primary metric with three-way decision thresholds, a control tied to a known published result, a stopping rule, and an environment manifest. Records `frozen_at` / `frozen_commit`. Produces the frozen note only — runs nothing. |
 | `kairo:run-experiment` | Executes a frozen preregistration: checks the environment against the frozen manifest (dependency / dataset hashes, code commit), runs the code, applies the frozen analysis plan mechanically via a bundled script, records validity + verdict, and writes the full log to a file. |
 | `kairo:update-confidence` | The single writer of hypothesis `status` after `propuesta`. Implements an exact state machine; enforces the replication gate for `apoyada`; routes disagreement to `evidencia_mixta` and spawns a moderator hypothesis; keeps the digest and the state-of-the-art map in sync. |
 | `kairo:adr-check` | For an Architecture Decision Record that cites hypotheses: compares each cited hypothesis's status now against its status when the ADR was written, flags any change, and drives the Nygard supersession lifecycle when a decision must actually change. |
+| `kairo:assemble-manuscript` | For a `paper_thread` of `linea_publicacion: true` hypotheses: gates per-hypothesis on `apoyada` status + `completo`-tier evidence, then drafts Introducción / Trabajo relacionado / Método / Resultados / Discusión from Estado-del-arte.md and the qualifying hypotheses' own sections, with real APA citations. Refuses (naming exactly what's missing) around anything that doesn't clear the bar. |
 
 ### Subagents
 
@@ -80,6 +85,7 @@ claude --plugin-dir /path/to/kairo
 |---|---|
 | `facet-searcher` | Runs all queries for **one** `literature-search` facet in its own context and returns a compact structured candidate list — never raw Atom XML or JSON. Dispatched one per facet, in parallel. |
 | `facet-summarizer` | Reads the paper notes assigned to **one** state-of-the-art facet and returns a compact, fully-cited contribution to the canonical map sections. Dispatched one per facet, in parallel. |
+| `second-critic` | `hypothesis-cycle` v2's independent second critic. Calls a cloud model on DeepInfra (tiered by stakes) to run Check 3 or Check 4, and relays its verdict faithfully — never substitutes its own reasoning. Requires `DEEPINFRA_TOKEN`; see "Optional companion: DeepInfra" below. |
 
 ### Templates & scripts
 
@@ -93,6 +99,12 @@ claude --plugin-dir /path/to/kairo
   - `combine_effects.py` — combines two independent effect estimates
     (random-effects DerSimonian–Laird by default) and flags heterogeneity /
     disagreement.
+- `scripts/second_critic/agreement_log.py` — append-only log of every
+  `hypothesis-cycle` v2 primary-vs-second-critic comparison (agree/disagree,
+  actual DeepInfra cost). `summary` reports the agreement rate and warns
+  explicitly if it stays suspiciously high — a rubber-stamping second critic
+  should be visible, not quietly trusted. The log file itself lives in your
+  vault (e.g. `Scripts/second-critic-log.jsonl`), not in this plugin.
 
 ---
 
@@ -108,6 +120,7 @@ Projects/<slug>/
   Hipotesis/                H-XXXX <slug>.md
   Experimentos/             E-XXXX.md  (+ logs/)
   Producto/                 ADR-XXX.md, F-XXX.md (tasks)
+  Manuscritos/              manuscript-<paper_thread>.md (assemble-manuscript; created on first use)
   Estado-del-arte.md        the state-of-the-art map
   _digest.md                derived hypothesis table
 ```
@@ -137,6 +150,49 @@ MCP server for similarity search across notes already in your vault. This is
 manual read and say so in their output — they never silently skip the check.
 Set up the MCP server separately and point it at your vault; it is not bundled
 with this plugin.
+
+---
+
+## Optional companion: DeepInfra (second critic, v2 dual-critic mode)
+
+`hypothesis-cycle`'s v2 mode adds a second, independent critic — the
+`second-critic` subagent — on Checks 3/4, by calling an open-weight model
+hosted on [DeepInfra](https://deepinfra.com/). This is **entirely optional**.
+v1 (default, single-critic) needs none of this. Without a key configured, v2
+is simply unavailable and `hypothesis-cycle` runs v1.
+
+This is the **one** paid, non-Anthropic dependency in this plugin. Set it up
+only if you want the independence check; nothing else in Kairo needs it.
+
+**Setup:**
+
+1. Create a [DeepInfra](https://deepinfra.com/) account and an API key.
+2. Set it as an environment variable named **`DEEPINFRA_TOKEN`** — deliberately
+   not `ANTHROPIC_*` anything; this key authenticates to a separate, small-cost
+   service, for this one purpose only. Keep it out of the vault and out of git.
+3. That's it — no local server, no install. `second-critic` calls DeepInfra's
+   OpenAI-compatible endpoint directly over HTTPS.
+
+**Models and pricing** (checked against deepinfra.com on 2026-09-14 — DeepInfra's
+catalog and prices move; re-verify before trusting these for real spend):
+
+| Tier | Model | Price / 1M tokens (in / out) | Used when |
+|---|---|---|---|
+| `default` | `deepseek-ai/DeepSeek-V4-Flash` | $0.09 / $0.18 | routine candidates |
+| `high_stakes` | `deepseek-ai/DeepSeek-V4-Pro` | $1.30 / $2.60 | `linea_publicacion: true`, or manually flagged |
+
+A typical Check-3/Check-4 comparison is a few hundred to low-thousands of
+tokens each way — cents per candidate at the default tier, still cents (not
+dollars) even at the high-stakes tier for a single check.
+
+**Cost and independence tracking:** every comparison is logged via
+`scripts/second_critic/agreement_log.py` (see "Templates & scripts" above) to
+a file in *your vault*, not this plugin — run its `summary` subcommand any
+time to see the running agreement rate and cumulative spend. Watch for the
+high-agreement warning: if the second critic agrees with the primary almost
+every time over a real sample, it likely isn't adding independent signal, and
+that's worth investigating (prompt leakage, too weak a model, or a checklist
+that leaves no real judgement call) rather than trusting the mode by default.
 
 ---
 
