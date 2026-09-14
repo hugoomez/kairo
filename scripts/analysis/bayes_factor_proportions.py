@@ -19,8 +19,11 @@ Method -- Gunel & Dickey (1974) independent-binomials Bayes factor:
     BF10 = exp(log m(H1) - log m(H0))
 
 where B(a, b) is the Beta function. The binomial coefficients C(n1,x1)*C(n2,x2)
-and the prior normalizer B(a,b) cancel exactly between H1 and H0, so they are
-omitted from the computation for simplicity.
+cancel exactly between H1 and H0 and are omitted from the computation for
+simplicity. The prior normalizer does NOT fully cancel: H1 places two
+independent Beta(a, b) priors (one per group), contributing 1/B(a,b)^2, while
+H0 places one Beta(a, b) prior, contributing 1/B(a,b) -- so one factor of
+1/B(a,b) survives in the BF10 ratio and must be included explicitly.
 
 Default prior: Beta(1, 1) -- uniform, the standard default for a two-proportion
 Bayes factor. Override with --prior-a/--prior-b to encode a more informative
@@ -56,14 +59,16 @@ def log_beta_binom(x: int, n: int, a: float, b: float) -> float:
     Gunel-Dickey Bayes factor in bayes_factor() below.
 
     This is deliberately NOT a normalized Beta-Binomial log-pmf: the
-    binomial coefficient C(n,x) and the B(a,b) prior normalizer are both
-    omitted because they appear identically in both H1's and H0's marginal
-    likelihood and cancel exactly in the BF10 ratio below -- including them
-    and letting them cancel, or omitting them here, are mathematically
-    equivalent, and omitting them is simpler and avoids a mismatched
-    combinatorial factor bug (using n1+n2 choose x1+x2 for the null model
-    is WRONG -- it should be n1 choose x1 times n2 choose x2, and this
-    kernel-only form sidesteps needing either term)."""
+    binomial coefficient C(n,x) is omitted because it appears identically in
+    both H1's and H0's marginal likelihood and cancels exactly in the BF10
+    ratio below -- including it and letting it cancel, or omitting it here,
+    are mathematically equivalent, and omitting it is simpler and avoids a
+    mismatched combinatorial factor bug (using n1+n2 choose x1+x2 for the
+    null model is WRONG -- it should be n1 choose x1 times n2 choose x2, and
+    this kernel-only form sidesteps needing either term). Unlike the
+    binomial coefficient, the B(a,b) prior normalizer does NOT cancel
+    exactly -- see bayes_factor() below, which adds back the one surviving
+    factor of 1/B(a,b)."""
     return math.lgamma(x + a) + math.lgamma(n - x + b) - math.lgamma(n + a + b)
 
 
@@ -79,14 +84,22 @@ def bayes_factor(x1: int, n1: int, x2: int, n2: int, a: float, b: float) -> dict
     log_bf10 = (
         log_beta_binom(x1, n1, a, b) + log_beta_binom(x2, n2, a, b)
         - log_beta_binom(x1 + x2, n1 + n2, a, b)
+        - (math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b))
     )
-    bf10 = math.exp(log_bf10)
+    try:
+        bf10 = math.exp(log_bf10)
+    except OverflowError:
+        bf10 = math.inf
 
     return {
         "p1": x1 / n1,
         "p2": x2 / n2,
+        "risk_difference": x1 / n1 - x2 / n2,
         "log_bf10": log_bf10,
         "bf10": bf10,
+        # Covers both bf10 == 0.0 from a literal input and bf10 that
+        # underflowed to exactly 0.0 via math.exp() -- either way,
+        # BF01 correctly goes to infinity.
         "bf01": 1.0 / bf10 if bf10 != 0.0 else math.inf,
         "prior_a": a,
         "prior_b": b,
@@ -175,6 +188,7 @@ def main(argv=None) -> int:
 
     print(f"{l1}: {args.x1}/{args.n1} = {stats['p1']:.6f}")
     print(f"{l2}: {args.x2}/{args.n2} = {stats['p2']:.6f}")
+    print(f"risk_difference: {stats['risk_difference']:.6f}")
     print(f"prior: Beta({args.prior_a:g}, {args.prior_b:g})")
     print(f"BF10 = {stats['bf10']:.6g}   BF01 = {stats['bf01']:.6g}")
     print(qualitative_label(stats["bf10"]))

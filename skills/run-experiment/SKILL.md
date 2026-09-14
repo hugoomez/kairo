@@ -207,7 +207,9 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py X1 N1 
     --bf-threshold <frozen bf-threshold> --json
 ```
 
-Take `bf10`, `bf01`, and `verdict` verbatim.
+Take `bf10`, `bf01`, `risk_difference`, and `verdict` verbatim — `risk_difference`
+is the mechanical source for `result.effect` in the bayesian branch, matching
+how `risk_difference` / `cohens_h` sources it in the frequentist branch above.
 
 If the frozen plan names a test with **no script available**, stop and report
 the missing tool — do not eyeball it.

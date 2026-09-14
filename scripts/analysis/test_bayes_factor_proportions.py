@@ -71,6 +71,29 @@ class TestBayesFactor(unittest.TestCase):
         with self.assertRaises(ValueError):
             bayes_factor(5, 10, 5, 10, 0.0, 1.0)
 
+    def test_non_uniform_prior_matches_independent_gamma_computation(self):
+        # Beta(0.5, 0.5) (Jeffreys prior) -- deliberately non-default, since the
+        # previous test suite only ever used Beta(1,1), which hid a missing
+        # 1/B(a,b) term (B(1,1)=1 masks it). Reference value computed
+        # independently via math.gamma() directly (not math.lgamma, a different
+        # code path than the implementation):
+        #   B(x,y) = gamma(x)*gamma(y)/gamma(x+y)
+        #   expected = B(7.5,3.5)*B(3.5,7.5) / (B(0.5,0.5)*B(10.5,10.5))
+        #            = 1.7708978328173377
+        result = bayes_factor(7, 10, 3, 10, 0.5, 0.5)
+        self.assertAlmostEqual(result["bf10"], 1.7708978328173377, places=6)
+
+    def test_extreme_divergence_does_not_raise(self):
+        # log_bf10 exceeds math.exp's overflow threshold (~709.78) well before
+        # this data pattern -- previously raised an uncaught OverflowError.
+        result = bayes_factor(900, 1000, 100, 1000, 1.0, 1.0)
+        self.assertEqual(result["bf10"], math.inf)
+        self.assertEqual(result["bf01"], 0.0)
+
+    def test_risk_difference_present(self):
+        result = bayes_factor(7, 10, 3, 10, 1.0, 1.0)
+        self.assertAlmostEqual(result["risk_difference"], 0.7 - 0.3, places=9)
+
 
 class TestQualitativeLabel(unittest.TestCase):
     def test_boundaries(self):
