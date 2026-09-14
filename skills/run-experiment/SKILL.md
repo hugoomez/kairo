@@ -184,9 +184,10 @@ analysis with a leak present.
 
 ### 5. Mechanical analysis
 
-Apply **exactly** the frozen `## Plan de análisis`. For a two-proportion
-comparison, call the script — do not compute or reason about significance
-yourself:
+Apply **exactly** the frozen `## Plan de análisis`. Branch on the frozen
+`analysis_plan` — do not compute or reason about significance yourself:
+
+**`analysis_plan: frequentist`** — the two-proportion z-test:
 
 ```
 python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py X1 N1 X2 N2 \
@@ -195,13 +196,26 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py X1 N1 X2 N2
     --min-effect <frozen T_apoyo> --floor-effect <frozen T_refuta> --json
 ```
 
-Take the script's `risk_difference` / `cohens_h`, `p_value`, and `verdict`
-verbatim. If the frozen plan names a test with **no script available**, stop and
-report the missing tool — do not eyeball it.
+Take `risk_difference` / `cohens_h`, `p_value`, and `verdict` verbatim.
+
+**`analysis_plan: bayesian`** — the Beta-Binomial Bayes factor:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py X1 N1 X2 N2 \
+    --prior-a <frozen prior a> --prior-b <frozen prior b> \
+    --direction <increase|decrease from the frozen prediction> \
+    --bf-threshold <frozen bf-threshold> --json
+```
+
+Take `bf10`, `bf01`, and `verdict` verbatim.
+
+If the frozen plan names a test with **no script available**, stop and report
+the missing tool — do not eyeball it.
 
 Write into the note's `result:` frontmatter: `effect` (point estimate +
-interval), `p_value` (or `bayes_factor` for a bayesian plan), and `verdict`,
-mapping the script's short string to the enum:
+interval), `p_value` (`frequentist`) or `bayes_factor` (`bayesian` — the
+script's `bf10`), and `verdict`, mapping the script's short string to the
+enum (same mapping regardless of which script produced it):
 
 | script | `result.verdict` |
 |---|---|
@@ -265,6 +279,9 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - **Running despite a hash mismatch.** Pre-flight mismatch = stop, no execution.
 - **Reasoning about significance in prose.** Call the script; copy its numbers and
   verdict.
+- **Calling the wrong script for the frozen `analysis_plan`.** `frequentist` ->
+  `two_proportion_test.py`; `bayesian` -> `bayes_factor_proportions.py`. The
+  frozen field decides which one runs, not which one is more familiar.
 - **Applying your own "does this support it?" judgment.** The frozen threshold
   decides, not you.
 - **Editing a frozen section to reflect what actually happened.** New content goes
@@ -305,5 +322,9 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - `Scripts/experiments/E-XXXX/` — the self-contained experiment code directory
   (scripts + frozen `E-XXXX.data.json` + `E-XXXX.deps.txt`); also the transfer
   bundle for external runtimes (step 2).
-- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — the mechanical test for step 5.
-  `--help` documents the three-way verdict and thresholds.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — the
+  `frequentist` mechanical test for step 5. `--help` documents the three-way
+  verdict and thresholds.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py` — the
+  `bayesian` mechanical test for step 5. `--help` documents the Bayes factor
+  and verdict thresholds.
