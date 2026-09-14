@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """A-priori power analysis for a two-proportion design (`completo` tier).
 
-Given a target effect size (Cohen's h -- the same arcsine-transformed metric
-`two_proportion_test.py` reports as its own `cohens_h`), alpha, and desired
-power, computes the required N per arm via the standard normal-approximation
-formula. This is the mechanical tool `preregister-experiment` calls for a
-`completo`-tier preregistration's sample-size justification, so the
-required-N figure is derived the same way every time -- never picked first
-and rationalized after.
+Given a target effect size (Cohen's h -- the arcsine-transformed metric
+for two proportions), alpha, and desired power, computes the required N per arm
+via the standard normal-approximation formula. This is the mechanical tool
+`preregister-experiment` calls for a `completo`-tier preregistration's
+sample-size justification, so the required-N figure is derived the same way
+every time -- never picked first and rationalized after. Note: `cohens_h(p1, p2)
+here computes baseline→target (p2 - p1 direction); `two_proportion_test.py` uses
+treatment−control convention (p1 - p2 direction), so the sign differs for the
+same (p1, p2) pair, though `required_n()` uses |h| so this never affects N.
 
 Standard library only (uses `statistics.NormalDist`, the same facility
 `combine_effects.py` uses for its own CI z-values).
@@ -48,8 +50,9 @@ _N = NormalDist()
 
 
 def cohens_h(p1: float, p2: float) -> float:
-    """Arcsine-transformed effect size for two proportions (same transform
-    `two_proportion_test.py` uses for its own `cohens_h` output)."""
+    """Arcsine-transformed effect size for two proportions (baseline→target).
+    Both this and `two_proportion_test.py`'s `cohens_h` use arcsine transform,
+    but with different argument-order conventions, so signs are opposite."""
     return 2.0 * math.asin(math.sqrt(p2)) - 2.0 * math.asin(math.sqrt(p1))
 
 
