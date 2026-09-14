@@ -75,7 +75,7 @@ script). Chosen once, at step 1c, regardless of tier.
 
 ### 1. Determine tier and analysis plan
 
-Before fixing the protocol (step 2), settle both axes — they are independent
+Before fixing the protocol (step 3), settle both axes — they are independent
 and each is recorded in frontmatter.
 
 **a. Tier.**
@@ -110,18 +110,18 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/sample_size.py \
 
 (or `--h <h>` if the effect is given directly, e.g. for a design that isn't
 naturally two proportions). Take `n_per_group` / `n_total` verbatim — this
-becomes the stopping rule's fixed N in step 2b, replacing a
+becomes the stopping rule's fixed N in step 3b, replacing a
 domain-judgement-chosen figure. Record the exact command, its output, and the
-SESOI/alpha/power inputs in `## Plan de análisis` (step 2b).
+SESOI/alpha/power inputs in `## Plan de análisis` (step 3b).
 
 **c. Analysis plan.** Ask the researcher: `frequentist` (the existing
 `two_proportion_test.py` mechanical test — default) or `bayesian` (a Bayes
 factor via `scripts/analysis/bayes_factor_proportions.py`). Set
 `analysis_plan: frequentist` or `analysis_plan: bayesian` in frontmatter.
 
-- **`frequentist`:** step 2b states alpha and the min/floor effect thresholds,
+- **`frequentist`:** step 3b states alpha and the min/floor effect thresholds,
   as today.
-- **`bayesian`:** step 2b states the prior (`Beta(a, b)`, default `Beta(1, 1)`
+- **`bayesian`:** step 3b states the prior (`Beta(a, b)`, default `Beta(1, 1)`
   — uniform — unless a different prior is justified) and the BF decision
   threshold (`--bf-threshold`, default 3.0, "substantial evidence" — Kass &
   Raftery 1995) instead of alpha/min-effect.
