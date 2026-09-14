@@ -12,6 +12,10 @@ hypothesis: <H-XXXX>
 secondary_hypotheses: []   # e.g. [H-0001]
 project: <PROJ-XXX>
 tier: <ligero | completo>
+# analysis_plan — chosen at preregistration time, independent of tier.
+# frequentist -> scripts/analysis/two_proportion_test.py (run-experiment step 5)
+# bayesian    -> scripts/analysis/bayes_factor_proportions.py (run-experiment step 5)
+analysis_plan: <frequentist | bayesian>
 status: <preregistered | running | completed>
 # frozen_at — timestamp when the preregistration was frozen (before any code ran)
 frozen_at: <YYYY-MM-DDTHH:MM:SSZ>
@@ -73,7 +77,10 @@ Omitir la sección si `secondary_hypotheses` está vacío.>
 ## Plan de análisis
 
 <Test o modelo exacto, estadístico de decisión, umbral (α o Bayes factor),
-correcciones por comparaciones múltiples. Congelado en `frozen_at`.>
+correcciones por comparaciones múltiples. Congelado en `frozen_at`.
+Tier `completo`: incluir el tamaño de efecto mínimo de interés (SESOI), α,
+potencia objetivo, y el N resultante de `sample_size.py`. `analysis_plan:
+bayesian`: incluir el prior (Beta(a, b)) y el umbral de Bayes factor.>
 
 **Regla de parada (obligatoria):** <la condición exacta que termina la
 recolección / la corrida, fijada ahora — p. ej. `N fijo = 2000 por brazo`,

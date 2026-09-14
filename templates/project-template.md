@@ -8,6 +8,12 @@ type: <ciencia | producto | hibrido>
 deadline: <YYYY-MM-DD>
 # compute_budget — optional (e.g. "500 GPU-h" or a currency figure)
 compute_budget: <value>
+# completo_cost_threshold — optional, same unit as compute_budget.
+# preregister-experiment requires the `completo` tier (formal sample-size
+# justification) once a hypothesis's cost_estimated exceeds this value, in
+# addition to the linea_publicacion trigger. Unset, or a unit mismatch with
+# cost_estimated, means cost alone cannot trigger completo.
+completo_cost_threshold: <value>
 autonomy_defaults:
   paper_ingestion: <manual | autonomo>
   experiments: <manual | autonomo>
