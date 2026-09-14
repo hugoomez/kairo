@@ -2,19 +2,26 @@
 name: preregister-experiment
 description: >-
   Use when a project's `propuesta` hypothesis is ready to be tested and needs
-  its preregistration written and frozen — the v1 "ligero" tier. Turns the
-  hypothesis claim + test sketch into a frozen `Experimentos/E-XXXX.md` note
-  (exact prediction, metric + decision thresholds, control condition,
-  environment manifest), records `frozen_at` / `frozen_commit`, and sets the
-  experiment note `status` to `preregistered`. Produces the note only — runs
-  nothing.
+  its preregistration written and frozen. Turns the hypothesis claim + test
+  sketch into a frozen `Experimentos/E-XXXX.md` note (exact prediction, metric
+  + decision thresholds, control condition, environment manifest), records
+  `frozen_at` / `frozen_commit`, and sets the experiment note `status` to
+  `preregistered`. Two independent choices are fixed at freeze time: tier
+  (`ligero` domain-judgement thresholds, or `completo` — required once
+  `linea_publicacion: true` or estimated cost exceeds the project's
+  `completo_cost_threshold` — a formal a-priori sample-size justification) and
+  `analysis_plan` (`frequentist` or `bayesian`, each computed via a versioned
+  script). Produces the note only — runs nothing.
 ---
 
 # Preregister Experiment
 
 ## Overview
 
-Writes and **freezes** a preregistration for one hypothesis, `ligero` tier.
+Writes and **freezes** a preregistration for one hypothesis, at whichever
+tier (`ligero` / `completo`) this run determines and whichever
+`analysis_plan` (`frequentist` / `bayesian`) the researcher chooses — the two
+are independent axes; any combination is valid.
 
 Binding rule (Kairo principle 3): the preregistration is **the
 prediction plus the analysis plan**, frozen **before any experiment code runs**.
@@ -30,9 +37,8 @@ or scaffold experiment code.
 - You have a test sketch (from `hypothesis-cycle`) to harden into an exact,
   falsifiable protocol.
 
-**When not to use:** the hypothesis isn't `propuesta` yet; you want the `completo`
-tier with formal power analysis (v2 — see Scope); you want to execute or analyze a
-run (separate skills).
+**When not to use:** the hypothesis isn't `propuesta` yet; you want to execute or
+analyze a run (separate skills).
 
 ## Inputs
 
@@ -41,34 +47,119 @@ run (separate skills).
 2. Its **test sketch** — the manipulation/comparison, what gets measured, what
    result counts against the claim.
 
-## Scope — `ligero` tier only
+## Scope — `ligero` and `completo` tiers
 
-**In v1:** exact prediction, one (or few) pre-committed primary metric(s) with
-three-way decision thresholds, a control condition tied to a known result, and a
-reproducibility manifest.
+**Both tiers:** exact prediction, one (or few) pre-committed primary metric(s)
+with three-way decision thresholds, a control condition tied to a known
+result, and a reproducibility manifest.
 
-**Not in v1 — `completo` tier, deferred to v2:** formal statistical **power
-justification** (target effect size → required N with stated α and power). Add the
-`completo` tier once `linea_publicacion` is actually in use. Until then a `ligero`
-prereg picks thresholds by domain judgement, not by a power calculation.
+**`ligero`:** thresholds (`T_apoyo` / `T_refuta`) are picked by domain
+judgement — no power calculation.
+
+**`completo`:** required whenever `hypothesis.linea_publicacion == true`, or
+`cost_estimated` exceeds the project's `completo_cost_threshold` (same units
+— a unit mismatch, a non-numeric value, or an unset threshold means cost
+cannot trigger it on its own; see step 1a). Thresholds are instead derived
+from a formal a-priori sample-size justification: state the smallest effect
+size of interest (SESOI), alpha, and target power; the required N is computed
+mechanically (step 1b), never picked first and rationalized after. **Hard
+floor — no override.** Once `completo` is required, there is no in-spec way
+to freeze at `ligero` anyway; an unresolved requirement blocks the freeze
+exactly like an open `crítico` risk (see "Flagging risks and ambiguities").
+
+**Independent of tier — `analysis_plan`:** `frequentist` (the existing
+mechanical test) or `bayesian` (a Bayes factor, computed via a versioned
+script). Chosen once, at step 1c, regardless of tier.
 
 ## Procedure
 
-### 1. Create the note
+### 1. Determine tier and analysis plan
+
+Before fixing the protocol (step 2), settle both axes — they are independent
+and each is recorded in frontmatter.
+
+**a. Tier.**
+
+```
+completo required  <=>  hypothesis.linea_publicacion == true
+                        OR (cost_estimated is set AND project.completo_cost_threshold
+                            is set AND both are bare numbers in the same unit AND
+                            cost_estimated > completo_cost_threshold)
+```
+
+- If `cost_estimated` is set but the project has no `completo_cost_threshold`,
+  or the two values are in different units (e.g. one is GPU-h, the other a
+  currency figure), or either isn't a bare number: cost cannot force
+  `completo` on its own. Flag `importante` — say explicitly that only
+  `linea_publicacion` was checked.
+- If neither condition holds, default to `ligero`. The researcher may still
+  opt into `completo` voluntarily for a smaller experiment.
+- Set `tier: ligero` or `tier: completo` in frontmatter now.
+
+**b. If `completo`: run the sample-size justification.**
+
+State, with the researcher: the smallest effect size of interest (SESOI, as
+two proportions `p1`/`p2` — baseline and the smallest treatment rate that
+would still count as meaningful — or directly as Cohen's `h`), alpha, and
+target power. Then call:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/sample_size.py \
+    --p1 <baseline> --p2 <smallest meaningful> --alpha <alpha> --power <power> --json
+```
+
+(or `--h <h>` if the effect is given directly, e.g. for a design that isn't
+naturally two proportions). Take `n_per_group` / `n_total` verbatim — this
+becomes the stopping rule's fixed N in step 2b, replacing a
+domain-judgement-chosen figure. Record the exact command, its output, and the
+SESOI/alpha/power inputs in `## Plan de análisis` (step 2b).
+
+**c. Analysis plan.** Ask the researcher: `frequentist` (the existing
+`two_proportion_test.py` mechanical test — default) or `bayesian` (a Bayes
+factor via `scripts/analysis/bayes_factor_proportions.py`). Set
+`analysis_plan: frequentist` or `analysis_plan: bayesian` in frontmatter.
+
+- **`frequentist`:** step 2b states alpha and the min/floor effect thresholds,
+  as today.
+- **`bayesian`:** step 2b states the prior (`Beta(a, b)`, default `Beta(1, 1)`
+  — uniform — unless a different prior is justified) and the BF decision
+  threshold (`--bf-threshold`, default 3.0, "substantial evidence" — Kass &
+  Raftery 1995) instead of alpha/min-effect.
+
+**d. Confidence-field semantics — state this now, not later.** If `bayesian`
+is chosen: `confidence` on the hypothesis note is a real posterior **only**
+once *every* experiment adjudicating it used `analysis_plan: bayesian` — a
+single frequentist-plan experiment among them keeps `confidence` a
+`frequentist_heuristic`, never silently upgraded. Say this explicitly to the
+researcher when they pick `bayesian`, don't leave it to the template comment.
+
+**e. Mixed bayesian + linea_publicacion — flag, don't solve.** If
+`analysis_plan: bayesian` AND `hypothesis.linea_publicacion: true` both hold:
+flag `crítico`. `update-confidence`'s replication combiner
+(`combine_effects.py`) works on effect-size + standard error and has **no**
+defined way to combine two Bayes factors — a second independent Bayesian
+replication will hit a combination step that doesn't exist yet. This blocks
+the freeze until the researcher explicitly acknowledges it (e.g. by switching
+to `frequentist`, or by accepting that a future combination method is not yet
+built). Do not attempt to invent a combination method here — that is a
+separate, unscoped piece of work.
+
+### 2. Create the note
 
 Copy `${CLAUDE_PLUGIN_ROOT}/templates/experiment-template.md` to
 **`Projects/<slug>/Experimentos/E-XXXX.md`** — next `E-XXXX` id (scan all
 `Projects/*/Experimentos/*.md` frontmatter `id:`, max + 1, zero-pad 4).
 
 Frontmatter now: `hypothesis: <H-XXXX>` (the **one** hypothesis this prereg
-adjudicates), `project: <PROJ-XXX>`, `tier: ligero`, `status` left at placeholder
-until step 3. If the same design also bears on a **rival / sibling** hypothesis
-without adjudicating it, list those under `secondary_hypotheses: [<H-YYYY>]` and
-write a `## Evidencia colateral` entry for each (step 2e). Leave `sanity_checks`,
-`experiment_validity`, `cost_actual`, `result` as placeholders — a later run/
-analysis skill fills them.
+adjudicates), `project: <PROJ-XXX>`, `tier` and `analysis_plan` (both from
+step 1), `status` left at placeholder until step 4. If the same design also
+bears on a **rival / sibling** hypothesis without adjudicating it, list those
+under `secondary_hypotheses: [<H-YYYY>]` and write a `## Evidencia colateral`
+entry for each (step 3e). Leave `sanity_checks`, `experiment_validity`,
+`cost_actual`, `result` as placeholders — a later run/analysis skill fills
+them.
 
-### 2. Fix the protocol
+### 3. Fix the protocol
 
 All four must be exact and unambiguous before freezing.
 
@@ -82,20 +173,28 @@ Name the **primary metric(s)** (prefer one). Pre-commit the three-way rule:
 
 | Verdict (`result.verdict`) | Condition on the primary metric |
 |---|---|
-| `apoyada` | effect in the predicted direction and ≥ the pre-set meaningful size `T_apoyo` |
-| `refutada` | no effect, or effect ≤ `T_refuta` (below the floor / wrong direction) |
-| `inconclusa` | between `T_refuta` and `T_apoyo`, or the interval spans both |
+| `apoyada` | effect in the predicted direction and ≥ the pre-set meaningful size `T_apoyo` (or, `bayesian`: `BF10 ≥` the frozen `--bf-threshold` in the predicted direction) |
+| `refutada` | no effect, or effect ≤ `T_refuta` / wrong direction (or, `bayesian`: `BF01 ≥` the frozen `--bf-threshold`) |
+| `inconclusa` | between `T_refuta` and `T_apoyo`, or the interval spans both (or, `bayesian`: neither BF crosses the threshold) |
 | `evidencia_mixta` | **only if** the plan names >1 primary metric and they land in conflicting regions |
 
 State the estimator and the interval you'll report (e.g. mean difference + 95%
-CI). No power calc in `ligero` — thresholds are domain judgement, fixed now.
+CI, or `bayesian`: `BF10`/`BF01` + the prior).
+
+- **`ligero`:** thresholds are domain judgement, fixed now, no power calc.
+- **`completo`:** state the SESOI, alpha, target power, and
+  `sample_size.py`'s `n_per_group`/`n_total` output (step 1b) — `T_apoyo`
+  equals the stated SESOI, not a separately chosen figure.
+- **`bayesian`:** state the prior (`Beta(a, b)`) and the `--bf-threshold`
+  instead of alpha/min-effect.
 
 **Stopping rule (required).** State the *exact* condition under which the run /
-data collection ends, decided **now**, not during the run — e.g. `fixed N = 2000
-per arm`, `fixed 5 seeds`, `runs until the wall-clock budget of 6 GPU-h is spent`,
-`one pass over the frozen dataset`. "Until the result looks clear" is not a
-stopping rule. Ligero needs no power analysis, but it does need this — an
-open-ended run is an optional-stopping loophole.
+data collection ends, decided **now**, not during the run. For `completo`,
+this **is** the `n_per_group`/`n_total` from step 1b (e.g. `fixed N = 197 per
+arm`) — not a separately chosen figure. For `ligero`, e.g. `fixed N = 2000
+per arm`, `fixed 5 seeds`, `runs until the wall-clock budget of 6 GPU-h is
+spent`, `one pass over the frozen dataset`. "Until the result looks clear" is
+not a stopping rule.
 
 **Variables recorded (required)** → the template's `## Variables` section, split
 into two lists:
@@ -127,18 +226,20 @@ this design touches it, what that observation would suggest, and **why this
 design cannot adjudicate it** — no decision threshold, no verdict, no dedicated
 replication. The frozen `## Predicción` and `## Plan de análisis` (thresholds,
 stopping rule, verdict map) cover the **primary hypothesis only**. A secondary
-hypothesis never gets a `T_apoyo` / `T_refuta`; if you find yourself wanting to
-set one, it is not secondary — make it the primary of its own preregistration.
+hypothesis never gets a `T_apoyo` / `T_refuta` (or BF threshold); if you find
+yourself wanting to set one, it is not secondary — make it the primary of its
+own preregistration.
 
-### 3. Freeze
+### 4. Freeze
 
 Only once a–d (and e, if `secondary_hypotheses` is non-empty) are complete and
 exact, **and no `crítico` risk is still open** (see "Flagging risks and
-ambiguities"). An unresolved `crítico` ambiguity blocks the freeze — resolve it
-with the researcher first.
+ambiguities" — this now includes an unmet `completo` requirement and an
+unacknowledged bayesian+linea_publicacion gap, step 1e). An unresolved
+`crítico` ambiguity blocks the freeze — resolve it with the researcher first.
 
 1. `environment.seed`, `dependencies_hash`, `dependencies_lockfile`,
-   `dataset_hash`, `hardware` all filled (step 2d).
+   `dataset_hash`, `hardware` all filled (step 3d).
 2. Set `frozen_at` = current UTC timestamp, ISO 8601 (`YYYY-MM-DDTHH:MM:SSZ`).
 3. Set `frozen_commit` = current commit hash (`git rev-parse HEAD`). Use the
    **experiment-code** repo's HEAD if code lives in its own repo; otherwise the
@@ -147,11 +248,11 @@ with the researcher first.
 5. Commit the note: `Preregister E-XXXX (<H-XXXX>)`. The preregistration is not
    frozen until it is in git.
 
-### 3b. Hand off the hypothesis transition to `update-confidence`
+### 4b. Hand off the hypothesis transition to `update-confidence`
 
 A frozen prereg with a dangling link is a data-integrity gap — but this skill
 does **not** edit hypothesis `status`, `linked_experiment`, `history`, or
-`_digest.md`. Once the note is committed (step 3, item 5), **invoke
+`_digest.md`. Once the note is committed (step 4, item 5), **invoke
 `update-confidence`** — trigger `prereg frozen`, payload = the **primary**
 hypothesis id + this experiment id. It moves that hypothesis
 `propuesta → preregistrada`, appends `E-XXXX` to its `linked_experiment`, appends
@@ -163,7 +264,7 @@ the `history` entry, and regenerates `_digest.md`.
 `update-confidence` is not involved) and adds no `history` entry. Their `status`
 is untouched.
 
-### 4. Stop
+### 5. Stop
 
 Do not run, schedule, or scaffold anything. Output is the frozen note plus the
 `update-confidence` handoff. Writing the experiment code is `run-experiment`
@@ -179,7 +280,7 @@ Fill `environment:` in frontmatter; record how each value was produced in
 |---|---|
 | `seed` | the single integer seeded everywhere (framework, data shuffling, sampling). |
 | `dependencies_lockfile` | run `pip freeze` (Python) or `npm ls --json` (Node); save output next to the note as `E-XXXX.deps.txt` / `.json`; put that relative path here. |
-| `dependencies_hash` | `sha256` of that saved snapshot file. *(new in v1 — the template lists only the lockfile path.)* |
+| `dependencies_hash` | `sha256` of that saved snapshot file. |
 | `dataset_hash` | `sha256` of the dataset file. Multiple files → list per-file `sha256` in the body and put the hash of the sorted-hash manifest here. No dataset → `n/a`. |
 | `hardware` | one line, e.g. `1x RTX 4090 24GB, 32 GB RAM` or `MacBook Pro M2, CPU only`. |
 
@@ -195,8 +296,8 @@ presented with the same weight as a trivial one.
 
 | Tag | Meaning | What it forces |
 |---|---|---|
-| **`crítico`** | can invalidate the entire experiment or spend the full compute budget with no readable result — e.g. a control that won't reproduce the cited result, a model/architecture detail that could suppress the effect being measured, a stopping rule open to interpretation, a primary metric that doesn't actually measure the claim, a threshold with no `inconclusa` band | **Blocks the freeze.** Present it in its **own callout at the top** of what you show the researcher — never a bullet among minor items. The design is not frozen until the researcher gives an explicit decision on it. If found *after* freeze: `## Enmiendas` entry + a direct `crítico`-tagged question before any run. |
-| **`importante`** | plausibly shifts the result or its interpretation, but the experiment stays readable either way — a defensible-but-contested hyperparameter, an estimator choice, a borderline exclusion criterion | Flag prominently with a proposed default + rationale. Get a decision before freezing if the researcher is available; otherwise freeze on the stated default and note the choice in `## Manifiesto de entorno`. |
+| **`crítico`** | can invalidate the entire experiment or spend the full compute budget with no readable result — e.g. a control that won't reproduce the cited result, a model/architecture detail that could suppress the effect being measured, a stopping rule open to interpretation, a primary metric that doesn't actually measure the claim, a threshold with no `inconclusa` band, an unmet `completo` requirement, an unacknowledged bayesian+linea_publicacion combination gap | **Blocks the freeze.** Present it in its **own callout at the top** of what you show the researcher — never a bullet among minor items. The design is not frozen until the researcher gives an explicit decision on it. If found *after* freeze: `## Enmiendas` entry + a direct `crítico`-tagged question before any run. |
+| **`importante`** | plausibly shifts the result or its interpretation, but the experiment stays readable either way — a defensible-but-contested hyperparameter, an estimator choice, a borderline exclusion criterion, a cost-based `completo` trigger that couldn't be evaluated (missing/mismatched threshold) | Flag prominently with a proposed default + rationale. Get a decision before freezing if the researcher is available; otherwise freeze on the stated default and note the choice in `## Manifiesto de entorno`. |
 | **`menor`** | implementation detail, low impact either way — activation function where the design doesn't turn on it, logging cadence, variable naming, RNG library when results are seed-identical | State the choice in one line. No decision needed, no freeze block. |
 
 Never fold a `crítico` risk into a list next to `menor` ones. "This control may
@@ -209,7 +310,7 @@ Once `status: preregistered` (and absolutely once code has run), the original
 sections — `## Predicción`, `## Plan de análisis` (including the stopping rule),
 `## Variables` (including the primary/secondary split), `## Diseño`,
 `## Umbral de invalidez`, `## Manifiesto de entorno`, and the `environment` /
-`frozen_*` frontmatter — are **immutable**.
+`frozen_*` / `tier` / `analysis_plan` frontmatter — are **immutable**.
 
 Every later change goes in a `## Enmiendas` section, append-only:
 
@@ -228,21 +329,24 @@ disclosed as such when results are reported.
 ## Frontmatter at freeze
 
 - `id`, `hypothesis` (primary — exactly one), `secondary_hypotheses` (`[]` or a
-  list, each with a `## Evidencia colateral` entry), `project`, `tier: ligero`,
-  `status: preregistered`
+  list, each with a `## Evidencia colateral` entry), `project`,
+  `tier: <ligero | completo>` (step 1a), `analysis_plan: <frequentist | bayesian>`
+  (step 1c), `status: preregistered`
 - `frozen_at` (ISO 8601 UTC), `frozen_commit` (sha)
 - `environment.seed`, `.dependencies_lockfile`, `.dependencies_hash`,
   `.dataset_hash`, `.hardware`
 - `experiment_validity`, `sanity_checks.*`, `cost_actual`, `result.*` — left as
   placeholders for the run/analysis skill
 - `cost_estimated` — a rough figure if the sketch supports one, else placeholder
+  (also the input to the `completo`-tier cost trigger in step 1a)
 
-## Not in v1
+## Not in scope
 
-- `completo` tier / formal statistical power justification (add when
-  `linea_publicacion` is in use).
-- Running, scheduling, or scaffolding experiment code.
-- Filling sanity checks, validity, actual cost, or results.
+- Running, scheduling, or scaffolding experiment code (that's `run-experiment`).
+- Filling sanity checks, validity, actual cost, or results (also
+  `run-experiment`).
+- Combining two Bayesian-plan replications for the `update-confidence`
+  replication gate (flagged, not solved — step 1e).
 
 ## Common mistakes
 
@@ -256,15 +360,20 @@ disclosed as such when results are reported.
   `## Enmiendas` — always.
 - **Recording `frozen_commit` from the wrong repo.** It's the experiment *code*
   state; say which repo in the manifest.
-- **Adding a power calculation.** That's `completo`/v2 — `ligero` thresholds are
-  pre-committed judgement.
+- **Picking domain-judgement thresholds under `completo`.** `completo` requires
+  the sample-size script's output (step 1b); `T_apoyo` is the stated SESOI, not
+  a separately chosen figure.
+- **Skipping the sample-size justification because `linea_publicacion` was set
+  after the fact.** Check step 1a *before* fixing thresholds — retrofitting a
+  `completo` justification onto already-chosen `ligero` thresholds is not the
+  same as deriving them from the SESOI/alpha/power calc.
 - **No stopping rule.** An open-ended run is optional-stopping. Commit a fixed N /
   seed count / budget in `## Plan de análisis` now.
 - **Un-split variables.** Every variable that will be recorded is declared *now*
   as primary (verdict-driving) or secondary/exploratory. A result found only in a
   secondary variable is a new hypothesis.
 - **Editing hypothesis `status` / `linked_experiment` inline.** This skill never
-  does — fire `update-confidence`'s `prereg frozen` trigger (step 3b).
+  does — fire `update-confidence`'s `prereg frozen` trigger (step 4b).
 - **Running the experiment.** This skill stops at the frozen note.
 - **Giving a `secondary_hypotheses` entry a decision threshold.** Secondary =
   collateral, non-adjudicating. Thresholds and a verdict map exist for the
@@ -275,3 +384,24 @@ disclosed as such when results are reported.
 - **Flagging a budget-burning risk like a trivial one.** Every risk raised gets a
   `crítico` / `importante` / `menor` tag; a `crítico` gets its own callout and
   blocks the freeze until the researcher decides.
+- **Treating `confidence` as a real posterior under a frequentist plan, or under
+  mixed evidence.** It is a real posterior only once every adjudicating
+  experiment used `analysis_plan: bayesian` (step 1d) — otherwise it stays a
+  `frequentist_heuristic`.
+- **Letting `bayesian` + `linea_publicacion` through without the step-1e flag.**
+  There is no combination method yet for two Bayesian replications — say so at
+  freeze time, don't discover it at the second experiment.
+
+## Related
+
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/sample_size.py` — a-priori power
+  analysis for the `completo` tier (step 1b). `--help` documents the formula.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — the
+  `frequentist` mechanical test, run by `run-experiment` step 5.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py` — the
+  `bayesian` mechanical test, run by `run-experiment` step 5.
+- `update-confidence` — the `prereg frozen` trigger this skill fires (step 4b);
+  also owns the replication combiner that cannot yet combine two Bayes factors
+  (step 1e).
+- `hypothesis-template.md` — the `confidence` field's `frequentist_heuristic` /
+  `bayesian_posterior` kinds (step 1d).
