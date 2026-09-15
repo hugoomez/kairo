@@ -153,6 +153,57 @@ with this plugin.
 
 ---
 
+## Optional companion: Zotero (reference manager)
+
+`create-project` step 6 (paper ingestion) adds every confirmed paper to a local
+Zotero library first, then generates the `Papers/` note from that Zotero entry
+(citation, abstract) rather than writing the note directly from the raw
+arXiv/Semantic Scholar/PatentsView API response. This is **optional** — when
+Zotero is unreachable, ingestion falls back to writing the note directly and
+says so loudly in the output (never a silent skip).
+
+**Setup (one-time, in the Zotero desktop app — this plugin has no installer for
+it):**
+
+1. Install [Zotero](https://www.zotero.org/download/) (7 or later; write
+   support needs **Zotero 10+** — check `Help → About Zotero`).
+2. Install [Better BibTeX](https://retorque.re/zotero-better-bibtex/) (stable
+   citation keys + a scriptable JSON-RPC endpoint): download the latest `.xpi`
+   from its [releases page](https://github.com/retorquere/zotero-better-bibtex/releases),
+   then in Zotero: `Tools → Plugins` → gear icon → *Install Plugin From File…*
+   → pick the `.xpi` → restart if asked. Auto-updates itself after that.
+3. Enable the local API: `Zotero → Settings → Advanced` → check **"Allow other
+   applications on this computer to communicate with Zotero"**. This gates both
+   the endpoints below; without it they 403.
+4. Leave Zotero running while running Kairo skills that ingest papers.
+
+**How the skill talks to Zotero** (no separate library/SDK — plain HTTP, all on
+`localhost`, nothing installed by this plugin):
+
+| Purpose | Call |
+|---|---|
+| Create the item | `POST http://127.0.0.1:23119/connector/saveItems` — the same unauthenticated endpoint the official browser connector uses; no API key needed locally. |
+| Dedup / look up an existing item by DOI or arXiv id | Better BibTeX `item.search` via `POST http://127.0.0.1:23119/better-bibtex/json-rpc` |
+| Stable citation key for the new item | Better BibTeX `item.citationkey` (same JSON-RPC endpoint) |
+| Clean bibliographic fields for the note | Better BibTeX `item.export` with format `CSL-JSON` (same endpoint) |
+
+The newer read/write `/api/...` local endpoint (Zotero 10+, needs a
+`Zotero-API-Key` obtained via `POST /api/local/authorize`) exists but was
+inconsistently available across recent Zotero point releases in testing — the
+skill does not depend on it. If Better BibTeX itself is the piece that's down
+(installed but its JSON-RPC unreachable), ingestion still creates the Zotero
+item via `/connector/saveItems` and falls back to Zotero's own item fields for
+the note, flagging that the citation key is Zotero's raw item key instead of a
+Better BibTeX key.
+
+The Obsidian-side [Zotero Integration](https://github.com/community-archive/obsidian-zotero-integration)
+plugin (`obsidian-zotero-desktop-connector`) is installed alongside this for
+*your* manual use inside Obsidian (insert citations, pull in PDF annotations,
+etc.) — the skill automation above talks to Zotero directly and does not
+depend on that plugin or drive it.
+
+---
+
 ## Optional companion: DeepInfra (second critic, v2 dual-critic mode)
 
 `hypothesis-cycle`'s v2 mode adds a second, independent critic — the

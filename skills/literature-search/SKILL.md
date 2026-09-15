@@ -502,6 +502,11 @@ limit — see **Configuración opcional**.
   formatting nicety.
 - **Skipping the vault search.** Check for existing `Papers/` notes first to
   avoid duplicate entries.
+- **Ingesting a candidate yourself.** This skill ranks and justifies; it never
+  writes to `Papers/` or Zotero. Ingestion — including the Zotero-first add —
+  is `create-project` step 6's job. Calling this skill directly (e.g. from
+  `hypothesis-cycle`'s novelty check) never triggers ingestion as a side
+  effect.
 - **Not freezing the queries / criteria.** Inclusion-exclusion criteria and the
   verbatim query strings go into the Búsqueda ejecutada block *before* searching
   and *during* step 2 — not reconstructed afterward.

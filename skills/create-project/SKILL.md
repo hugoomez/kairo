@@ -59,6 +59,11 @@ literature search, step 4) and **type** + **autonomy_defaults** (gate steps 4–
   instead of the vault root, or `.mcp.json` changed without a restart / `/mcp`
   reconnect), and
   mark step 3 as run without vault-similarity coverage.
+- Zotero available locally (`localhost:23119`, "Allow other applications..."
+  enabled) for step 6's ingestion. Optional — see the plugin README → "Zotero
+  (reference manager)" for setup. When unreachable, step 6 falls back to
+  writing the `Papers/` note directly and says so; it never silently skips the
+  Zotero add.
 
 ## Procedure
 
@@ -126,24 +131,50 @@ show it to the user in both modes (it is never auto-ingested) — a relevant pap
 held out only by an `Alcance: Fuera` clause is a scope decision the researcher
 may want to revisit.
 
-### 6. Ingest each confirmed paper
+### 6. Ingest each confirmed paper — via Zotero
 
-For each confirmed paper:
+For each confirmed paper, add it to Zotero **first**, then generate the
+`Papers/` note from that Zotero entry. See the plugin README → "Zotero
+(reference manager)" for the endpoints and one-time setup this step assumes.
 
 1. **PDF:** if openly available (Semantic Scholar `openAccessPdf`, arXiv PDF
    link), download it. If not, skip the download — do not paywall-scrape.
-2. **Full text:** extract from the PDF when you have it; otherwise fall back to
-   the abstract and mark the note `fulltext: abstract-only`.
-3. **Note:** dedup by DOI → arXiv id → title similarity against existing
-   `Papers/` notes.
+2. **Dedup, Zotero-side first:** Better BibTeX `item.search` for the DOI, then
+   the arXiv id, then title. A hit means this paper already has a Zotero
+   record (possibly from another project) — reuse it, don't create a second
+   one; add a `PROJ-XXX` tag to it via the same JSON-RPC item-update path
+   instead. No hit → create a new item.
+3. **Add to Zotero (new items only):** `POST
+   http://127.0.0.1:23119/connector/saveItems` with one item — `itemType`
+   `preprint` for an arXiv-only record, `journalArticle`/`conferencePaper` when
+   a venue is known, `patent` for PatentsView candidates; `title`, `creators`
+   (split `Last, First` into `firstName`/`lastName`), `date`, `DOI`, `url`,
+   `abstractNote`, and a `tags` entry for `PROJ-XXX`. If the PDF downloaded in
+   step 1, attach it in the same call so Zotero holds its own copy.
+4. **Read the record back:** Better BibTeX `item.citationkey` for the stable
+   key (→ note frontmatter `zotero_key`), `item.export` (format `CSL-JSON`) for
+   clean title/authors/date/DOI/abstract — these populate `## Referencia` and
+   `## Resumen` below, replacing what step 6 used to take straight from the
+   arXiv/Semantic Scholar/PatentsView response.
+5. **Full text:** extract from the downloaded PDF when you have it (same
+   process as before, independent of Zotero); otherwise fall back to the
+   Zotero/CSL-JSON abstract and mark the note `fulltext: abstract-only`.
+6. **Note:** dedup against existing `Papers/` notes by `zotero_key` first (a
+   paper already ingested for another project has one), then DOI → arXiv id →
+   title similarity, same as before.
    - **New:** create `Papers/<P-id> <short-title>.md` (next `P-XXXX`, scan
      `Papers/` frontmatter for the max), `projects: [<PROJ-XXX>]`.
    - **Exists (from another project):** append `<PROJ-XXX>` to its `projects:`
      list; refresh full text only if the note had none.
-4. Include a short **bibliographic section** (see Paper note format below).
+7. Include a short **bibliographic section** (see Paper note format below).
 
-**v1 scope:** no automatic Zotero sync — create the Obsidian note directly. Real
-Zotero integration is a fast-follow, out of scope here.
+**Zotero unreachable (not running, or "allow other applications" disabled):**
+don't silently skip it and don't block ingestion either — tell the researcher
+plainly (e.g. "⚠️ Zotero unavailable — P-00NN ingested without a Zotero
+record"), fall back to building the note directly from the
+arXiv/Semantic-Scholar/PatentsView response as before v1, and leave
+`zotero_key` out of that note's frontmatter (not empty-string — omitted, so a
+later retrofit pass can find these by the field's absence).
 
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
 
@@ -292,6 +323,8 @@ projects: [<PROJ-XXX>]
 added: <YYYY-MM-DD>
 source: <arxiv | semantic-scholar | patentsview | manual>
 fulltext: <full | abstract-only>
+zotero_key: <Better BibTeX citekey, or Zotero's raw item key if BBT was
+  unreachable — omit the field entirely if Zotero itself was unreachable>
 ---
 
 ## Referencia
@@ -334,6 +367,12 @@ When a paper is already ingested for another project, only append this project's
 - **Promoting a seed hypothesis past `propuesta`.** Not this skill's job.
 - **Duplicating a `Papers/` note that already exists for another project.**
   Append to `projects:` instead.
+- **Duplicating a Zotero item that already exists for another project.** Same
+  principle as the note-level dedup, one level earlier: `item.search` by
+  DOI/arXiv id/title *before* `saveItems`, and tag the existing item with the
+  new `PROJ-XXX` instead of creating a second Zotero record for the same paper.
+- **Blocking ingestion because Zotero is down.** Degrade and flag it (see step
+  6) — a missing optional companion doesn't stop the pipeline.
 - **Paywall-scraping a closed-access PDF.** Open-access only; else abstract-only.
 
 ## Not in v1
