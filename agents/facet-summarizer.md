@@ -41,9 +41,19 @@ two `(para el reduce)` headings below.
 ## Citation rule — every claim
 
 Every bullet ends with a specific location: `P-XXXX §Sección`, `P-XXXX Tabla N`,
-or `P-XXXX Figura N`, taken from that note's `## Texto completo`. A claim with no
-citable location does not go in. Never paraphrase across papers without saying
-which paper each part came from.
+or `P-XXXX Figura N`.
+
+**Before writing that locator, re-read the exact bullet(s) under that `§N` /
+`Tabla N` / `Figura N` heading in the note's `## Texto completo` — not the
+paper's `## Resumen`, not the note as a whole, and not a locator you recall
+using for this paper on an earlier facet or an earlier project.** Your
+sentence must paraphrase what is specifically written under that heading. If
+the claim is actually supported by a *different* heading than the one that
+first came to mind, cite that heading instead — never the one that merely
+sounds closest or that you've used before for something adjacent. A claim
+with no citable location does not go in. Never paraphrase across papers
+without saying which paper each part came from, and never write a locator
+you have not just re-read in this pass.
 
 ## Output — the ONLY thing you return
 

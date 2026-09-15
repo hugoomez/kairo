@@ -210,6 +210,19 @@ curated subset.
 The created note's **`## Justificación (evidencia citada)`** cites specific papers
 as `P-XXXX §Sección / Tabla N / Figura N — qué muestra y cómo sostiene el claim`.
 
+**Before writing any such locator, re-open the source `Papers/P-XXXX.md` note
+and read the exact bullet(s) under that `§Sección` / `Tabla N` / `Figura N`
+heading in its `## Texto completo`.** The citing sentence must paraphrase what
+is specifically written there — not the paper as a whole, and not a citation
+for the same paper already used elsewhere for this project (an earlier
+hypothesis's `Justificación`, or `Estado-del-arte.md`). If the claim is
+actually supported by a different section than the one that first came to
+mind, cite that section instead. If the fact you're about to cite is a
+near-duplicate of something already cited elsewhere in this project (same
+paper, same or adjacent claim), look up and reuse that earlier citation's
+exact locator rather than re-deriving your own — never let the same fact
+carry two different section numbers across the project.
+
 **Exception — `generated_by.origin: human`:** missing *direct* literature support
 does **not** block the hypothesis. Search for supporting context anyway; cite what
 genuinely bears on it. If nothing does, write exactly:
@@ -472,6 +485,14 @@ count never exceeded budget and no tournament was needed.
   `producto`/`hibrido`.
 - **Forcing a citation for a human-origin claim.** Use the exact
   "intuición del investigador…" string instead.
+- **Citing a section from memory of an earlier citation instead of re-reading
+  it.** A confidently-wrong locator is worse than an obviously missing one —
+  it looks verified and isn't. Re-open the exact heading every time, even for
+  a paper already cited elsewhere in this project.
+- **The same fact carrying two different section numbers across the
+  project.** If this hypothesis restates a fact already cited in
+  `Estado-del-arte.md` or another hypothesis, reuse that exact locator
+  instead of re-deriving a fresh one.
 - **Creating a note for a clear fail.** Discards get an appended `_digest.md` line
   and no note — the *only* exception is option 3 of "On a clear fail" (an explicit,
   logged human override), never an agent decision.

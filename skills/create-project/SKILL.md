@@ -203,6 +203,20 @@ add the frontmatter and per-section staleness notes below, append the Búsqueda
 ejecutada block, and add the `## Matriz de conceptos` appendix when it is
 warranted (see the gate below).
 
+**Citation consistency during the merge — the specific failure this guards
+against.** If a fact being merged restates something already cited elsewhere
+in the document you're assembling (same paper, same or adjacent claim — two
+facets both describing what one paper says about the same mechanism, or the
+same numeric result showing up under both "Línea de evolución" and "Lo
+establecido"), **do not re-derive the citation independently for the second
+occurrence.** Look up the locator already used the first time and reuse it
+verbatim. If the two occurrences disagree on the section number, that
+disagreement is itself the signal that one of them is wrong — stop and
+re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
+before writing either one; do not resolve the conflict by just picking
+whichever number was written down first. Never let the same fact carry two
+different section citations in the finished document.
+
 **If `literature-search` returned a `## ⚠️ Cobertura degradada` block** (a facet
 lost its anchor or relevance pass), reproduce it **verbatim at the very top of
 `Estado-del-arte.md`**, directly under the frontmatter — not only inside the
@@ -232,7 +246,12 @@ genuinely competing schools exist; include **§9 only if** `type` is
 
 **Every claim cites a specific paper id + section/table/figure** where possible
 (e.g. `P-0007 §4.2`, `P-0012 Tabla 3`). A claim with no citable source does not
-go in.
+go in. **Before writing (or copying forward from a subagent's contribution) any
+such locator, re-open that exact heading in the source `Papers/P-XXXX.md` note
+and confirm the sentence paraphrases what's under it — not the paper in
+general, and not a similar-looking citation used earlier in this document.**
+This applies to §4 and §8, which the Reduce pass drafts itself, exactly as it
+applies to merging subagent contributions.
 
 **Optional appendix — `## Matriz de conceptos`.** When the ingested set is large
 enough to be hard to hold in the head (roughly **> 15 papers**), add a concept ×
@@ -361,6 +380,14 @@ When a paper is already ingested for another project, only append this project's
   the strong matches, but still *list* the rest as a notification.
 - **Uncited claims in `Estado-del-arte.md`.** Every claim needs a paper id +
   location. Drop it or find the source.
+- **Citing a section from memory of a similar earlier citation instead of
+  re-reading it.** A cited-but-wrong locator is worse than an obviously
+  missing one — it looks verified and isn't. Re-open the exact heading every
+  time, even for a paper you just cited two paragraphs ago.
+- **The same fact carrying two different section numbers in one document.**
+  If a fact restates something already cited elsewhere in this
+  `Estado-del-arte.md`, reuse that exact locator — don't re-derive a fresh
+  one that can drift from it.
 - **Renumbering the SOTA sections when §4/§9 are omitted.** Keep the canonical
   titles and order; just leave the conditional ones out.
 - **More than 5 seed hypotheses on the first pass.** Cap at 5.
