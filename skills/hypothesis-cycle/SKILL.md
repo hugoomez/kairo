@@ -1,6 +1,6 @@
 ---
 name: hypothesis-cycle
-description: Use when turning a research gap or a researcher's one-line claim into a vetted hypothesis note for a project in a Kairo vault. Runs dedup, falsifiability/novelty, known-failure, and severe-test checks with a short refinement loop before creating a `propuesta` note. v1 (default) is a single-critic cycle. v2 (opt-in, needs `DEEPINFRA_TOKEN`) adds a second, independent critic on Checks 3/4 and escalates any disagreement to human review instead of resolving it automatically. Invoked by create-project for gap-derived candidates, or directly when the user proposes a claim.
+description: Use when turning a research gap or a researcher's one-line claim into a vetted hypothesis note for a project in a Kairo vault. Runs dedup, falsifiability/novelty, known-failure, and severe-test checks with a short refinement loop before creating a `propuesta` note. v1 (default) is a single-critic cycle. v2 (opt-in, needs `DEEPINFRA_TOKEN`) adds a second, independent critic on Checks 3/4 and escalates any disagreement to human review instead of resolving it automatically. On budget overflow (orthogonal to v1/v2), runs a pairwise Elo tournament, an evolution step, and an opportunistic serendipity-scan-seeded wildcard to decide who advances now vs. queues, plus an end-of-cycle meta-review note. Invoked by create-project for gap-derived candidates, or directly when the user proposes a claim.
 ---
 
 # Hypothesis Cycle
@@ -295,17 +295,122 @@ status change" step 2). So appending here is safe — a later regeneration will 
 drop your row, and it must not: losing it would let the rejected candidate be
 re-proposed.
 
-## Budget overflow
+## Budget overflow — tournament, evolution, wildcard, meta-review
 
 Create **all** passing candidates as `propuesta` notes (next `H-XXXX` each), in
 generation order. Run the budget check once, after every candidate for this run
 exists.
 
-If the count exceeds the project's per-cycle budget (`create-project` caps the
-first pass at 5; default 3–5), hand the **ordered list of overflow `H-XXXX` ids**
-to **`update-confidence`** — trigger `budget overflow` — which transitions each
-`propuesta → en_cola` in that order and writes their `history`. This skill never
-writes `en_cola` itself. No ranking, no tournament — that's v2.
+If the count is within the project's per-cycle budget (`create-project` caps
+the first pass at 5; default 3–5), stop here — every candidate stays
+`propuesta`, no tournament needed. Still run **Step 4 (meta-review)** below;
+that step runs at the end of every cycle regardless of overflow.
+
+If the count **exceeds** the budget, run these steps in order. They change
+**who competes for the budget**, nothing else — the three-outcome logic
+above (pass / clear fail / rounds exhausted) is unchanged and already
+finished by the time these steps start; nothing here re-opens a check or
+re-classifies an outcome.
+
+### Step 1 — Wildcard (at most one per cycle, opportunistic)
+
+Before ranking, try to seed one deliberately divergent candidate:
+
+1. Call `serendipity-scan` for this project — mechanism 2 (boundary-spanning
+   citations) is eligible whenever `Papers/` has ≥3 notes tagged with this
+   `PROJ-XXX`; mechanism 1 (structural analogy) is additionally eligible if
+   the project has a resolved hypothesis with a filled `## Lección`. Let
+   `serendipity-scan` apply its own eligibility rules and combined cap — do
+   not loosen them to force a result.
+2. If nothing survives its cap, **skip the wildcard step silently** — don't
+   retry, don't lower the bar, don't treat it as a cycle failure. This is
+   opportunistic, not mandatory.
+3. If ≥1 lead survives, take the strongest one and draft **one** new
+   candidate package (claim + test sketch) whose claim is genuinely inspired
+   by the lead's abstracted pattern or bridging edge — a different angle than
+   anything already generated this cycle, not a rephrasing of an existing
+   candidate. Tag it `origin_flag: wildcard` in frontmatter for later note
+   metadata (`generated_by.origin` still reads `agent`).
+4. Run it through **Checks 1–4 exactly like any generated candidate**,
+   including a real Check 2 novelty search on the new claim. **Never cite the
+   serendipity lead itself in this candidate's `Justificación`** — it must
+   earn its citations the normal way, or the "additive and disposable, never
+   auto-merged" guarantee `serendipity-scan` makes to the researcher breaks.
+   If the wildcard candidate fails or gets refined away, that's a normal
+   cycle outcome (discard / refine as usual) and the wildcard slot for this
+   cycle is simply spent — don't call `serendipity-scan` again this cycle.
+
+### Step 2 — Tournament (only if the passing count, wildcard included, still exceeds budget)
+
+If Step 1's wildcard brought the passing count back down to budget or below
+(i.e., it's the only one over), skip straight to Step 3 — there's nothing to
+rank. Otherwise:
+
+1. Give every candidate that passed Checks 1–4 this cycle (gap-derived,
+   human-submitted, and the wildcard if it passed) a starting **Elo of
+   1500**.
+2. Run **`min(N-1, 4)` rounds** of Swiss-style pairing — each round pairs
+   candidates adjacent in current Elo order (highest with next-highest,
+   etc.), never repeating a pair within the same cycle. This is "a handful
+   of comparisons," never an exhaustive round-robin.
+3. Each match is a **short simulated debate**: argue briefly for each
+   candidate on four fixed dimensions — (a) severity of its Check 4 test
+   against its named rival, (b) novelty/impact if confirmed, (c) feasibility
+   of the test sketch given typical project resources, (d) citation strength
+   of its `Justificación`. Declare one winner (no draws; break a genuine
+   tie on citation strength). Update both candidates' Elo with the standard
+   formula, `K=32`.
+4. After the last round, sort candidates by final Elo, descending.
+
+### Step 3 — Advance vs. queue
+
+The **top `budget` candidates** by final Elo stay `propuesta` — they're
+already created; nothing to do. Hand the **rest, in ascending Elo order**
+(weakest first), to **`update-confidence`** — trigger `budget overflow` —
+which transitions each `propuesta → en_cola` and writes their `history`,
+exactly as before. **This skill still never writes `en_cola` itself.**
+
+For every candidate that went through a tournament match (won or lost),
+record its final Elo and a one-line reason from its last debate in its
+`## Revisión del ciclo` (append to the section if a refinement round already
+put it there; create the section for this reason alone if not) — the
+ranking must be traceable from the note itself, not only from the run's
+chat output.
+
+### Step 4 — Evolution (only if ≥2 candidates passed this cycle)
+
+Take the **top 2 candidates** by final Elo (or, if no tournament ran because
+the count never exceeded budget, the two you'd judge strongest on the same
+four dimensions from Step 2.3). Draft **one** new candidate package whose
+claim genuinely **combines a mechanism or contrast from each parent** — not
+a restatement of either and not a checklist union of both. Note the
+parentage inline in your own working notes (`combina <claim A resumida> +
+<claim B resumida>`) — this does not become an extra section in the final
+note; the created note reads like any other hypothesis-cycle note.
+
+Run it through Checks 1–4 exactly like any generated candidate. It did not
+exist during Step 2/3, so a pass **never reopens this cycle's already-decided
+ranking** — file it as `propuesta` and let it compete honestly in the
+*next* cycle's tournament if a future overflow arises. A fail or discard here
+is a normal outcome; evolution is one attempt per cycle, no retry.
+
+### Step 5 — Meta-review (every cycle, overflow or not)
+
+At the end of every full cycle, write a short note (5–10 lines, in the
+project's language) naming **patterns across this round's critiques** — e.g.
+"3 of 4 candidates needed a Check 4 refinement round (weak-contrast
+problem)", "the second critic disagreed only on Check 3 this round", "the
+wildcard's Check 2 search independently surfaced the same paper the
+serendipity lead pointed at." Append it to `Projects/<slug>/_digest.md` under
+a running `## Meta-revisión` section (create the section on first use), one
+dated entry per cycle, oldest first.
+
+At the **start** of the next `hypothesis-cycle` run for this project, read
+the most recent 1–2 `## Meta-revisión` entries before generating candidates.
+Let them inform what to watch for this round (e.g., spend more care on
+rival selection if last cycle flagged a recurring weak-contrast problem) —
+never treat a past entry as a hard rule, and never repeat it verbatim in the
+new note.
 
 ## Frontmatter + sections for created notes
 
@@ -346,12 +451,16 @@ only (`second-critic`, cloud-hosted, tiered by stakes), with disagreement
 escalating to `needs_human_review: true` rather than being resolved
 automatically; a persistent agreement/cost log.
 
-**Not in v1 or v2:** tournament or head-to-head ranking of competing
-candidates; evolution / meta-review of the critic itself; formal power
-analysis of *this* skill's own checks (the `completo` preregistration tier's
-power analysis is a different thing — see `preregister-experiment`). Budget
-overflow → `update-confidence` marks `en_cola` in generation order — no
-ranking.
+**Not in v1 or v2:** formal power analysis of *this* skill's own checks (the
+`completo` preregistration tier's power analysis is a different thing — see
+`preregister-experiment`).
+
+**Orthogonal to v1/v2 — always active on overflow:** the tournament /
+evolution / wildcard / meta-review mechanism in "Budget overflow" applies
+whether the cycle ran in v1 or v2, and does not change Checks 1–4 themselves.
+Budget overflow → `update-confidence` marks `en_cola` in **tournament order**
+(weakest final Elo first) when a tournament ran, or generation order when the
+count never exceeded budget and no tournament was needed.
 
 ## Common mistakes
 
@@ -391,6 +500,22 @@ ranking.
   for that run.
 - **Writing `en_cola` (or any transition) directly.** This skill only creates
   notes at `propuesta`; budget overflow and everything after go through
-  `update-confidence` (trigger `budget overflow`, then `evidence result` etc.).
-  Ranking overflow candidates is also out — `update-confidence` queues them in
-  generation order; ranking is v2.
+  `update-confidence` (trigger `budget overflow`, then `evidence result` etc.)
+  — the tournament decides the *order* it hands over, never the transition
+  itself.
+- **Running an exhaustive round-robin tournament.** `min(N-1, 4)` Swiss-style
+  rounds is the ceiling — "a handful of comparisons," not every pair.
+- **Citing the wildcard's serendipity lead directly in its `Justificación`.**
+  The lead only seeds the claim; the candidate earns its own citations
+  through a real Check 2 search, same as any other candidate.
+- **Forcing the wildcard step on a thin corpus or with no resolved
+  hypothesis.** If `serendipity-scan`'s own eligibility rules or cap rule it
+  out, skip the step silently — don't loosen its bar to fill a slot.
+- **Letting an evolution or wildcard candidate reopen an already-decided
+  tournament ranking.** A pass after Step 2/3 has run competes in the *next*
+  cycle's tournament, not this one.
+- **Skipping the meta-review because there was no overflow this cycle.** Step
+  5 runs at the end of every cycle, overflow or not.
+- **Treating a past `## Meta-revisión` entry as a hard rule or repeating it
+  verbatim in a new note.** It's context to inform judgement, not a
+  checklist item to satisfy.

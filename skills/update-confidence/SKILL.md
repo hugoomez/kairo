@@ -186,9 +186,15 @@ diverged (different data regime, population, scale, implementation detail…):
      regeneration — never drop a discard row just because no note backs it.
    - Write the merged table: hypothesis rows (sorted by `id`) first, then the
      preserved discard rows in their existing order.
+   - **`## Meta-revisión` section** (below the table, if present — written by
+     `hypothesis-cycle`'s end-of-cycle meta-review step): **preserve verbatim,
+     unchanged, in its existing order.** This regeneration only rebuilds the
+     table above it; it never touches this section.
 
    Losing a discard row would let a rejected candidate be re-proposed — the exact
-   failure the ledger exists to prevent.
+   failure the ledger exists to prevent. Losing the meta-review section would
+   silently erase the cross-cycle context `hypothesis-cycle` reads at the start
+   of its next run.
 
 3. **Update `Projects/<slug>/Estado-del-arte.md`** — only for evidence edges (skip
    for queue / prereg / run-start edges):

@@ -1,6 +1,6 @@
 ---
 name: serendipity-scan
-description: Use when a researcher explicitly asks for a serendipity scan on a Kairo project or one specific resolved hypothesis — looking for structural analogies in distant-field literature, or papers that bridge this project's field with an unrelated one via citation structure. Human-invoked only: never triggered automatically by another skill, hypothesis-cycle, or a background job.
+description: Use when a researcher explicitly asks for a serendipity scan on a Kairo project or one specific resolved hypothesis — looking for structural analogies in distant-field literature, or papers that bridge this project's field with an unrelated one via citation structure. Otherwise human-invoked only. The one automated caller is hypothesis-cycle's budget-overflow wildcard step (see that skill) — never a background job, schedule, or any other skill.
 ---
 
 # Serendipity Scan
@@ -37,12 +37,23 @@ optionally one resolved hypothesis (`H-XXXX`).
 
 **When not to use / when not to trigger:**
 
-- Never invoked automatically by `hypothesis-cycle`, `literature-search`,
-  `create-project`, or any other skill — there is no caller wiring for this
-  skill, by design. If you're a skill considering calling this one, don't;
-  point the researcher at it instead.
-- Never run as a scheduled or batch sweep. It is a per-invocation, per-project
-  scan a human starts and reads.
+- Never invoked automatically by `literature-search`, `create-project`, or
+  any other skill — there is no caller wiring for those. If you're a skill
+  other than `hypothesis-cycle` considering calling this one, don't; point
+  the researcher at it instead.
+- **One sanctioned exception:** `hypothesis-cycle`'s budget-overflow wildcard
+  step (see that skill's "Budget overflow" section) calls this skill
+  automatically — at most once per cycle, only after overflow has already
+  triggered a tournament, and only to seed one new candidate claim. That call
+  still obeys every invariant below: mechanism 1 still needs a resolved
+  hypothesis with a filled `## Lección`, mechanism 2 still needs ≥3 tagged
+  papers, the combined cap still applies, and the lead it returns is still
+  never cited or merged as evidence directly — `hypothesis-cycle` only uses
+  it to inspire a claim that then earns its own citations through a real
+  Check 2 search, same as any other candidate. This is the only automated
+  caller that may exist; do not add another.
+- Never run as a scheduled or batch sweep outside that one wildcard call. It
+  is otherwise a per-invocation, per-project scan a human starts and reads.
 - Not a substitute for `literature-search` — that skill is the citation
   workhorse for anything a hypothesis actually needs to cite. This skill is
   for leads *outside* that pipeline's reach.
@@ -166,10 +177,17 @@ lower the bar to fill the section.
 
 ## Common mistakes
 
-- **Wiring this into another skill's pipeline.** No caller may invoke this
-  automatically — see **When not to use**. If you're tempted to call it from
-  `hypothesis-cycle`'s novelty check or a scheduled sweep, don't; surface it
-  as a suggestion to the human instead.
+- **Wiring this into another skill's pipeline.** Only `hypothesis-cycle`'s
+  budget-overflow wildcard step may invoke this automatically — see **When
+  not to use**. If you're tempted to call it from `hypothesis-cycle`'s
+  novelty check (Check 2), a different skill, or a scheduled sweep, don't;
+  surface it as a suggestion to the human instead.
+- **(hypothesis-cycle caller only) Citing the lead directly as evidence.**
+  The wildcard step may use a lead to inspire a new claim; it may never put
+  the lead itself in that candidate's `Justificación` — the candidate earns
+  its own citations through a real Check 2 search, exactly like any other
+  candidate. Skipping that search and citing the lead instead is the exact
+  auto-merge this skill's output is not allowed to have.
 - **Searching the domain nouns instead of the abstracted pattern.** That's
   just `literature-search` with extra steps and will surface same-field
   papers this skill exists to route around.
@@ -201,5 +219,7 @@ lower the bar to fill the section.
   goes through to become a real `Papers/` note.
 - `spawn-hypothesis` / `hypothesis-cycle` — where a promoted candidate goes if
   it motivates a new hypothesis rather than just supporting an existing one.
+  `hypothesis-cycle`'s "Budget overflow" section is also this skill's one
+  automated caller (the wildcard step) — see **When not to use** above.
 - `${CLAUDE_PLUGIN_ROOT}/templates/hypothesis-template.md` (`## Lección`) —
   the field mechanism 1 reads.

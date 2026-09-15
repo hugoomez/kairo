@@ -39,6 +39,11 @@ needs_human_review: false
 paper_thread: <slug-or-id>
 # spawned_from — optional: the note that generated this one
 spawned_from: <H-XXXX | E-XXXX | F-XXX>
+# origin_flag — optional: set by hypothesis-cycle's budget-overflow steps.
+#   wildcard  — seeded by a serendipity-scan lead (see hypothesis-cycle "Budget overflow")
+#   evolution — combines two top-ranked candidates from a tournament round
+# Omit entirely for an ordinary gap-derived or human-submitted candidate.
+origin_flag: <wildcard | evolution>
 # history — append-only. Never edit or remove past entries; only append.
 # Written only by update-confidence for every post-creation status transition.
 history:
