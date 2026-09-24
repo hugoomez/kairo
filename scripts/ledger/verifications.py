@@ -269,6 +269,10 @@ def append(path: str, verifier: str, model: str, verdict: str, scope: str,
         if heading not in body_headings(lines, hi):
             raise InputError(f"section '## {heading}' does not exist verbatim "
                              "in the note")
+        if any(heading.startswith(n) for n in ("Revisión del ciclo", "Hipótesis rival descartada",
+                                                "Lección", "Verificación independiente")):
+            raise InputError(f"section '## {heading}' is never verified on its own "
+                             "(it carries reasoning / critiques / prior verdicts)")
     rep = parse_report(report) if report else None
     if rep and rep["verdict"] != verdict:
         raise InputError(f"--verdict {verdict} disagrees with the report's "

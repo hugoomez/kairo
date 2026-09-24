@@ -72,6 +72,16 @@ TEST_SKETCH_RE = re.compile(
     r"^(test sketch|esbozo( del| de)? test|boceto( del| de)? test)\b", re.I)
 
 
+# Sections that carry reasoning, critiques or prior verdicts. Never verifiable
+# on their own and never sent in any mode — `--section` cannot reach them.
+NEVER_SECTIONS = ("Revisión del ciclo", "Hipótesis rival descartada", "Lección",
+                  "Verificación independiente")
+
+
+def never_sent(heading: str) -> bool:
+    return any(heading.strip().startswith(n) for n in NEVER_SECTIONS)
+
+
 def hyp_section_allowed(heading: str) -> bool:
     if heading == "Claim":
         return True
@@ -411,6 +421,9 @@ def build(vault: str, note: str, experiments: list[str],
     headings = [h for h, _ in sections]
     if section is not None and section not in headings:
         raise ValueError(f"section '## {section}' not found in {note}")
+    if section is not None and never_sent(section):
+        raise ValueError(f"section '## {section}' carries reasoning / critiques / prior "
+                         "verdicts and is never sent to the verifier")
     inc, exc = [], []
     fm_inc, fm_exc = [], []
     for k, lines in frontmatter_blocks(fm):

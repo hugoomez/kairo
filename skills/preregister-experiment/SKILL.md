@@ -49,7 +49,7 @@ analyze a run (separate skills).
    Refuse if its `status` is anything else — **except** for an exploratory
    ladder rung (step 0), which may also be preregistered while the hypothesis is
    `preregistrada` or `en_experimento` (a rung never moves status, so it can
-   diagnose a design that already failed, as for E-0001/E-0002). **Also refuse** while its governing
+   diagnose a design whose earlier runs came back invalid). **Also refuse** while its governing
    fresh verification is unresolved — i.e. while
    `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py gate --note <H-XXXX.md>`
    exits `3` (latest `scope: note` entry `errors_found` or `cannot_assess` AND
@@ -79,6 +79,11 @@ mechanically (step 1b), never picked first and rationalized after. **Hard
 floor — no override.** Once `completo` is required, there is no in-spec way
 to freeze at `ligero` anyway; an unresolved requirement blocks the freeze
 exactly like an open `crítico` risk (see "Flagging risks and ambiguities").
+The floor applies to every preregistration that can count as evidence — i.e.
+`role: confirmatory`. **Exploratory ladder rungs (step 0) are exempt and are
+always `ligero`**, even for a `linea_publicacion` hypothesis: they never
+adjudicate anything (`update-confidence` refuses them), so a power
+justification would buy nothing.
 
 **Independent of tier — `analysis_plan`:** `frequentist` (the existing
 mechanical test) or `bayesian` (a Bayes factor, computed via a versioned
@@ -102,8 +107,12 @@ show the effect at all — before a multi-GPU-hour run finds out instead.
   GPU or its estimated cost is ≥ 1 GPU-h or unknown; **or**
 - the design reproduces a paper's method and step 3f would end in case 3
   (`method_provenance: reimplemented_from_text`) — whatever the cost. A method
-  rebuilt from text is exactly where a cheap rung pays off (E-0001: LayerNorm
-  and a tied unembedding the paper's code never had).
+  rebuilt from text is exactly where a cheap rung pays off (the E-0001 failure
+  mode in "Common mistakes" below). A rung can also expose an instrument
+  defect — a stopping rule that cannot fire before the effect has already
+  happened — at toy scale. Caveat: a model detail that suppresses an effect
+  only at full scale may look harmless at rung 0, so a clean rung 0 lowers,
+  not removes, the step 3f `crítico` risk.
 
 If `hypothesis-cycle` already drafted a `## Escalera de simplificación` plan
 for this hypothesis, start from it. The researcher may decline; record the
@@ -465,7 +474,10 @@ Once `status: preregistered` (and absolutely once code has run), the original
 sections — `## Predicción`, `## Plan de análisis` (including the stopping rule),
 `## Variables` (including the primary/secondary split), `## Diseño`,
 `## Umbral de invalidez`, `## Manifiesto de entorno`, and the `environment` /
-`frozen_*` / `tier` / `analysis_plan` / `method_provenance` frontmatter — are **immutable**.
+`frozen_*` / `tier` / `analysis_plan` / `method_provenance` / `role` / `rung` /
+`informed_by_rungs` frontmatter — are **immutable**. (`evidence_gate.py`
+enforces `role` / `rung`: it compares them with the note as first committed and
+refuses a rung relabelled `confirmatory` afterwards.)
 
 Every later change goes in a `## Enmiendas` section, append-only:
 

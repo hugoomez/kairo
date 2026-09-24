@@ -254,6 +254,28 @@ class ClaimWriter(LedgerFixture):
         self.assertIn("| H-0001 | C-0001 | 0 | E-0001 | pendiente |",
                       (self.proj / "_ledger.md").read_text(encoding="utf-8"))
 
+    def test_column0_block_list_propagates(self):
+        # review finding: `depends_on:\n- C-0001` (valid YAML) used to be dropped silently
+        a = self.claim("A")
+        p = self.proj / "Hipotesis" / "H-0001 x.md"
+        p.write_text(HYP.format(id="H-0001", status="propuesta", deps="")
+                     .replace("depends_on:   # comment kept", "depends_on:\n- C-0001"),
+                     encoding="utf-8")
+        _run(claim_status.main, ["set", "--note", str(a), "--status", "refutado", "--by", "t",
+                                 "--evidence", "x"])
+        _, out, _ = _run(build_graph.main, ["--vault", str(self.vault), "--json"])
+        self.assertEqual({f["node"] for f in json.loads(out)["findings"]}, {"H-0001"})
+
+    def test_set_preserves_crlf(self):
+        c = self.claim("x")
+        c.write_bytes(c.read_bytes().replace(b"\n", b"\r\n"))
+        code, _, err = _run(claim_status.main, ["set", "--note", str(c), "--status", "probado",
+                                                "--by", "t", "--evidence", "ok"])
+        self.assertEqual(code, 0, err)
+        raw = c.read_bytes()
+        self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
+        self.assertIn(b"status: probado\r\n", raw)
+
     def test_ids_are_vault_wide(self):
         other = self.vault / "Projects" / "other"
         (other / "Claims").mkdir(parents=True)

@@ -31,6 +31,17 @@ backend. Three things make it Kairo rather than a leaderboard:
 researcher's **subscription quota**. Nothing runs without an explicit, per-run
 approval of a shown estimate, a per-call cap, a run cap and an iteration cap.
 
+**Isolation, honestly.** The candidate process gets a scrubbed environment
+(no API keys, no `HOME` / `USERPROFILE`, no run or held-out paths), a temp
+working dir, a timeout that kills its whole process tree, and it only ever
+receives inputs. It is **not** an OS sandbox: evolved code runs with your user's
+file access and could, in principle, search the disk. The controls that make
+that detectable or useless are mechanical — the scorer lives in the harness,
+frozen files are hashed around every evaluation, the held-out path is never
+written under the run dir, and the held-out re-score exposes a program that
+learned the train split rather than the task. Run on a machine/user without
+access to anything you would not want read, exactly as for `paper-to-tool`.
+
 ## When to use
 
 - The researcher asks for it ("evolve a better X for objective Y", "search
@@ -98,12 +109,15 @@ python ${CLAUDE_PLUGIN_ROOT}/skills/evolve-program/scripts/evolve_run.py freeze 
     --entrypoint solve --eval-timeout 10 --max-heldout-gap 0.05 [--feedback-points 8]     --run-dir <sandbox>/EVO-XXXX
 ```
 
-The run directory lives **outside the vault** (default `~/.kairo-sandbox/`,
-`KAIRO_SANDBOX` overrides it, same rule as `paper-to-tool`): evolved code is
-third-party-grade code executing on your machine. `freeze` copies the task,
+The run directory must live **outside the vault** — e.g.
+`~/.kairo-sandbox/EVO-XXXX` (same rule as `paper-to-tool`; `freeze` refuses a
+path inside a directory holding both `Projects/` and `Papers/`): evolved code
+is third-party-grade code executing on your machine. `freeze` copies the task,
 harness and train split into `frozen/`, makes them read-only, and writes
-`evolve.lock.json` (hashes) + `heldout.lock.json` (held-out path + hashes —
-never given to evolution).
+`evolve.lock.json` (hashes). The held-out split is **not** copied and its
+path is **not stored** anywhere in the run dir — only its hashes are frozen.
+`run`, `rescore` and `bundle` take `--heldout <dir>` again and refuse (exit 2)
+a directory that doesn't match the frozen hashes.
 
 Then create the preregistration note `Projects/<slug>/Evolucion/EVO-XXXX.md`
 (next vault-wide `EVO-` id, zero-pad 4) and commit it before any `plan`/`run`:
@@ -170,7 +184,7 @@ logged total reaches it; concurrent workers may overshoot by at most
 ### 5. Run
 
 ```
-python .../evolve_run.py run --run-dir <run> --approve <token>
+python .../evolve_run.py run --run-dir <run> --approve <token> --heldout <heldout dir>
 ```
 
 The driver re-checks the lock, re-runs the billing check (without the test
@@ -190,7 +204,8 @@ Evolution itself always runs locally on a CPU-scorable proxy. If the final
 re-score (or the later confirmatory experiment) needs a GPU, build a bundle:
 
 ```
-python .../evolve_run.py bundle --run-dir <run> --program best_program.py --out <dir> --split heldout
+python .../evolve_run.py bundle --run-dir <run> --program best_program.py --out <dir> \
+    --split heldout --heldout <heldout dir>
 ```
 
 It contains only the frozen task/harness/runner, the program, one split and a
@@ -247,7 +262,10 @@ frozen max), baseline, calls and spend, lineage claim ids. Then:
 - **Letting the candidate score itself.** Only the harness scores, from
   outputs and targets the candidate never sees.
 - **Putting the held-out split in the run dir, the prompt, or the
-  environment.** Only `rescore` / the final step read it.
+  environment.** Only the final step reads it (plus `bundle`, and `rescore`
+  for audits). Every held-out scoring is appended to `HELDOUT_LOG.jsonl`; an
+  audit `rescore` is labelled `importante` and a program chosen after seeing
+  held-out scores cannot be reported as generalising on it.
 - **Running without a shown estimate and an approval token**, or with an
   API key in the environment, or with `--bare`.
 - **Dropping failed lineage.** The final `refutado` claim is the record that

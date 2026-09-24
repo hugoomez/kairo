@@ -37,8 +37,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from notes import (append_block_entry, join_note, parse_frontmatter,  # noqa: E402
-                   set_scalar, split_note)
+from notes import (append_block_entry, join_note, newline_of,  # noqa: E402
+                   parse_frontmatter, set_scalar, split_note)
 
 __version__ = "1.0.0"
 TOOL = f"kairo/claim_status@{__version__}"
@@ -73,7 +73,7 @@ def next_claim_id(vault: Path) -> str:
         if m:
             top = max(top, int(m.group(1)))
         try:
-            head = p.read_text(encoding="utf-8")[:400]
+            head = p.read_text(encoding="utf-8-sig")[:400]
         except OSError:
             continue
         m2 = re.search(r"^id:\s*C-(\d{4})", head, re.MULTILINE)
@@ -106,9 +106,8 @@ def cmd_new(a) -> Path:
         if parts:
             hub_id = str(parse_frontmatter(parts[0]).get("id", ""))
     today = a.date or dt.date.today().isoformat()
-    cid = next_claim_id(vault)
     fm = [
-        f"id: {cid}",
+        "id: {cid}",
         f"project: {hub_id or project_dir.name}",
         f"kind: {a.kind}",
         "status: pendiente",
@@ -134,11 +133,18 @@ def cmd_new(a) -> Path:
             "## Resultado\n\n<pendiente>\n\n## Qué informa\n\n<pendiente>\n")
     claims = project_dir / "Claims"
     claims.mkdir(exist_ok=True)
-    target = claims / f"{cid}.md"
-    if target.exists():
-        raise Refused(f"{target} already exists")
-    target.write_text(join_note(fm, body), encoding="utf-8", newline="\n")
-    return target
+    # Allocate the id with an exclusive create: parallel `new` calls (independent
+    # ladder rungs are frozen together) must never get the same C-XXXX.
+    for _ in range(50):
+        cid = next_claim_id(vault)
+        target = claims / f"{cid}.md"
+        try:
+            with open(target, "x", encoding="utf-8", newline="\n") as fh:
+                fh.write(join_note([fm[0].format(cid=cid), *fm[1:]], body))
+            return target
+        except FileExistsError:
+            continue
+    raise Refused("could not allocate a claim id after 50 attempts")
 
 
 def cmd_set(a) -> Path:
@@ -146,7 +152,8 @@ def cmd_set(a) -> Path:
     if note.parent.name != "Claims":
         raise Refused(f"{note} is not inside a Claims/ folder — hypothesis status "
                       "belongs to update-confidence, not this script")
-    parts = split_note(note.read_text(encoding="utf-8"))
+    raw = note.read_bytes().decode("utf-8-sig")   # bytes: read_text would hide CRLF
+    parts = split_note(raw)
     if parts is None:
         raise Refused(f"{note} has no frontmatter")
     fm_lines, body = parts
@@ -168,7 +175,7 @@ def cmd_set(a) -> Path:
         f"    by: {_yaml_str(a.by)}",
         f"    evidence: {_yaml_str(a.evidence.strip())}",
     ])
-    note.write_text(join_note(fm_lines, body), encoding="utf-8", newline="\n")
+    note.write_bytes(join_note(fm_lines, body, newline_of(raw)).encode("utf-8"))
     return note
 
 
@@ -176,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    ap =argparse.ArgumentParser(description="Single writer of Claims/ status.")
+    ap = argparse.ArgumentParser(description="Single writer of Claims/ status.")
     ap.add_argument("--version", action="version", version=TOOL)
     sub = ap.add_subparsers(dest="cmd", required=True)
     n = sub.add_parser("new", help="create a claim at pendiente")

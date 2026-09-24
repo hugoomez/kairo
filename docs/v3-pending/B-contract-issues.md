@@ -103,3 +103,31 @@ documented `<H-XXXX | E-XXXX | F-XXX>`.
 
 **Proposed contract change:** register `EVO-` as an id prefix and `Evolucion/`
 as a project folder; extend `spawned_from` to accept `EVO-XXXX`.
+
+---
+
+## 5. (Spec interpretation, not the contract) — does the verifier see `## Justificación`?
+
+**Target:** the Block B spec for B2 ("never the conversation, the
+justification, prior critiques, or the reasoning that produced it") vs.
+`scripts/ledger/verifier_packet.py`.
+
+**Issue:** the packet includes `## Justificación (evidencia citada)`. Read
+literally, the spec forbids it by name. B2 reads "the justification" as the
+*argument for why the claim holds* (the reasoning), and the section's
+citation bullets as *assertions that are part of the artifact* — "P-XXXX
+§locator shows X" is a factual claim the note makes, and checking it against
+the cited source text is the verifier's main job (it is how the real
+`citation-verification.md` error was caught). Dropping the section would make
+citation errors unverifiable.
+
+**Workaround (implemented):** the packet carries each bullet quoted verbatim
+as an `Afirmación N` with the verbatim source text of its locator, plus each
+paper's abstract labelled as non-locator context. `## Revisión del ciclo`,
+`## Hipótesis rival descartada`, `## Lección`, `## Verificación
+independiente`, history and all other frontmatter are excluded, and
+`--section` cannot reach them.
+
+**Decision needed from the researcher:** keep this reading, or reduce each
+bullet to "assertion clause + locator + source text" (dropping any
+free-standing argumentative bullet). No contract change either way.

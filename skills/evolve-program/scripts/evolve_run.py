@@ -4,13 +4,14 @@ re-score on held-out, bundle for a GPU runtime, record the lineage as Claims.
 
     evolve_run.py freeze   --task T.py --train DIR --heldout DIR --initial P.py \
                            --entrypoint solve --eval-timeout 10 --max-heldout-gap 0.05 \
-                           --run-dir RUN
+                           [--feedback-points K] --run-dir RUN
     evolve_run.py billing-check [--test-call] [--run-dir RUN]
     evolve_run.py plan     --run-dir RUN --iterations N --model haiku \
-                           --per-call-usd 0.25 --run-budget-usd 2 [--workers 2] [--max-calls M]
-    evolve_run.py run      --run-dir RUN --approve <token printed by plan>
-    evolve_run.py rescore  --run-dir RUN --program P.py
-    evolve_run.py bundle   --run-dir RUN --program P.py --out DIR [--split heldout]
+                           --per-call-usd 0.25 --run-budget-usd 2 [--workers 2] [--max-calls M] \
+                           [--objective objective.txt]
+    evolve_run.py run      --run-dir RUN --approve <token printed by plan> --heldout DIR
+    evolve_run.py rescore  --run-dir RUN --program P.py --heldout DIR     # audit; logged
+    evolve_run.py bundle   --run-dir RUN --program P.py --out DIR [--split heldout --heldout DIR]
     evolve_run.py lineage-claims --run-dir RUN --project-dir <vault>/Projects/<slug> \
                            --source EVO-XXXX --by <who>
 
@@ -91,9 +92,13 @@ def cmd_freeze(a) -> dict:
     for f in ("inputs.json", "targets.json"):
         shutil.copyfile(a.train / f, frozen / "train" / f)
     shutil.copyfile(a.initial, run / "initial_program.py")
-    # the held-out split is NOT copied into the run dir: only its hash is frozen here,
-    # its path goes to heldout.lock.json, which evolution never receives.
+    # The held-out split is NOT copied into the run dir and its path is NOT stored
+    # anywhere under it: only its hashes are frozen. `run` / `rescore` / `bundle` take
+    # --heldout again and verify it against these hashes.
     heldout = a.heldout.resolve()
+    for vault in (p for p in [run, *run.parents] if (p / "Projects").is_dir() and (p / "Papers").is_dir()):
+        raise Refused(f"run dir {run} is inside a Kairo vault ({vault}); evolved code runs "
+                      "there — use a sandbox outside the vault (e.g. ~/.kairo-sandbox/EVO-XXXX)")
     ho_hashes = _split_hashes(heldout)
     for f in ("task.py", "harness.py", "cand_runner.py", "train/inputs.json", "train/targets.json"):
         os.chmod(frozen / f, stat.S_IREAD)
@@ -110,7 +115,6 @@ def cmd_freeze(a) -> dict:
         "feedback_points": a.feedback_points,
     }
     _write_json(run / "evolve.lock.json", lock)
-    _write_json(run / "heldout.lock.json", {"dir": heldout.as_posix(), "files": ho_hashes})
     lock_sha = sha(run / "evolve.lock.json")
     return {"run_dir": run.as_posix(), "evaluator_lock_sha256": lock_sha,
             "heldout_sha256": ho_hashes, "files": files}
@@ -221,12 +225,29 @@ def _lineage(out_dir: Path, best_id: str | None) -> list[dict]:
     return list(reversed(chain))
 
 
-def _rescore(run: Path, program: Path) -> dict:
+def _heldout_dir(lock: dict, heldout: Path | None) -> Path:
+    if heldout is None:
+        raise Refused("--heldout <dir> is required: the held-out path is never stored in the run dir")
+    ho_dir = heldout.resolve()
+    if _split_hashes(ho_dir) != lock["heldout_sha256"]:
+        raise Critical(f"{ho_dir} does not match the frozen held-out hashes")
+    return ho_dir
+
+
+def _log_heldout_use(run: Path, program: Path, why: str) -> list[dict]:
+    """Append-only record of every held-out scoring. The held-out split is meant to be
+    used ONCE (the final re-score); every other use is visible in the report."""
+    log = run / "HELDOUT_LOG.jsonl"
+    rec = {"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "program_sha256": sha(program), "why": why}
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x]
+
+
+def _rescore(run: Path, program: Path, heldout: Path | None, why: str) -> dict:
     lock = harness.load_lock(str(run / "evolve.lock.json"))
-    ho = _json(run / "heldout.lock.json")
-    ho_dir = Path(ho["dir"])
-    if _split_hashes(ho_dir) != ho["files"]:
-        raise Critical(f"held-out split changed since freeze: {ho_dir}")
+    ho_dir = _heldout_dir(lock, heldout)
     bad = harness.verify_hashes(lock)
     if bad:
         raise Critical("frozen evaluator changed: " + "; ".join(bad))
@@ -239,8 +260,16 @@ def _rescore(run: Path, program: Path) -> dict:
         flag = (f"importante: train {tr['score']:.4f} vs held-out {he['score']:.4f} — gap "
                 f"{gap:.4f} > frozen max {lock['max_heldout_gap']}: overfit to the train split "
                 "or evaluator gaming; the program is not a candidate result as is")
-    return {"program": program.as_posix(), "program_sha256": sha(program),
-            "train": tr, "heldout": he, "gap": round(gap, 6), "flag": flag}
+    uses = _log_heldout_use(run, program, why)
+    distinct = sorted({u["program_sha256"] for u in uses})
+    res = {"program": program.as_posix(), "program_sha256": sha(program),
+           "train": tr, "heldout": he, "gap": round(gap, 6), "flag": flag,
+           "heldout_uses": len(uses), "heldout_distinct_programs": len(distinct)}
+    if why == "audit":
+        res["audit_note"] = ("importante: held-out scored outside the single final re-score "
+                             "(audit). Recorded in HELDOUT_LOG.jsonl; a program chosen after "
+                             "seeing held-out scores cannot be reported as generalising on it.")
+    return res
 
 
 def cmd_run(a) -> dict:
@@ -256,6 +285,7 @@ def cmd_run(a) -> dict:
     bad = harness.verify_hashes(lock)
     if bad:
         raise Critical("frozen evaluator changed before the run: " + "; ".join(bad))
+    _heldout_dir(lock, a.heldout)         # fail before spending anything
     bill = billing_check(test_call=False)
     _write_json(run / "billing.json", bill)
     if not bill["ok"]:
@@ -314,8 +344,9 @@ def cmd_run(a) -> dict:
         "tool": TOOL, "elapsed_s": round(elapsed, 1), "plan": plan,
         "calls": calls, "spent_usd_equiv": round(spent, 4),
         "alerts": alerts,
-        "best": _rescore(run, best) if not alerts else None,
-        "baseline": _rescore(run, run / "initial_program.py") if not alerts else None,
+        "best": _rescore(run, best, a.heldout, "final") if not alerts else None,
+        "baseline": _rescore(run, run / "initial_program.py", a.heldout, "baseline")
+        if not alerts else None,
         "lineage": _lineage(out_dir, getattr(result.best_program, "id", None)),
         "evaluator_unchanged": not harness.verify_hashes(lock),
     }
@@ -337,14 +368,24 @@ def cmd_bundle(a) -> dict:
     for f in ("task.py", "harness.py", "cand_runner.py"):
         shutil.copyfile(frozen / f, out / f)
     shutil.copyfile(a.program, out / "program.py")
-    src = Path(_json(run / "heldout.lock.json")["dir"]) if a.split == "heldout" else Path(lock["train_dir"])
+    if a.split == "heldout":
+        src = _heldout_dir(lock, a.heldout)
+        _log_heldout_use(run, Path(a.program), "bundle")
+    else:
+        src = Path(lock["train_dir"])
     (out / a.split).mkdir()
     for f in ("inputs.json", "targets.json"):
         shutil.copyfile(src / f, out / a.split / f)
     lines = [f"{sha(p)}  {p.relative_to(out).as_posix()}"
              for p in sorted(out.rglob("*")) if p.is_file()]
     (out / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-    script = a.check_script or PLUGIN_ROOT / "scripts" / "security" / "check_bundle.py"
+    script = PLUGIN_ROOT / "scripts" / "security" / "check_bundle.py"
+    if a.check_script:
+        # a stand-in for the real isolation check is for tests only
+        if os.environ.get("KAIRO_ALLOW_STUB_CHECK") != "1":
+            raise Refused("--check-script is test-only (set KAIRO_ALLOW_STUB_CHECK=1 in a test); "
+                          "real bundles are checked by scripts/security/check_bundle.py")
+        script = a.check_script
     if not Path(script).exists():
         raise Refused(f"bundle isolation check not found at {script} — a bundle is never "
                       "handed over unchecked")
@@ -354,7 +395,8 @@ def cmd_bundle(a) -> dict:
         parsed = json.loads(chk.stdout)
     except json.JSONDecodeError:
         parsed = {"status": "error", "findings": [], "raw": chk.stdout[-300:]}
-    res = {"bundle": out.as_posix(), "check_exit": chk.returncode, "check": parsed}
+    res = {"bundle": out.as_posix(), "check_script": Path(script).as_posix(),
+           "check_exit": chk.returncode, "check": parsed}
     # contract §1a: 0 clean, 2 contaminated, 1 error; anything but 0 is NOT clean
     if chk.returncode == 2:
         raise Critical(f"bundle contaminated — do not upload: {parsed}")
@@ -366,9 +408,17 @@ def cmd_bundle(a) -> dict:
 
 
 # ---------------------------------------------------------------- lineage -> Claims
+def _fmt(x, nd: int = 4) -> str:
+    return "sin puntuación" if x is None else f"{x:.{nd}f}"
+
+
+
 def cmd_lineage_claims(a) -> dict:
     run = a.run_dir.resolve()
     rep = _json(run / "report.json")
+    if rep.get("alerts") or not rep.get("best"):
+        raise Refused("the run is void (tamper alert) or has no final re-score — no lineage "
+                      "claims are recorded from it")
     lock_sha = sha(run / "evolve.lock.json")[:12]
     cs = PLUGIN_ROOT / "scripts" / "ledger" / "claim_status.py"
     created, parent = [], None
@@ -395,11 +445,11 @@ def cmd_lineage_claims(a) -> dict:
     for step in rep["lineage"]:
         parent = claim(
             f"Programa {step['id'][:8]} (iteración {step['iteration_found']}) puntúa "
-            f"{step['train_score']:.4f} en el split de entrenamiento del evaluador congelado.",
+            f"{_fmt(step['train_score'])} en el split de entrenamiento del evaluador congelado.",
             f"Evaluador congelado {lock_sha} ({a.source}); linaje OpenEvolve, padre "
             f"{(step['parent_id'] or '—')[:8]}. Puntuación en train: señal de búsqueda, no evidencia.",
             [parent] if parent else [], "probado",
-            f"{a.source}: train combined_score {step['train_score']:.6f} (report.json)")
+            f"{a.source}: train combined_score {_fmt(step['train_score'], 6)} (report.json)")
     best = rep["best"]
     ok = best["flag"] is None and best["heldout"]["valid"]
     claim(f"El mejor programa ({best['program_sha256'][:12]}) generaliza al held-out: "
@@ -446,14 +496,18 @@ def main(argv=None) -> int:
     r = sub.add_parser("run")
     r.add_argument("--run-dir", type=Path, required=True)
     r.add_argument("--approve", required=True)
+    r.add_argument("--heldout", type=Path, required=True,
+                   help="held-out split dir (verified against the frozen hashes; never stored)")
     s = sub.add_parser("rescore")
     s.add_argument("--run-dir", type=Path, required=True)
     s.add_argument("--program", type=Path, required=True)
+    s.add_argument("--heldout", type=Path, required=True)
     bu = sub.add_parser("bundle")
     bu.add_argument("--run-dir", type=Path, required=True)
     bu.add_argument("--program", type=Path, required=True)
     bu.add_argument("--out", type=Path, required=True)
     bu.add_argument("--split", choices=("train", "heldout"), default="heldout")
+    bu.add_argument("--heldout", type=Path, help="required with --split heldout")
     bu.add_argument("--check-script", type=Path,
                     help="TEST ONLY: a stub honoring the check_bundle.py CLI (contract §1a)")
     lc = sub.add_parser("lineage-claims")
@@ -481,7 +535,7 @@ def main(argv=None) -> int:
         elif a.cmd == "run":
             res = cmd_run(a)
         elif a.cmd == "rescore":
-            res = _rescore(a.run_dir.resolve(), a.program.resolve())
+            res = _rescore(a.run_dir.resolve(), a.program.resolve(), a.heldout, "audit")
         elif a.cmd == "bundle":
             res = cmd_bundle(a)
         else:

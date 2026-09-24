@@ -101,9 +101,10 @@ Same four objects, with the `if` globs prefixed by `vault/`:
 ```
 
 The command needs no vault argument: `--hook` reads the PostToolUse stdin JSON,
-takes `tool_input.file_path`, walks up to `Projects/<slug>/`, and rebuilds only
-that project's `_ledger.md` (the graph itself is built vault-wide, so
-cross-project `depends_on` resolves). It always exits 0 — a ledger failure never
+takes `tool_input.file_path`, walks up to `Projects/<slug>/` to find the vault,
+builds the graph vault-wide and rewrites **every** project's `_ledger.md` (a
+refutation in one project can flag dependents in another; unchanged ledgers
+are not rewritten). It always exits 0 — a ledger failure never
 breaks the session; errors go to stderr.
 
 **What the hook does NOT catch:** `claim_status.py` and `update-confidence`'s
@@ -153,6 +154,6 @@ Also run once, outside a session, on the real vault (read-only, no `--write`):
 python C:/Users/gomez/kairo-plugin/scripts/ledger/build_graph.py --vault C:/Users/gomez/Kairo/vault
 ```
 
-Observed from Block B on 2026-09-24 (worktree copy of the script, read-only):
-`kairo/build_graph@1.0.0: 6 nodos, 0 crítico, 0 importante` (exit 0) — the six
-existing H-0001…H-0006 notes parse; none has `depends_on` yet.
+Expected: exit 0 and one line `kairo/build_graph@1.0.0: N nodos, 0 crítico,
+0 importante` for a vault whose notes predate `depends_on` (observed so on
+2026-09-24 against the worktree copy, read-only).

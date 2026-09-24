@@ -127,29 +127,40 @@ class KairoClaudeCodeLLM(LLMInterface):
                     f"run budget reached: {spent:.4f} USD-equiv / {self.run_budget} cap, "
                     f"{calls} / {self.max_calls} calls")
         t0 = time.time()
-        proc = subprocess.run(build_cmd(self.model, self.per_call, system_message),
-                              input=user, capture_output=True, text=True, encoding="utf-8",
-                              timeout=self.timeout, env=scrubbed_env(), cwd=self.cwd)
-        rec = {"t": round(t0, 1), "sec": round(time.time() - t0, 1), "model": self.model,
-               "returncode": proc.returncode, "cost_usd": 0.0}
-        text = ""
+        # Every attempt is recorded — a timed-out or unparseable call has still used
+        # quota. When its real cost is unknown it is charged the per-call cap
+        # (conservative), so the run cap can't be under-counted.
+        rec = {"t": round(t0, 1), "model": self.model, "cost_usd": self.per_call,
+               "cost_known": False, "is_error": True}
+        text, proc = "", None
         try:
+            proc = subprocess.run(build_cmd(self.model, self.per_call, system_message),
+                                  input=user, capture_output=True, text=True, encoding="utf-8",
+                                  timeout=self.timeout, env=scrubbed_env(), cwd=self.cwd)
+            rec["returncode"] = proc.returncode
             out = json.loads(proc.stdout)
             rec["cost_usd"] = float(out.get("total_cost_usd") or 0.0)
+            rec["cost_known"] = "total_cost_usd" in out
+            if not rec["cost_known"]:
+                rec["cost_usd"] = self.per_call
             usage = out.get("modelUsage") or {}
             rec["models"] = {k: {"costBasis": v.get("costBasis"), "provider": v.get("provider")}
                              for k, v in usage.items()}
             rec["is_error"] = bool(out.get("is_error"))
             text = out.get("result") or ""
+        except subprocess.TimeoutExpired:
+            rec["timeout"] = True
         except (json.JSONDecodeError, TypeError):
-            rec["is_error"] = True
-            rec["stderr"] = proc.stderr[-400:]
-        with _Lock(self.ledger):
-            with self.ledger.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(rec) + "\n")
+            rec["stderr"] = (proc.stderr if proc else "")[-400:]
+        finally:
+            rec["sec"] = round(time.time() - t0, 1)
+            with _Lock(self.ledger):
+                with self.ledger.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(rec) + "\n")
         if rec["is_error"] or not text:
-            raise RuntimeError(f"claude -p failed (rc={proc.returncode}): "
-                               f"{(proc.stderr or proc.stdout)[-300:]}")
+            detail = "timeout" if rec.get("timeout") else \
+                ((proc.stderr or proc.stdout)[-300:] if proc else "")
+            raise RuntimeError(f"claude -p failed: {detail}")
         return text
 
 

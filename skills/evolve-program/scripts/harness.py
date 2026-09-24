@@ -71,9 +71,23 @@ def load_task(lock: dict):
 
 
 def candidate_env() -> dict:
-    keep = ("PATH", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP", "HOME", "USERPROFILE",
+    # no HOME / USERPROFILE / KAIRO_* / API keys: nothing that points at the user's
+    # files or the run. (Not an OS sandbox — see SKILL.md "Isolation, honestly".)
+    keep = ("PATH", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP",
             "PYTHONIOENCODING", "COMSPEC", "PATHEXT", "WINDIR", "LANG")
     return {k: v for k, v in os.environ.items() if k in keep}
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the candidate and anything it spawned (a plain kill() leaves grandchildren
+    holding the pipes, and on Windows communicate() would then block)."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(proc.pid, 9)
+        except OSError:
+            proc.kill()
 
 
 def run_candidate(program_path: str, inputs: list, entrypoint: str, timeout: float) -> tuple[list | None, str]:
@@ -81,16 +95,23 @@ def run_candidate(program_path: str, inputs: list, entrypoint: str, timeout: flo
     try:
         shutil.copyfile(program_path, work / "cand.py")
         shutil.copyfile(HERE / "cand_runner.py", work / "cand_runner.py")
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "cand_runner.py", entrypoint],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", cwd=work, env=candidate_env(),
+            start_new_session=(os.name != "nt"))
         try:
-            proc = subprocess.run(
-                [sys.executable, "-I", "cand_runner.py", entrypoint],
-                input=json.dumps({"inputs": inputs}), capture_output=True, text=True,
-                timeout=timeout, cwd=work, env=candidate_env())
+            stdout, stderr = proc.communicate(json.dumps({"inputs": inputs}), timeout=timeout)
         except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             return None, f"timeout after {timeout}s"
         if proc.returncode != 0:
-            return None, f"candidate exited {proc.returncode}: {proc.stderr[-300:]}"
-        line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith(MARKER)), None)
+            return None, f"candidate exited {proc.returncode}: {stderr[-300:]}"
+        line = next((ln for ln in reversed(stdout.splitlines()) if ln.startswith(MARKER)), None)
         if line is None:
             return None, "no output line"
         try:

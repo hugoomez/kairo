@@ -89,12 +89,38 @@ class Evolve(unittest.TestCase):
         return p
 
     def rescore(self, p):
-        return _cli(["rescore", "--run-dir", str(self.run_dir), "--program", str(p)])
+        return _cli(["rescore", "--run-dir", str(self.run_dir), "--program", str(p),
+                     "--heldout", str(self.tmp / "data" / "heldout")])
 
-    def test_heldout_never_copied_into_run_dir(self):
-        self.assertFalse(any("heldout" in p.as_posix() for p in (self.run_dir / "frozen").rglob("*")))
-        lock = json.loads((self.run_dir / "evolve.lock.json").read_text())
-        self.assertNotIn(str(self.tmp / "data" / "heldout"), json.dumps(lock))
+    def test_heldout_path_never_stored_under_run_dir(self):
+        # review finding: heldout.lock.json used to hold the absolute held-out path
+        ho = str((self.tmp / "data" / "heldout").resolve())
+        for f in self.run_dir.rglob("*"):
+            if f.is_file():
+                text = f.read_text(encoding="utf-8", errors="replace")
+                self.assertNotIn(ho, text, f)
+                self.assertNotIn(ho.replace("\\", "/"), text, f)
+
+    def test_heldout_uses_are_logged_and_wrong_split_refused(self):
+        self.rescore(self.prog("perfect.py", PERFECT))
+        _, r = self.rescore(self.prog("memo.py", MEMORISER))
+        self.assertEqual((r["heldout_uses"], r["heldout_distinct_programs"]), (2, 2))
+        self.assertIn("importante", r["audit_note"])
+        code, out = _cli(["rescore", "--run-dir", str(self.run_dir), "--program",
+                          str(self.prog("p.py", PERFECT)), "--heldout",
+                          str(self.tmp / "data" / "train")])
+        self.assertEqual(code, 2)          # not the frozen held-out split
+
+    def test_run_dir_inside_vault_refused(self):
+        v = self.tmp / "vault"
+        (v / "Projects").mkdir(parents=True)
+        (v / "Papers").mkdir()
+        code, out = _cli(["freeze", "--task", str(EX / "task.py"),
+                          "--train", str(self.tmp / "data" / "train"),
+                          "--heldout", str(self.tmp / "data" / "heldout"),
+                          "--initial", str(EX / "initial.py"), "--max-heldout-gap", "0.05",
+                          "--run-dir", str(v / "Projects" / "x" / "EVO-0001")])
+        self.assertEqual(code, 3)
 
     def test_known_optimum_and_baseline(self):
         _, r = self.rescore(self.prog("perfect.py", PERFECT))
@@ -148,7 +174,8 @@ def solve(x):
         self.assertLessEqual(plan["estimate"]["hard_ceiling_usd_equiv"], 0.5 + 2 * 0.25)
         # `run` re-launches itself in UTF-8 mode, so exercise it as a real CLI call
         r = subprocess.run([sys.executable, str(HERE / "evolve_run.py"), "run", "--run-dir",
-                            str(self.run_dir), "--approve", "0" * 16],
+                            str(self.run_dir), "--approve", "0" * 16,
+                            "--heldout", str(self.tmp / "data" / "heldout")],
                            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn("approval token", json.loads(r.stdout)["refused"])
@@ -156,9 +183,14 @@ def solve(x):
     def _bundle(self, mode, name):
         stub = self.tmp / f"stub_{mode}.py"
         stub.write_text(STUB_CHECK.format(mode=mode), encoding="utf-8")
-        return _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
-                     str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / name),
-                     "--check-script", str(stub)])
+        os.environ["KAIRO_ALLOW_STUB_CHECK"] = "1"
+        try:
+            return _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
+                         str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / name),
+                         "--heldout", str(self.tmp / "data" / "heldout"),
+                         "--check-script", str(stub)])
+        finally:
+            os.environ.pop("KAIRO_ALLOW_STUB_CHECK", None)
 
     def test_bundle_exit_codes_follow_contract(self):
         code, out = self._bundle("clean", "b0")
@@ -167,9 +199,32 @@ def solve(x):
         self.assertEqual(self._bundle("contaminated", "b2")[0], 2)
         self.assertEqual(self._bundle("error", "b1")[0], 3)   # error = not clean
 
+    def test_stub_check_refused_outside_tests(self):
+        stub = self.tmp / "stub.py"
+        stub.write_text(STUB_CHECK.format(mode="clean"), encoding="utf-8")
+        code, out = _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
+                          str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / "bs"),
+                          "--heldout", str(self.tmp / "data" / "heldout"),
+                          "--check-script", str(stub)])
+        self.assertEqual(code, 3)
+        self.assertIn("test-only", out["refused"])
+
+    def test_timeout_kills_grandchildren(self):
+        lock = json.loads((self.run_dir / "evolve.lock.json").read_text())
+        lock["eval_timeout_s"] = 2
+        spawner = self.prog("spawner.py", "import subprocess, sys, time\n"
+                            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                            "def solve(x):\n    time.sleep(60)\n    return 0.0\n")
+        import time as _t
+        t0 = _t.time()
+        res = harness.score_split(str(spawner), lock, Path(lock["train_dir"]))
+        self.assertIn("timeout", res["reason"])
+        self.assertLess(_t.time() - t0, 30)   # did not block on the grandchild's pipes
+
     def test_bundle_refused_without_real_check(self):
         code, out = _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
-                          str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / "bx")])
+                          str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / "bx"),
+                          "--heldout", str(self.tmp / "data" / "heldout")])
         if (evolve_run.PLUGIN_ROOT / "scripts" / "security" / "check_bundle.py").exists():
             self.skipTest("real check_bundle.py present (post-integration)")
         self.assertEqual(code, 3)

@@ -244,9 +244,11 @@ curated subset.
 
 ## Fresh verification — before the note is created
 
-Runs for **every** candidate that passes Checks 1–4 (after the v2
-second-critic comparison, if v2 is in use), and for the logged clear-fail
-override (option 3 of "On a clear fail"), **before** the note is created. It is
+Runs for **every** note this skill creates — a candidate that passes Checks
+1–4 (after the v2 second-critic comparison, if v2 is in use), the
+"rounds exhausted, no clear verdict" outcome, a v2 critic disagreement, and the
+logged clear-fail override (option 3 of "On a clear fail") — **before** the
+note is created. It is
 not a fifth check and not part of the refinement loop.
 
 1. **Compose the draft note** — the exact frontmatter and sections the note will
@@ -302,7 +304,11 @@ per scope governs (`verifications.py latest --note <H-XXXX.md>`), and
 
 If the dispatch fails (no subagent available, the agent errors), say so
 plainly and write **no** `verifications:` entry — absent means "never
-verified", which is true. Never write a verdict nobody produced.
+verified", which is true. Never write a verdict nobody produced. Set
+`needs_human_review: true` on the created note and say why in the cycle
+output ("verificación independiente no ejecutada"), so an unverified note is
+not silently treated like a verified one; retry the verification later with a
+fresh packet.
 
 **`fresh-verifier` vs. `second-critic` — complementary, both stay.**
 `second-critic` is a **different model family** (DeepSeek on DeepInfra) judging

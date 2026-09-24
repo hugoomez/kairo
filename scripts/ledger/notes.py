@@ -10,7 +10,8 @@ ledger needs and nothing more:
 Nested mappings (``environment:``, ``history:``) are skipped, not parsed. Values
 are returned as plain strings / lists of strings. Writing is line-based and only
 ever touches the lines of the key being changed, so everything else in the note
-stays byte-for-byte identical.
+stays identical (line endings too, when callers pass ``newline_of(raw)`` to
+``join_note``). A UTF-8 BOM is tolerated on read.
 """
 
 from __future__ import annotations
@@ -18,13 +19,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_KEY = re.compile(r"^([A-Za-z_][\w-]*):(.*)$")
+_KEY = re.compile(r"^([A-Za-z_][\w-]*)[ \t]*:(.*)$")   # `key : v` is valid YAML too
 _ID = re.compile(r"\b([HCE]-\d{4})\b")
 
 
 def split_note(text: str) -> tuple[list[str], str] | None:
     """Return (frontmatter lines, body) or None if the note has no frontmatter."""
-    text = text.replace("\r\n", "\n")
+    text = text.lstrip("﻿").replace("\r\n", "\n")
     if not text.startswith("---\n"):
         return None
     end = text.find("\n---", 4)
@@ -67,6 +68,12 @@ def _parse_inline_list(s: str) -> list[str]:
     return [_unquote(x) for x in inner.split(",") if x.strip()]
 
 
+def _continues(line: str) -> bool:
+    """A line that belongs to the value of the preceding empty-valued key: indented,
+    blank, or a block-sequence item at column 0 (`- x` is valid YAML there too)."""
+    return line.startswith((" ", "\t", "- ")) or line.strip() in ("", "-")
+
+
 def parse_frontmatter(lines: list[str]) -> dict[str, object]:
     """Top-level keys only. Block lists of scalars become lists; nested maps -> ''."""
     fm: dict[str, object] = {}
@@ -89,7 +96,7 @@ def parse_frontmatter(lines: list[str]) -> dict[str, object]:
         items: list[str] = []
         j = i + 1
         nested = False
-        while j < len(lines) and (lines[j].startswith((" ", "\t")) or not lines[j].strip()):
+        while j < len(lines) and _continues(lines[j]):
             stripped = lines[j].strip()
             if stripped.startswith("- ") and not nested:
                 item = _strip_comment(stripped[2:])
@@ -107,7 +114,7 @@ def parse_frontmatter(lines: list[str]) -> dict[str, object]:
 
 def read_note(path: Path) -> tuple[dict[str, object], str] | None:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return None
     parts = split_note(text)
@@ -177,7 +184,7 @@ def append_block_entry(fm_lines: list[str], key: str, entry_lines: list[str]) ->
             if _strip_comment(m.group(2)) == "[]":
                 out[i] = f"{key}:"
             j = i + 1
-            while j < len(out) and (out[j].startswith((" ", "\t")) or not out[j].strip()):
+            while j < len(out) and _continues(out[j]):
                 j += 1
             # don't swallow trailing blank lines into the list
             while j > i + 1 and not out[j - 1].strip():
@@ -186,5 +193,11 @@ def append_block_entry(fm_lines: list[str], key: str, entry_lines: list[str]) ->
     return out + [f"{key}:"] + entry_lines
 
 
-def join_note(fm_lines: list[str], body: str) -> str:
-    return "---\n" + "\n".join(fm_lines) + "\n---\n" + body
+def join_note(fm_lines: list[str], body: str, newline: str = "\n") -> str:
+    text = "---\n" + "\n".join(fm_lines) + "\n---\n" + body
+    return text.replace("\n", newline) if newline != "\n" else text
+
+
+def newline_of(raw: str) -> str:
+    """The note's own line ending, so a rewrite doesn't flip a CRLF note to LF."""
+    return "\r\n" if "\r\n" in raw else "\n"

@@ -211,6 +211,10 @@ class TestPacket(unittest.TestCase):
         self.assertNotIn("power law", packet)
         with self.assertRaises(ValueError):
             self.build(section="Nope")
+        # review finding: --section must not reach excluded, critique-bearing sections
+        for h in ("Revisión del ciclo", "Hipótesis rival descartada"):
+            with self.assertRaises(ValueError):
+                self.build(section=h)
 
     def test_cli_writes_packet_and_manifest(self):
         out = Path(self.tmp.name) / "p.md"

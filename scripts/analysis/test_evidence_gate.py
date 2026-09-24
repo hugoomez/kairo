@@ -63,6 +63,43 @@ class Gate(unittest.TestCase):
             code, res = self.run_cli(["check", "--experiment", str(self.exp(f"E-{i:04d}", role))])
             self.assertEqual(code, want, (role, res))
 
+    def test_rung_without_role_or_with_spaced_key_is_refused(self):
+        # review finding (crítico): both used to be ALLOWED as confirmatory
+        for i, role in enumerate(["rung: 1", "role : exploratory\nrung: 0", "rung: 0\nrole:  exploratory"]):
+            code, res = self.run_cli(["check", "--experiment", str(self.exp(f"E-01{i:02d}", role))])
+            self.assertEqual(code, 3, (role, res))
+
+    def test_bom_note_is_read(self):
+        p = self.exp("E-0200", "role: exploratory\nrung: 0")
+        p.write_bytes(b"\xef\xbb\xbf" + p.read_bytes())
+        code, res = self.run_cli(["check", "--experiment", str(p)])
+        self.assertEqual(code, 3, res)
+
+    def test_relabel_after_freeze_is_refused(self):
+        import subprocess
+        git = lambda *a: subprocess.run(["git", *a], cwd=self.tmp / "vault", check=True,
+                                        capture_output=True)
+        git("init", "-q")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        p = self.exp("E-0300", "role: exploratory\nrung: 0")
+        git("add", "-A")
+        git("commit", "-qm", "Preregister E-0300")
+        code, _ = self.run_cli(["check", "--experiment", str(p)])
+        self.assertEqual(code, 3)
+        p.write_text(EXP.format(id="E-0300", hyp="H-0001", role="role: confirmatory\nrung: 3",
+                                validity="valid"), encoding="utf-8")
+        code, res = self.run_cli(["check", "--experiment", str(p)])       # uncommitted relabel
+        self.assertEqual(code, 3, res)
+        self.assertIn("freeze", res["reason"])
+        git("commit", "-qam", "relabel")                                     # committed relabel
+        self.assertEqual(self.run_cli(["check", "--experiment", str(p)])[0], 3)
+        q = self.exp("E-0301", "role: confirmatory\nrung: 3")               # never committed
+        self.assertEqual(self.run_cli(["check", "--experiment", str(q)])[0], 3)
+        git("add", "-A")
+        git("commit", "-qm", "Preregister E-0301")
+        self.assertEqual(self.run_cli(["check", "--experiment", str(q)])[0], 0)
+
     def test_gather_excludes_exploratory_even_when_linked(self):
         self.exp("E-0001", "role: exploratory\nrung: 0")               # rung, wrongly linked
         self.exp("E-0002", "role: confirmatory\nrung: 3")

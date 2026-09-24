@@ -31,11 +31,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
-from notes import as_list, read_note  # noqa: E402
+from notes import as_list, parse_frontmatter, read_note, split_note  # noqa: E402
 
 __version__ = "1.0.0"
 TOOL = f"kairo/evidence_gate@{__version__}"
@@ -56,11 +57,54 @@ def classify(fm: dict) -> tuple[bool, str]:
     if role == "exploratory":
         return False, (f"exploratory (rung {rung or '?'}): informa el diseño, nunca cuenta "
                        "como evidencia — ninguna transición de status")
+    if not role and rung in ("0", "1", "2"):
+        # fail closed: a rung-0..2 note with its role line missing is a ladder rung
+        return False, (f"crítico: rung {rung} sin `role` — un rung 0-2 es exploratorio; no se "
+                       "lee como confirmatorio por omisión")
     if role == "confirmatory" and rung and rung != "3":
         return False, (f"crítico: confirmatory con rung {rung}; un experimento confirmatorio es "
                        "rung 3 por definición (si el claim está acotado a esa escala, esa escala "
                        "es su rung 3) — corregir con una enmienda antes de contarlo")
     return True, "confirmatory" if role else "role ausente (nota v2) → confirmatory"
+
+
+def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+
+
+def frozen_check(path: Path) -> tuple[bool, str]:
+    """role / rung are frozen with the preregistration: the version of the note in
+    the commit that first added it (preregister-experiment's freeze commit) must
+    classify the same way. A rung relabelled `confirmatory` after it ran is refused."""
+    path = path.resolve()
+    top = _git(["rev-parse", "--show-toplevel"], path.parent)
+    if top.returncode != 0:
+        return True, "sin repositorio git: la inmutabilidad de role/rung no se pudo verificar"
+    root = Path(top.stdout.strip())
+    rel = path.relative_to(root.resolve()).as_posix()
+    log = _git(["log", "--diff-filter=A", "--format=%H", "--", rel], root)
+    shas = log.stdout.split()
+    if log.returncode != 0 or not shas:
+        return False, ("crítico: el preregistro no está congelado en git (ningún commit lo "
+                       "añade) — no puede contar como evidencia")
+    shown = _git(["show", f"{shas[-1]}:{rel}"], root)
+    parts = split_note(shown.stdout) if shown.returncode == 0 else None
+    if parts is None:
+        return False, f"crítico: no se pudo leer la versión congelada ({shas[-1][:10]})"
+    ok, reason = classify(parse_frontmatter(parts[0]))
+    if not ok:
+        return False, (f"crítico: en su commit de freeze {shas[-1][:10]} la nota era: {reason} — "
+                       "role/rung no se reetiquetan después del freeze")
+    return True, f"role/rung coinciden con el freeze {shas[-1][:10]}"
+
+
+def counts(path: Path, fm: dict) -> tuple[bool, str]:
+    ok, reason = classify(fm)
+    if not ok:
+        return ok, reason
+    fok, freason = frozen_check(path)
+    return fok, (f"{reason}; {freason}" if fok else freason)
 
 
 def _find_experiment(eid: str, hyp_path: Path) -> Path | None:
@@ -80,7 +124,7 @@ def cmd_check(path: Path) -> tuple[int, dict]:
     if parsed is None:
         return 1, {"error": f"cannot read {path}"}
     fm, _ = parsed
-    ok, reason = classify(fm)
+    ok, reason = counts(path, fm)
     return (0 if ok else 3), {"tool": TOOL, "experiment": fm.get("id", path.stem),
                               "counts_as_evidence": ok, "reason": reason}
 
@@ -105,7 +149,7 @@ def cmd_gather(path: Path) -> tuple[int, dict]:
         if primary != [hid]:
             excluded.append({"id": eid, "reason": f"hipótesis primaria es {primary or '—'}, no {hid}"})
             continue
-        ok, reason = classify(efm)
+        ok, reason = counts(ep, efm)
         if not ok:
             excluded.append({"id": eid, "reason": reason})
             continue

@@ -344,7 +344,8 @@ def hook_main() -> int:
             return 0
         vault = proj.parent.parent
         nodes, findings = build(vault)
-        write_ledgers(vault, nodes, findings, [_rel(proj, vault)])
+        # every project: a refutation here can flag dependents in other projects
+        write_ledgers(vault, nodes, findings, project_dirs(vault, None))
         crit = [f for f in findings if f.severity == "crítico"
                 and f.project_dir == _rel(proj, vault)]
         if crit:

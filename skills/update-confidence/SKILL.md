@@ -82,12 +82,15 @@ experiment** — and that is checked mechanically, not by reading prose:
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py check --experiment <E-XXXX.md>
    ```
-   Exit `3` → **refuse the trigger**: no status change, no `linked_experiment`
-   append, no `history`, no digest. Tell the caller the printed reason
-   (`exploratory (rung N) …`, or a `crítico` malformed `role` / `rung`, or a
-   `confirmatory` note with `rung` ≠ 3). A rung's outcome belongs to its
+   **Any exit other than `0` → refuse the trigger** (`3` = refused, `1` = the
+   note could not be read — never "continue anyway"): no status change, no
+   `linked_experiment` append, no `history`, no digest. Tell the caller the
+   printed reason (`exploratory (rung N) …`; a `crítico` malformed `role` /
+   `rung`; a rung 0–2 with no `role`; a `confirmatory` note with `rung` ≠ 3;
+   `role` / `rung` differing from the version first committed at freeze; a
+   preregistration never committed to git). A rung's outcome belongs to its
    `Claims/` node (`claim_status.py`), not here. Exit `0` → continue. An absent
-   `role` (every v2 note) reads as confirmatory and passes.
+   `role` with no ladder `rung` (every v2 note) reads as confirmatory and passes.
 2. **The evidence set for an evidence edge comes only from**
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py gather --hypothesis <H-XXXX.md> --json
@@ -306,7 +309,8 @@ diverged (different data regime, population, scale, implementation detail…):
    papers" line (the fields `create-project` step 7 established).
 
 4. **Regenerate the state ledger** —
-   `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/build_graph.py --vault <vault> --project <slug> --write`.
+   `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/build_graph.py --vault <vault> --write`
+   (all projects: a dependent may live in another project).
    A new `refutada` propagates as an `importante` "premisa caída" flag to every
    hypothesis / claim whose `depends_on` chain reaches this one — **flags in
    `_ledger.md` only**: this skill never changes a dependent's `status` because
