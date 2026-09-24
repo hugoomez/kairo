@@ -289,7 +289,12 @@ appended Búsqueda ejecutada block at the bottom. The reader must see, before th
 synthesis, that part of the literature was not covered. Also mention it in the
 one-paragraph summary you give the user when the skill finishes.
 
-**Frontmatter:** set `last_updated: <YYYY-MM-DD>` (today). `update-confidence`
+**Frontmatter:** set `last_updated: <YYYY-MM-DD>` (today), and `generated_by:` —
+`origin: agent`, `model: <this session's model id>`, `skill_version:
+create-project@<plugin version>`, `summarizer_model: <facet-summarizer's
+model>` — so `assemble-manuscript`'s AI-use disclosure can state who wrote the
+synthesis instead of "no consta". Never fill it with a guess; if a model id is
+not known to the session, omit that key (absent reads as "no consta"). `update-confidence`
 bumps this whenever it edits the map; a stale `last_updated` is the at-a-glance
 signal that the map has drifted from the evidence.
 
