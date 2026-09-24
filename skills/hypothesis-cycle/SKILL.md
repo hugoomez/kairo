@@ -24,6 +24,13 @@ below. Use v2 when the researcher asks for it, or by default once
 remains correct and complete on its own; v2 is an added independence check, not
 a replacement for the primary critic's own reasoning.
 
+**Always on (v1 and v2): fresh verification before the note exists.** After a
+candidate passes Checks 1–4, a `fresh-verifier` subagent — a fresh Claude
+instance that receives only a mechanically-built packet of the artifact, never
+this session's reasoning — hunts for concrete errors (a citation locator that
+doesn't contain what it's cited for, a number that doesn't match its source).
+See "## Fresh verification — before the note is created".
+
 Binding rules (Kairo core principles):
 
 - Every hypothesis carries a **`Justificación`** citing specific papers with
@@ -205,6 +212,79 @@ noticed instead of quietly trusted. Never skip the `record` call because the
 outcome seemed obvious; the log's value is in *every* comparison, not a
 curated subset.
 
+## Fresh verification — before the note is created
+
+Runs for **every** candidate that passes Checks 1–4 (after the v2
+second-critic comparison, if v2 is in use), and for the logged clear-fail
+override (option 3 of "On a clear fail"), **before** the note is created. It is
+not a fifth check and not part of the refinement loop.
+
+1. **Compose the draft note** — the exact frontmatter and sections the note will
+   be created with (see "Frontmatter + sections for created notes"), plus the
+   test sketch under `## Esbozo del test` — to a temp file **outside the
+   vault** (the session scratch dir). Never write a draft into `Hipotesis/`.
+2. **Build the packet:**
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py \
+     --vault <vault root> --note <draft.md> \
+     --out <tmp>/packet.md --manifest <tmp>/manifest.json
+   ```
+   It keeps only `## Claim`, each `## Justificación` bullet with the verbatim
+   `## Texto completo` text its locator points at (plus each cited paper's
+   `## Resumen`, labelled as non-locator context), and the test sketch — by
+   allow-list. `## Hipótesis rival descartada`, `## Revisión del ciclo`,
+   frontmatter beyond `id`, and anything else never reach the verifier. Show
+   the manifest it prints (included / excluded sections, packet sha256) in the
+   cycle output.
+3. **Dispatch `fresh-verifier`** with the packet file's text as the **entire**
+   prompt — verbatim, nothing added. No summary of the checks, no "this
+   citation was re-used from H-XXXX", no hint of what to look for, no prior
+   verdict. Anything added contaminates exactly the independence it exists for.
+4. **Create the note** at `status: propuesta` per "Loop and stopping rule" —
+   whatever the verdict. The verifier never discards and never judges whether
+   the claim is true.
+5. **Record it** on the created note (save the agent's output to
+   `<tmp>/report.txt`):
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
+     --note <created H-XXXX.md> --verifier kairo/fresh-verifier@1.0.0 \
+     --model <model id the agent reported> --verdict <verdict> --scope note \
+     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest> \
+     [--flag-human-review]      # whenever verdict != no_errors_found
+   ```
+   This appends the contract entry to `verifications:` and a dated entry
+   (findings with severity + location, packet hash) to
+   `## Verificación independiente`.
+
+| Verdict | Action |
+|---|---|
+| `no_errors_found` | Proceed. Means "found no errors", never "correct". |
+| `errors_found` | Note still created at `propuesta` (never a discard), `needs_human_review: true`, findings recorded. Flag it to the user as a **verification finding**, with each finding's severity tag (`crítico` / `importante` / `menor`) and location — not as a generic "rounds exhausted" or critic disagreement. |
+| `cannot_assess` | Same as `errors_found`: `needs_human_review: true`, the stated reason recorded and flagged. |
+
+**Not a replacement for Checks 1–4, and it does not feed the refinement loop
+automatically.** A human may choose to fix the note (e.g. correct a locator)
+and re-verify: build a fresh packet from the corrected note and dispatch again;
+the new run **appends** a new entry — never edit an old one. The latest entry
+per scope governs (`verifications.py latest --note <H-XXXX.md>`), and
+`preregister-experiment` refuses a note whose governing verification is
+`errors_found` / `cannot_assess` while `needs_human_review: true` is still set.
+
+If the dispatch fails (no subagent available, the agent errors), say so
+plainly and write **no** `verifications:` entry — absent means "never
+verified", which is true. Never write a verdict nobody produced.
+
+**`fresh-verifier` vs. `second-critic` — complementary, both stay.**
+`second-critic` is a **different model family** (DeepSeek on DeepInfra) judging
+test **design** on Checks 3/4, v2 only, opt-in, paid. `fresh-verifier` is the
+**same family** (Claude) in a **fresh context** with no access to the reasoning
+that produced the artifact, hunting concrete **errors** — wrong citation
+locator, source misread, arithmetic / analysis mismatch — here and at
+`update-confidence`'s `apoyada` gate, always on, on the subscription. The first
+covers blind spots a model family shares; the second covers anchoring on one's
+own argument (a locator "remembered" from an earlier citation). Neither
+replaces the other.
+
 ## Citation requirement
 
 The created note's **`## Justificación (evidencia citada)`** cites specific papers
@@ -239,7 +319,7 @@ feedback to the claim + test sketch, then re-enter at Check 1.
 
 | Outcome | Action |
 |---|---|
-| **Pass** all four checks | Assign next `H-XXXX` (scan vault-wide, zero-pad 4). Create the note in `Projects/<slug>/Hipotesis/` with `status: propuesta`. If **≥ 1 refinement round** happened on the way, write `## Revisión del ciclo` (see below). |
+| **Pass** all four checks | Assign next `H-XXXX` (scan vault-wide, zero-pad 4). Run "Fresh verification — before the note is created", then create the note in `Projects/<slug>/Hipotesis/` with `status: propuesta` and record the verification. If **≥ 1 refinement round** happened on the way, write `## Revisión del ciclo` (see below). |
 | **Clear fail** at any check | **Do not create a note** (one logged exception — see "On a clear fail"). Append one line to `Projects/<slug>/_digest.md` stating the claim and which check killed it and why — so it isn't re-proposed. |
 | **Rounds exhausted, no clear verdict** | Save as `status: propuesta` anyway, set `needs_human_review: true`, and write the **full** round-by-round critic exchange in `## Revisión del ciclo`. Flag it to the user. |
 
@@ -439,8 +519,11 @@ From `${CLAUDE_PLUGIN_ROOT}/templates/hypothesis-template.md`. Set at minimum:
   human name>`, `evidence: "hypothesis-cycle v1: passed dedup/falsifiability/
   known-failure/severe-test"` (or `"rounds exhausted — flagged for human review"`,
   or `"override manual de un clear fail (Check N)"`).
-- `needs_human_review: true` in the exhausted-rounds outcome **and** in the
-  logged clear-fail override (option 3 of "On a clear fail"); otherwise `false`.
+- `needs_human_review: true` in the exhausted-rounds outcome, in the
+  logged clear-fail override (option 3 of "On a clear fail"), **and** when the
+  fresh verification returned `errors_found` / `cannot_assess`; otherwise `false`.
+- `verifications:` — never hand-written; appended by `verifications.py append`
+  after creation (see "Fresh verification").
 
 Sections:
 
@@ -453,6 +536,9 @@ Sections:
   full exchange when rounds were exhausted; also the logged clear-fail override).
   Omitted only for a clean first-pass.
 - `## Lección` stays empty until the hypothesis is resolved.
+- `## Verificación independiente` = appended by `verifications.py append
+  --report` (one dated entry per fresh-verifier run: verdict, findings with
+  severity + location, packet sha256). Append-only; never edited by hand.
 
 ## v1 / v2 scope
 
@@ -463,6 +549,9 @@ Sections:
 only (`second-critic`, cloud-hosted, tiered by stakes), with disagreement
 escalating to `needs_human_review: true` rather than being resolved
 automatically; a persistent agreement/cost log.
+
+**In both v1 and v2:** the `fresh-verifier` run before note creation (see
+"Fresh verification — before the note is created").
 
 **Not in v1 or v2:** formal power analysis of *this* skill's own checks (the
 `completo` preregistration tier's power analysis is a different thing — see
@@ -519,6 +608,15 @@ count never exceeded budget and no tournament was needed.
 - **(v2) Treating `second-critic: unavailable` as agreement.** A failed or
   missing call is not a verdict — say so and either retry once or drop to v1
   for that run.
+- **Passing `fresh-verifier` anything but the packet.** No draft note, no
+  check reasoning, no "look at the P-XXXX citation" — the packet file's text,
+  verbatim, is the whole prompt.
+- **Discarding (or refining away) a candidate because the verifier found
+  errors.** `errors_found` / `cannot_assess` → the note is still created at
+  `propuesta` with `needs_human_review: true`; a human decides whether to fix
+  and re-verify. The verifier never decides a claim's fate.
+- **Editing an old `verifications:` entry after a fix.** Re-verify and append;
+  the latest entry per scope governs.
 - **Writing `en_cola` (or any transition) directly.** This skill only creates
   notes at `propuesta`; budget overflow and everything after go through
   `update-confidence` (trigger `budget overflow`, then `evidence result` etc.)

@@ -39,6 +39,16 @@ needs_human_review: false
 paper_thread: <slug-or-id>
 # spawned_from — optional: the note that generated this one
 spawned_from: <H-XXXX | E-XXXX | F-XXX>
+# verifications — append-only, docs/v3-interfaces.md §1b. Written only by
+# scripts/ledger/verifications.py after a fresh-verifier run (hypothesis-cycle
+# before creation; update-confidence before apoyada). Never edit or remove an
+# entry; the latest entry per scope governs gating, every entry is reported.
+#   - verifier: kairo/fresh-verifier@<version>
+#     model: <model id>
+#     date: <YYYY-MM-DD>
+#     verdict: no_errors_found | errors_found | cannot_assess
+#     scope: note | section:<exact heading text>
+verifications: []
 # origin_flag — optional: set by hypothesis-cycle's budget-overflow steps.
 #   wildcard  — seeded by a serendipity-scan lead (see hypothesis-cycle "Budget overflow")
 #   evolution — combines two top-ranked candidates from a tournament round
@@ -84,6 +94,13 @@ sea cual sea el desenlace:
   - override manual de un clear fail → el clear fail, el Check que lo mató y la
     razón declarada del override.
 Omitir esta sección solo si pasó en la primera pasada sin ninguna ronda.>
+
+## Verificación independiente
+
+<Append-only, escrita por verifications.py: una entrada fechada por corrida de
+fresh-verifier (veredicto, alcance, sha256 del paquete, hallazgos con severidad
+y ubicación). Omitir hasta la primera verificación. El paquete del verificador
+nunca incluye esta sección.>
 
 ## Lección
 

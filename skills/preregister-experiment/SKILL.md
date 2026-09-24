@@ -43,7 +43,14 @@ analyze a run (separate skills).
 ## Inputs
 
 1. A **`propuesta`** hypothesis note (`Projects/<slug>/Hipotesis/H-XXXX.md`).
-   Refuse if its `status` is anything else.
+   Refuse if its `status` is anything else. **Also refuse** while its governing
+   fresh verification is unresolved — i.e. while
+   `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py gate --note <H-XXXX.md>`
+   exits `3` (latest `scope: note` entry `errors_found` or `cannot_assess` AND
+   `needs_human_review: true` still set). Name the findings from its
+   `## Verificación independiente`; it clears once a human has reviewed them
+   (and cleared `needs_human_review`) or a re-verification appended a
+   `no_errors_found` entry. No entry at all (a v2 note) does not block.
 2. Its **test sketch** — the manipulation/comparison, what gets measured, what
    result counts against the claim.
 
