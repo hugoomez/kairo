@@ -157,16 +157,32 @@ Example body:
 
 ### 4. Crossref — retraction check (any candidate with a DOI)
 
-- **Endpoint:** `https://api.crossref.org/works/{doi}` (GET, no key; send a
-  `User-Agent` / `mailto` for the polite pool).
+**Run it through the shared script, never by hand-parsing JSON:**
+`${CLAUDE_PLUGIN_ROOT}/scripts/citations/check_retraction.py` (step 4a). The
+detection logic lives in one place — `scripts/citations/retraction.py` — and is
+shared with ingestion (`create-project` step 6) and the periodic sweep. What it
+checks, for reference:
+
+- **Endpoint:** `https://api.crossref.org/works/{doi}` (GET, no key; polite pool
+  via `--mailto`). arXiv DOIs (`10.48550/arXiv.*`) are DataCite, not Crossref —
+  the script skips them and relies on source 5.
 - **Purpose:** flag retractions before a paper reaches the ranked list. Crossref
-  has integrated the **Retraction Watch Database** since 2023, so its record is
-  the single check to run **for DOI-bearing candidates**.
-- **Fields:** `message.is-retracted` (boolean when present) and
-  `message.update-to[]` — a `type` of `retraction`, `withdrawal`,
-  `removal`, or `expression_of_concern` pointing at this DOI means it is
-  retracted / concerned. Also check `message.updated-by[]` on the DOI itself.
-- **Rate limit:** be gentle; batch one lookup per unique DOI, ~a few rps.
+  has integrated the **Retraction Watch Database** since 2023 (entries with
+  `source: retraction-watch`), so its record is the single check to run **for
+  DOI-bearing candidates**.
+- **Field shapes (verified live 2026-09-24):** the retracted paper's own record
+  carries **`updated-by[]`** — one entry per notice, `type` one of `retraction`,
+  `withdrawal`, `removal`, `expression_of_concern`. The *notice's* record
+  carries `update-to[]` pointing at the retracted DOI (a candidate DOI whose
+  `update-to[]` points elsewhere is itself a notice — the script reports it as
+  `notice_for`). Withdrawals / removals are often self-referencing
+  (`update-to` = own DOI). **`is-retracted` was absent** on every retracted
+  record checked; it is honoured if present, but its absence means nothing.
+  Mapping: `retraction` → retracted; `withdrawal`, `removal` → withdrawn;
+  `expression_of_concern` → concern (reported, not removed).
+- **Rate limit:** one lookup per unique DOI; 429/5xx retried with backoff (3
+  attempts), then that candidate's check is **lost** (counted separately, never
+  as checked).
 - **Coverage gap it leaves:** a preprint-heavy pool is mostly DOI-less. Crossref
   alone then checks almost nothing — pair it with the arXiv withdrawal check
   below.
@@ -178,11 +194,15 @@ Most arXiv preprints have no DOI, so Crossref never sees them. arXiv has its own
 directly for every candidate carrying an arXiv id — especially in a pool that is
 mostly arXiv, where DOI-only checking covers next to nothing.
 
-- **Endpoint:** `http://export.arxiv.org/api/query?id_list=<arxivid>` (GET, no
-  key; the same 3-second serial discipline as any arXiv call — batch multiple ids
-  into one `id_list` of up to ~100).
+Same shared script as source 4 — `check_retraction.py` runs both checks in one
+call; don't re-implement the text matching below.
+
+- **Endpoint:** `https://export.arxiv.org/api/query?id_list=<arxivid>` (GET, no
+  key; the same 3-second serial discipline as any arXiv call — the script
+  batches up to 100 ids into one `id_list`).
 - **What "withdrawn" looks like** (arXiv exposes no boolean field for it — detect
-  from text, case-insensitive):
+  from text, case-insensitive; live example checked 2026-09-24: `0910.4008`,
+  comment `Withdrawn`):
   - `entry/arxiv:comment` contains `withdrawn` / `this submission has been
     withdrawn` / `paper withdrawn` — the usual signal;
   - `entry/title` begins `Withdrawn:`;
@@ -319,17 +339,39 @@ Búsqueda ejecutada block that closure was the stopping rule.
 because a preprint-heavy pool is mostly DOI-less and each check sees only part of
 the pool:
 
-- **DOI-bearing candidates → Crossref** (`api.crossref.org/works/{doi}`): inspect
-  `is-retracted` / `update-to` / `updated-by` (see the Crossref source entry).
-- **arXiv-id-bearing candidates → arXiv withdrawal check** (`export.arxiv.org/api/query?id_list=…`,
-  batched): inspect `arxiv:comment` / `title` / `summary` for a withdrawal notice
-  (see source entry 5). A candidate with both a DOI and an arXiv id is checked
-  on both.
+- **DOI-bearing candidates → Crossref** (source 4: `updated-by` / `update-to`).
+- **arXiv-id-bearing candidates → arXiv withdrawal check** (source 5:
+  `arxiv:comment` / `title` / `summary`). A candidate with both a DOI and an
+  arXiv id is checked on both.
 
-A paper flagged by **either** check is **dropped** from the ranked list (or, if
-it is itself the object of study, kept but flagged `RETRACTED` / `WITHDRAWN` in
-bold and never counted as support). Record, **per check**, how many candidates
-were checked and how many were removed — as exact integers.
+Both run in **one call** to the shared script. Write the merged candidate list
+(only `id`, `doi`, `arxiv` per candidate — nothing else is needed or echoed) to a
+temp file and run:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/citations/check_retraction.py" candidates.json
+```
+
+It prints one JSON object: per candidate `status` (`clear | concern | withdrawn |
+retracted`) with `evidence`, plus `counts.crossref` / `counts.arxiv` =
+`{checked, removed, lost}` — the exact integers for the Búsqueda ejecutada block.
+Exit `0` = ran (flags are in the JSON), `2` = bad input, `1` = could not run.
+
+A paper flagged `retracted` or `withdrawn` by **either** check is **dropped** from
+the ranked list (or, if it is itself the object of study, kept but flagged
+`RETRACTED` / `WITHDRAWN` in bold and never counted as support). A `concern`
+(expression of concern) is not dropped, but its survivor sentence says so. A
+candidate whose `notice_for` is non-empty carries the DOI of a retraction
+*notice*, not a paper — fix the DOI or drop it. Record, **per check**, how many
+candidates were checked and how many were removed — as exact integers, straight
+from `counts`. Candidates whose check was **lost** (`lost` > 0) are reported as
+such, never folded into "checked".
+
+> **Beyond search.** This step screens *candidates*. Ingestion-time proof that
+> each confirmed paper exists, matches its metadata and is not retracted lives in
+> `create-project` step 6 (`scripts/citations/resolve_refs.py`), and
+> `scripts/citations/retraction_sweep.py` periodically re-checks every ingested
+> paper and flags the hypotheses / ADRs citing anything newly retracted.
 
 **4b. Dedup key**, in priority order: normalized DOI → arXiv id
 (version-stripped) → normalized title similarity (lowercase, strip punctuation,
@@ -478,8 +520,8 @@ next to the results:
 | Semantic Scholar search (relevance) | `https://api.semanticscholar.org/graph/v1/paper/search` | no* | ~1 rps, retry 429 + 5xx w/ backoff (3 attempts) then degrade | JSON |
 | Semantic Scholar bulk (anchor pass) | `.../graph/v1/paper/search/bulk` — boolean query, `sort=citationCount:desc`, `year`, token pages ≤ 1000 | no* | ~1 rps, retry 429 + 5xx w/ backoff (3 attempts) then degrade — **not exempt** | JSON |
 | Semantic Scholar snowball | `.../graph/v1/paper/{id}` + `references`/`citations` | no* | ~1 rps | JSON |
-| Crossref retraction check | `https://api.crossref.org/works/{doi}` | no | polite pool; ~few rps | JSON |
-| arXiv withdrawal check | `http://export.arxiv.org/api/query?id_list=…` | no | 3 s serial; batch ids | Atom XML |
+| Crossref retraction check | `https://api.crossref.org/works/{doi}` — via `scripts/citations/check_retraction.py` | no | polite pool; retry 429 + 5xx (3 attempts) then lost | JSON |
+| arXiv withdrawal check | `https://export.arxiv.org/api/query?id_list=…` — same script | no | 3 s serial; batch ≤ 100 ids | Atom XML |
 | PatentsView (producto/hibrido) | `https://search.patentsview.org/api/v1/patent/` | **yes, free** | per API throttle | JSON |
 
 `*` Semantic Scholar works keyless; an optional free key raises the shared-pool
@@ -518,6 +560,10 @@ limit — see **Configuración opcional**.
   and *during* step 2 — not reconstructed afterward.
 - **Skipping the Crossref retraction check.** Any DOI-bearing candidate is checked
   before ranking; a retracted paper never counts as support.
+- **Hand-parsing Crossref / arXiv for retractions.** Call
+  `check_retraction.py`; the field shapes are subtle (`is-retracted` is usually
+  absent, the signal is `updated-by[]`) and the logic is shared with ingestion
+  and the sweep.
 - **DOI-only retraction checking on an arXiv-heavy pool.** Crossref sees only
   DOI-bearing candidates. Run the arXiv withdrawal check (source 5) on every
   arXiv-id candidate too, or a preprint pool goes essentially unchecked.
@@ -576,9 +622,14 @@ Endpoints confirmed against source docs on **2026-09-05**:
 - PatentsView / PatentSearch API — `search.patentsview.org/docs/` and the USPTO
   Open Data Portal transition notice at `data.uspto.gov`
 - Crossref `works` — `api.crossref.org` (retraction fields; Retraction Watch
-  Database integrated since 2023). Added 2026-09-06 from documented behaviour, not
-  re-fetched in the 2026-09-05 sweep — confirm the `update-to` field shape on
-  first use.
+  Database integrated since 2023). **Field shapes verified live on 2026-09-24**
+  (`updated-by[]` on 10.1177/1758835919874651, `update-to[]` on its notice
+  10.1177/17588359211061903, self-withdrawal on 10.1016/j.adengl.2021.11.027,
+  type spellings via `filter=update-type:<t>`); `is-retracted` absent. Details
+  in `scripts/citations/retraction.py`.
+- arXiv withdrawal text — re-checked 2026-09-24 on `0910.4008`. From Python's
+  urllib, `export.arxiv.org` intermittently answers `406` (curl gets `200`); the
+  shared HTTP helper retries and then falls back to one `curl` call.
 
 Re-check the PatentsView path first if patent calls fail — that source is
 mid-migration to USPTO ODP.

@@ -75,6 +75,44 @@ even for hypotheses that will end up excluded — that's the "say exactly what's
 missing" requirement. If **zero** hypotheses qualify, stop here: no draft, just
 the table.
 
+## Step 2b — Citation gate (before any drafting)
+
+Every reference the manuscript will rely on must be proven to exist, match its
+note's metadata, and not be retracted or withdrawn. This complements the
+locator re-verification in Step 3 (which checks a cited section says what we
+claim); it does not replace it.
+
+1. **Build the bibliography set:** every `P-XXXX` cited by a qualifying
+   hypothesis (`linked_papers:` and its `## Justificación`) plus every paper
+   cited in the Estado-del-arte sections Step 3 will use.
+2. **Run the gate live** — stored `resolved:` fields are never trusted here:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/citations/resolve_refs.py" --papers <vault>/Papers \
+     --only <P-id> <P-id> ... --gate --json
+   ```
+
+3. **Exit `0`** → every entry is `resolved` with an `exact` / `close` match and
+   is not retracted / withdrawn; continue. A `close` match's diff (e.g. year off
+   by one, preprint vs proceedings) is listed to the researcher as `menor`.
+4. **Exit `2`** → **`crítico` — refuse to draft.** In its own callout at the
+   top, name **each** failing entry with its status and the script's reason:
+   `mismatch` (possible chimeric citation — the note mixes two papers; fix it
+   by hand), `retracted` / `withdrawn` (it can never be support — drop it from
+   the argument, and flag the hypotheses that lean on it), `unresolved` (not in
+   OpenAlex, or only a fallback source confirmed it), `skipped_send_never` (the
+   note is marked not-to-send, so it can't be cited from here — the researcher
+   adds that reference by hand or unmarks it). No partial draft "around" the
+   failing references.
+5. **Exit `1`** → the gate could not run or could not prove the result (e.g.
+   OpenAlex unreachable or its keyless budget spent). Treat it as **not
+   passed**: no draft. Say so, and point to `OPENALEX_API_KEY`
+   (`https://openalex.org/settings/api`) if the script says it's missing.
+
+After drafting, if Step 3 ended up citing a paper that was not in the set,
+re-run the gate on the final references list before writing the note — the
+gate covers what the manuscript actually cites.
+
 ## Step 3 — Draft (only if ≥ 1 hypothesis qualifies)
 
 Use **only** qualifying hypotheses as evidence. Non-qualifying ones may still
@@ -232,6 +270,9 @@ fix is upstream (`preregister-experiment` completo tier, `run-experiment`,
   "here's what's not done yet," not a quiet omission.
 - **Editing hypothesis status or Estado-del-arte.md from this skill.** It's
   read-only over everything except the new manuscript note.
+- **Trusting stored `resolved: true` instead of running the gate.** Step 2b
+  re-checks live with `--gate`; a paper can be retracted after ingestion.
+  Exit 1 is not a pass.
 - **Writing or "improving" the AI-use disclosure by hand.** It is generated from the records by
   `ai_disclosure.py`, and every sentence traces to a note field. Paraphrasing it can invent a contribution
   or drop a gap. Re-run the script instead.

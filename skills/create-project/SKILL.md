@@ -193,6 +193,37 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    the researcher at the end of the run (step 10). **Never guess a URL** (e.g. from
    the authors' GitHub handles or the title) — an empty field is the correct
    value when nothing is confidently identified.
+9. **Resolve the reference** — prove the paper exists, matches the note's
+   metadata, and is not retracted or withdrawn. Once the note is written, run:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/citations/resolve_refs.py" --papers <vault>/Papers --only <P-id> --write
+   ```
+
+   It looks the paper up in OpenAlex (by DOI, else the arXiv DOI, else a title
+   search whose hit must pass the metadata match), cross-checks Crossref /
+   arXiv (and Semantic Scholar if OpenAlex has nothing), fuzzy-compares title,
+   first-author surname and year, and runs the shared retraction/withdrawal
+   check. It writes `resolved`, `openalex_id`, `resolution_checked`,
+   `resolution_status`, `resolution_match`, `resolution_evidence` into the
+   note's frontmatter (see Paper note format) and nothing else. The note is
+   **ingested regardless of the outcome** — don't delete or block on it — but
+   any `resolution_status` other than `resolved` (`unresolved`, `mismatch`,
+   `retracted`, `withdrawn`) is listed at the end of the run (step 10) with the
+   severity the script printed (at least `importante`; `mismatch` / `retracted`
+   / `withdrawn` / not-found-anywhere are `crítico`). A `mismatch` means the
+   note mixes metadata of two papers (a "chimeric" citation) — fix it by hand
+   from the sources the script names; never "fix" it by trusting one source
+   blindly. A `send: never` note is skipped entirely (nothing is sent).
+   **OpenAlex API key:** `OPENALEX_API_KEY` is optional — keyless OpenAlex
+   singleton lookups are free (checked 2026-09-24) — but the keyless daily
+   budget is small ($0.10). If OpenAlex is unreachable or the budget is spent,
+   the script still writes `resolved: false` / `resolution_status: unresolved`
+   with the reason in `resolution_evidence`; flag that paper `importante` in
+   step 10 and tell the researcher to get a free key at
+   `https://openalex.org/settings/api`, export `OPENALEX_API_KEY` in the
+   environment that runs Claude Code (never commit it), and re-run the command
+   above.
 
 **Zotero unreachable (not running, or "allow other applications" disabled):**
 don't silently skip it and don't block ingestion either — tell the researcher
@@ -343,6 +374,15 @@ with candidates still on the table (step 6.8: a conflict, or only an automatic
 match), so the researcher can confirm one by hand with `find_code_repo.py
 --confirm` or leave it empty.
 
+Also list every paper whose `resolution_status` is not `resolved` (step 6.9),
+one line each with its severity, status and the script's reason — e.g.
+`[crítico] P-0017 mismatch — first_author differs (openalex, crossref); posible
+cita quimérica, corregir a mano` or `[importante] P-0018 unresolved — OpenAlex
+unreachable; configure OPENALEX_API_KEY (https://openalex.org/settings/api) and
+re-run resolve_refs.py --only P-0018 --write`. These papers are ingested, but
+must not be cited as support until resolved (a `retracted` / `withdrawn` paper
+never is).
+
 ## Naming & ids
 
 | Thing | Rule |
@@ -379,6 +419,19 @@ code_repo: <https://github.com/<owner>/<repo> — the paper's OWN public code
   (step 6.8), or empty if not confidently identified. Never guessed.>
 code_repo_evidence: <"where it was found", e.g. "arXiv comments: 'Code
   available at …'" — empty when code_repo is empty>
+# Citation resolution (step 6.9, written only by scripts/citations/resolve_refs.py
+# --write or retraction_sweep.py --write — never by hand). All absent = never checked.
+resolved: <true | false — true only with a matching OpenAlex record (the paper
+  exists); false = checked and not found, ambiguous (mismatch), confirmed only
+  by a fallback source, or OpenAlex unreachable. A retracted paper that exists
+  is still `true` — see resolution_status>
+openalex_id: <W followed by digits, e.g. W2741809807 — empty when resolved is false>
+resolution_checked: <YYYY-MM-DD of the last check, updated on every re-check>
+resolution_status: <resolved | unresolved | mismatch | retracted | withdrawn —
+  the full outcome; anything but `resolved` is flagged at the end of the run>
+resolution_match: <exact | close | mismatch — title / first author / year vs
+  the sources; empty when no source record matched>
+resolution_evidence: <"one line: which sources, what differed or was flagged">
 ---
 
 ## Referencia
@@ -441,6 +494,13 @@ When a paper is already ingested for another project, only append this project's
   Hugging Face match alone is not confident — leave the field empty.
 - **Cloning or running a paper's `code_repo` during ingestion.** Ingestion
   records the URL only; extraction is `paper-to-tool`, on explicit request.
+- **Skipping reference resolution, or hiding its result.** Every ingested paper
+  gets `resolve_refs.py --only <P-id> --write` (step 6.9). An unresolved /
+  mismatched / retracted paper is still ingested but always surfaces in the
+  end-of-run message — never silently.
+- **Hand-writing the resolution fields.** `resolved` / `openalex_id` /
+  `resolution_*` come only from the script; `resolved: true` without an OpenAlex
+  id breaks the contract other skills rely on.
 
 ## Not in v1
 
