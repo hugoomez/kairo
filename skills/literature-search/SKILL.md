@@ -380,6 +380,12 @@ contributes (method / evidence / prior art / contradiction). If you can't write
 that sentence honestly, or it fails the frozen exclusion criteria, drop the
 candidate.
 
+Carry any `code_hint` a `facet-searcher` returned (the paper's own repo, as
+stated in its arXiv comment/abstract) through to the ranked list unchanged.
+It is a hint for ingestion (`create-project` step 6.8), which confirms it and
+fills `code_repo:`; this skill neither verifies nor records it, and never
+clones or runs anything.
+
 Then finish the **Búsqueda ejecutada** block with PRISMA-style counts and present
 both the block and the ranked list:
 

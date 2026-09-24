@@ -134,6 +134,8 @@ candidates:
   source: <vault | arxiv | semantic-scholar | patentsview>
   matched: "<the exact facet term or synonym that hit>"
   anchor_candidate: true          # ONLY on results from the citation-sorted anchor pass; omit otherwise
+  code_hint: <repo URL>           # ONLY when the arXiv entry's comment or abstract you already fetched
+                                  # states it as the paper's OWN code ("Code available at …"); omit otherwise
 ```
 
 ## Rules
@@ -156,3 +158,8 @@ candidates:
 - If a source returns nothing, still list its query and `0` in `queries`.
 - Do not rank, do not write justifications, do not fetch PDFs — that is the
   caller's job.
+- `code_hint` costs no extra call: read it only from the arXiv `arxiv:comment`
+  / abstract already in your response. A repo named as something the paper
+  *uses* ("adapted from", "we use … from") is not a `code_hint`. Never infer a
+  URL from author names or the title. Ingestion (`create-project` step 6.8)
+  confirms it; you only pass it along.

@@ -167,6 +167,32 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    - **Exists (from another project):** append `<PROJ-XXX>` to its `projects:`
      list; refresh full text only if the note had none.
 7. Include a short **bibliographic section** (see Paper note format below).
+8. **Code repository (`code_repo:`)** — record the paper's own public code
+   repository when it is **confidently** identifiable; otherwise leave the
+   field empty. This step only records a URL — it never clones, installs, or
+   runs anything (that is `paper-to-tool`, on demand only). Look, strongest
+   first:
+   - the paper itself — arXiv comments / abstract, or the paper text ("code
+     to reproduce our results is available at …", a `\section*{Code}`, a
+     footnote). The sentence must claim the repo as **the paper's own code**:
+     "our implementation is adapted from <repo>" or "we use X from <repo>"
+     names a **dependency**, not the paper's code — never record that;
+   - an author-stated link one hop away (the paper says "code at
+     <project page>" and that page links exactly one repo in a code
+     sentence);
+   - Hugging Face Papers' `githubRepo` (the successor of Papers with Code,
+     which has redirected there since 2025) **only as corroboration** — an
+     entry with `githubRepoAddedBy: auto` is an automatic match and is never
+     enough on its own.
+   Same rule as the backfill script
+   `${CLAUDE_PLUGIN_ROOT}/scripts/code_repo/find_code_repo.py` (run it with
+   `--only <P-id> --json` to apply it mechanically). Fill `code_repo:` only
+   at `alta` / `media` confidence with a single distinct repo, and write
+   where it came from in `code_repo_evidence:`. Two candidate repos, or only
+   an automatic match → leave `code_repo:` empty and list the candidates to
+   the researcher at the end of the run (step 10). **Never guess a URL** (e.g. from
+   the authors' GitHub handles or the title) — an empty field is the correct
+   value when nothing is confidently identified.
 
 **Zotero unreachable (not running, or "allow other applications" disabled):**
 don't silently skip it and don't block ingestion either — tell the researcher
@@ -312,6 +338,11 @@ Create project <name>
 (`<name>` = the human project name.) Keep whatever commit trailers the
 environment mandates.
 
+In the end-of-run message, list any paper whose `code_repo:` was left empty
+with candidates still on the table (step 6.8: a conflict, or only an automatic
+match), so the researcher can confirm one by hand with `find_code_repo.py
+--confirm` or leave it empty.
+
 ## Naming & ids
 
 | Thing | Rule |
@@ -344,6 +375,10 @@ source: <arxiv | semantic-scholar | patentsview | manual>
 fulltext: <full | abstract-only>
 zotero_key: <Better BibTeX citekey, or Zotero's raw item key if BBT was
   unreachable — omit the field entirely if Zotero itself was unreachable>
+code_repo: <https://github.com/<owner>/<repo> — the paper's OWN public code
+  (step 6.8), or empty if not confidently identified. Never guessed.>
+code_repo_evidence: <"where it was found", e.g. "arXiv comments: 'Code
+  available at …'" — empty when code_repo is empty>
 ---
 
 ## Referencia
@@ -401,6 +436,11 @@ When a paper is already ingested for another project, only append this project's
 - **Blocking ingestion because Zotero is down.** Degrade and flag it (see step
   6) — a missing optional companion doesn't stop the pipeline.
 - **Paywall-scraping a closed-access PDF.** Open-access only; else abstract-only.
+- **Recording a dependency as `code_repo`.** A repo the paper *uses*
+  ("adapted from", "we use X from") is not the paper's code. And an automatic
+  Hugging Face match alone is not confident — leave the field empty.
+- **Cloning or running a paper's `code_repo` during ingestion.** Ingestion
+  records the URL only; extraction is `paper-to-tool`, on explicit request.
 
 ## Not in v1
 
