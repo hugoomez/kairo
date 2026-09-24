@@ -18,18 +18,22 @@ Hook mode (default; reads the PreToolUse JSON from stdin):
 
     Read                         `file_path` is a flagged note
     Grep (output_mode=content)   a flagged note lies inside the search scope
-                                 (`path`/`paths` + `glob`); `files_with_matches`
+                                 (`path`/`paths` + `glob`; a brace glob counts
+                                 as matching); `files_with_matches`
                                  and `count` only reveal file names and pass
-    Bash / PowerShell            the command names a flagged note (its path or
-                                 its file name) -- best effort, see below
+    Bash / PowerShell            the command names a flagged note -- its path,
+                                 file name, stem or Kairo id (`P-9999*`),
+                                 case-insensitive -- best effort, see below
     mcp__smart-connections__get_note
                                  `notePath` (relative to the vault) is flagged
 
   Everything else passes (exit 0, no output). Glob, Write and Edit pass: Glob
   returns names only; Write/Edit need a prior Read, which is blocked.
 
+  Paths are trimmed of surrounding whitespace/quotes first, as the tools do.
+
   Limits (stated, not hidden): a shell command can reach a flagged note without
-  naming it (`grep -r x .`, `cat *`). The Bash check catches the direct cases;
+  naming it (`grep -r x .`, `cat Papers/*`). The Bash check catches the direct cases;
   the instruction in every skill/agent that reads the vault is the primary
   control. Smart Connections search results carry path + title + heading name
   only, never note text, so they are not blocked here.
@@ -62,11 +66,7 @@ __version__ = "1.0.0"
 HEAD_BYTES = 16 * 1024  # frontmatter lives at the top; never read further
 SKIP_DIRS = {".git", ".obsidian", ".smart-env", "node_modules", ".trash", "__pycache__"}
 _SEND_LINE = re.compile(r"""^send\s*:\s*["']?never["']?\s*(#.*)?$""", re.IGNORECASE)
-_CONTENT_READERS = re.compile(
-    r"\b(cat|type|head|tail|less|more|grep|rg|sed|awk|strings|od|xxd|base64|cp|copy|mv|scp|curl|"
-    r"python|python3|py|node|Get-Content|gc|Select-String|sls)\b",
-    re.IGNORECASE,
-)
+_NOTE_ID = re.compile(r"^([A-Z]{1,4}-\d{3,})", re.IGNORECASE)  # P-0001, H-0012, E-0003, ADR-004
 
 
 # --------------------------------------------------------------------------- #
@@ -122,8 +122,14 @@ def flagged_under(root: Path) -> list[Path]:
 # Hook decision
 # --------------------------------------------------------------------------- #
 
+def _clean(p) -> str:
+    """Tool paths as the tool itself will see them: MCP servers and shells trim
+    surrounding whitespace and quotes, so the guard must too."""
+    return str(p).strip().strip("\"'").strip()
+
+
 def _resolve(p: str, base: Path) -> Path:
-    q = Path(os.path.expanduser(p))
+    q = Path(os.path.expanduser(_clean(p)))
     return (q if q.is_absolute() else base / q).resolve()
 
 
@@ -142,7 +148,7 @@ def decide(event: dict, vault: Path | None) -> str | None:
     root = vault or Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
 
     if tool == "Read":
-        fp = tin.get("file_path")
+        fp = _clean(tin.get("file_path") or "")
         if fp and is_flagged(_resolve(fp, cwd)):
             return f"{_rel(_resolve(fp, cwd), cwd)} está marcada `send: never`; no se lee."
         return None
@@ -157,7 +163,10 @@ def decide(event: dict, vault: Path | None) -> str | None:
         hits: list[Path] = []
         for s in scopes:
             for p in flagged_under(_resolve(str(s), cwd)):
-                if not glob or fnmatch(p.name, glob) or fnmatch(p.as_posix(), f"*{glob}"):
+                # fnmatch has no brace expansion ({md,txt}); any glob it can't
+                # evaluate faithfully counts as matching -- err toward not sending
+                if (not glob or any(c in glob for c in "{}") or fnmatch(p.name, glob)
+                        or fnmatch(p.as_posix(), f"*{glob}")):
                     hits.append(p)
         if hits:
             names = ", ".join(_rel(p, cwd) for p in hits[:5]) + (" …" if len(hits) > 5 else "")
@@ -167,17 +176,25 @@ def decide(event: dict, vault: Path | None) -> str | None:
 
     if tool in ("Bash", "PowerShell"):
         cmd = str(tin.get("command") or "")
-        if not cmd or not _CONTENT_READERS.search(cmd):
+        if not cmd:
             return None
-        norm = cmd.replace("\\", "/")
+        # No verb prefilter: any command that names a flagged note -- by path,
+        # file name, stem, or its Kairo id (a `P-9999*` glob) -- is refused.
+        # Case-insensitive, because Windows paths are.
+        norm = cmd.replace("\\", "/").lower()
         for p in flagged_under(root):
             rel = _rel(p, root)
-            if rel in norm or p.name in norm or p.name in cmd or p.stem in norm:
+            if any(t and t in norm for t in (rel.lower(), p.name.lower(),
+                                            p.stem.lower() if len(p.stem) >= 6 else "")):
                 return f"El comando nombra una nota `send: never` ({rel}); no se ejecuta."
+            m = _NOTE_ID.match(p.name)
+            if m and re.search(rf"(?<![a-z0-9]){re.escape(m.group(1).lower())}(?!\d)", norm):
+                return (f"El comando menciona {m.group(1)}, una nota `send: never` ({rel}); "
+                        "no se ejecuta.")
         return None
 
     if tool.startswith("mcp__") and tool.endswith("__get_note"):
-        np_ = tin.get("notePath")
+        np_ = _clean(tin.get("notePath") or "")
         if np_ and is_flagged(_resolve(str(np_), root)):
             return f"{np_} está marcada `send: never`; get_note bloqueado."
         return None

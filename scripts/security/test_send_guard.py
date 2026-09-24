@@ -96,6 +96,25 @@ class TestDecide(VaultCase):
         self.assertIsNotNone(decide(self.ev(t, notePath="Papers/P-0099 Privado.md"), self.v))
         self.assertIsNone(decide(self.ev(t, notePath="Papers/P-0001 Normal.md"), self.v))
 
+    def test_review_bypasses_are_closed(self):
+        # brace glob: fnmatch can't expand it, so it must count as matching
+        self.assertIsNotNone(decide(self.ev("Grep", pattern="x", glob="*.{md,txt}",
+                                            output_mode="content"), self.v))
+        # the MCP server trims notePath; so must the guard
+        t = "mcp__smart-connections__get_note"
+        self.assertIsNotNone(decide(self.ev(t, notePath=" Papers/P-0099 Privado.md"), self.v))
+        self.assertIsNotNone(decide(self.ev(t, notePath="Papers/P-0099 Privado.md\n"), self.v))
+        self.assertIsNotNone(decide(self.ev("Read", file_path=' "Papers/P-0099 Privado.md" '), self.v))
+        # commands with no classic reader verb, and id globs
+        for cmd in ("sort 'Papers/P-0099 Privado.md'",
+                    "[IO.File]::ReadAllText('Papers/P-0099 Privado.md')",
+                    "cat Papers/P-0099*",
+                    "CAT 'papers/p-0099 privado.md'"):
+            self.assertIsNotNone(decide(self.ev("Bash", command=cmd), self.v), cmd)
+        # an id that merely shares a prefix is not the flagged note
+        self.assertIsNone(decide(self.ev("Bash", command="cat Papers/P-00991*"), self.v))
+        self.assertIsNone(decide(self.ev("Bash", command="git log --oneline"), self.v))
+
     def test_other_tools_pass(self):
         self.assertIsNone(decide(self.ev("Glob", pattern="Papers/*"), self.v))
         self.assertIsNone(decide(self.ev("Write", file_path=str(self.secret), content=""), self.v))

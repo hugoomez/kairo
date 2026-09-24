@@ -44,6 +44,10 @@ plugin (`scripts/security/test_send_guard.py`, 14 tests).
   - Hooks from settings files **also fire for subagent tool calls**, so
     `facet-summarizer` and the others are covered.
   - `$CLAUDE_PROJECT_DIR` is the project root.
+- **Timeout 30 s.** On a hook timeout the call goes through (fail-open).
+  Bash/PowerShell checks walk the vault's `.md` files, reading at most 16 KB
+  each; that took 0.3 s on this vault (2026-09-24). Raise the timeout if the
+  vault grows large.
 - **Fail-open** on the guard's own errors (unparseable stdin, internal
   exception): exit 0 with a message on stderr, which only reaches the debug
   log. A crashing guard must not lock the researcher out of every `Read`. The
@@ -51,7 +55,9 @@ plugin (`scripts/security/test_send_guard.py`, 14 tests).
 
 ### Snippet — `Kairo/vault/.claude/settings.json`
 
-Add as a sibling of the existing `"PostToolUse"` key, inside `"hooks"`:
+Insert inside `"hooks"`, **before** the existing `"PostToolUse"` key. The
+fragment ends in `],` so that `"PostToolUse"` follows it; pasted after
+`PostToolUse`, the last key, the file would be invalid JSON:
 
 ```json
     "PreToolUse": [
@@ -61,7 +67,7 @@ Add as a sibling of the existing `"PostToolUse"` key, inside `"hooks"`:
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/Scripts/hooks/send_guard.py\" hook --vault \"$CLAUDE_PROJECT_DIR\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "send_guard: checking send: never"
           }
         ]
@@ -72,7 +78,7 @@ Add as a sibling of the existing `"PostToolUse"` key, inside `"hooks"`:
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/Scripts/hooks/send_guard.py\" hook --vault \"$CLAUDE_PROJECT_DIR\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "send_guard: checking send: never"
           }
         ]
@@ -83,7 +89,7 @@ Add as a sibling of the existing `"PostToolUse"` key, inside `"hooks"`:
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/Scripts/hooks/send_guard.py\" hook --vault \"$CLAUDE_PROJECT_DIR\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "send_guard: checking send: never"
           }
         ]
@@ -94,7 +100,7 @@ Add as a sibling of the existing `"PostToolUse"` key, inside `"hooks"`:
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/Scripts/hooks/send_guard.py\" hook --vault \"$CLAUDE_PROJECT_DIR\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "send_guard: checking send: never"
           }
         ]
@@ -105,7 +111,7 @@ Add as a sibling of the existing `"PostToolUse"` key, inside `"hooks"`:
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/Scripts/hooks/send_guard.py\" hook --vault \"$CLAUDE_PROJECT_DIR\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "send_guard: checking send: never"
           }
         ]
@@ -162,14 +168,14 @@ Run all of this from a normal interactive session, **not** with
    From the vault root:
    `echo '{"tool_name":"Read","tool_input":{"file_path":"Papers/P-9999 send-never-test.md"},"cwd":"."}' | python Scripts/hooks/send_guard.py hook --vault .; echo "exit=$?"`
    → `exit=2`, and stderr names the file without `CANARY`. The same with
-   `Papers/P-0001 Power 2022 Grokking.md` → `exit=0`, no output.
+   `Papers/<any existing normal P-XXXX note>.md` → `exit=0`, no output.
 4. **Apply both snippets.** Validate the JSON:
    `python -c "import json;json.load(open('.claude/settings.json'))"`.
 5. **Session from `vault/`** (`cd Kairo/vault && claude`). Run `/hooks` and
    confirm the five `PreToolUse` entries are listed. Then ask, one per turn:
    - "Read `Papers/P-9999 send-never-test.md`" → refused with the send_guard
      reason. `CANARY-7f3a` must not appear anywhere in the transcript.
-   - "Read `Papers/P-0001 Power 2022 Grokking.md`" → **reads normally**.
+   - "Read `Papers/<any existing normal P-XXXX note>.md`" → **reads normally**.
      This is the regression check that the hook doesn't block ordinary notes.
    - "Grep `CANARY` in `Papers/` with content output" → refused. The same with
      files_with_matches → allowed, and it lists the file name only.
