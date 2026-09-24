@@ -275,7 +275,17 @@ diverged (different data regime, population, scale, implementation detail…):
    frontmatter to today and refresh the affected section's "as of <date>, N
    papers" line (the fields `create-project` step 7 established).
 
-4. **Commit** — `Update H-XXXX: <new status>`.
+4. **Regenerate the state ledger** —
+   `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/build_graph.py --vault <vault> --project <slug> --write`.
+   A new `refutada` propagates as an `importante` "premisa caída" flag to every
+   hypothesis / claim whose `depends_on` chain reaches this one — **flags in
+   `_ledger.md` only**: this skill never changes a dependent's `status` because
+   its premise fell (a dependent moves only on its own experiments). Report any
+   newly flagged dependents to the user by id. (Once the PostToolUse ledger hook
+   is installed it also fires on the note edit; running it here is what makes
+   the ledger current when the edit came from a script.)
+
+5. **Commit** — `Update H-XXXX: <new status>` (with `_ledger.md`).
 
 ## Callers
 

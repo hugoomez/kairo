@@ -72,6 +72,36 @@ Both parts are refined together across loop rounds.
 For a human-submitted claim, confirm which project it belongs to if it isn't
 obvious. The human-origin citation exception (below) applies to this path.
 
+## Start of every cycle — read the ledger, not the whole project
+
+Before generating or vetting anything, refresh and read the project's state
+ledger instead of re-reading every note:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/build_graph.py --vault <vault root> --project <slug> --write
+```
+
+then read `Projects/<slug>/_ledger.md` (plus the latest 1–2 `## Meta-revisión`
+entries of `_digest.md`, Step 5). The ledger is a compact derived view: every
+hypothesis and `Claims/` node with its status, `depends_on`, one-line claim and
+flags; the simplification-ladder rungs per hypothesis; and a `## Problemas`
+list. Use it to:
+
+- know what exists and in which state before proposing (Check 1 still runs its
+  full dedup — the ledger is orientation, not a substitute for the check);
+- **not build on a fallen premise**: a candidate whose intended `depends_on`
+  names a `refutada` hypothesis or a `fallido` / `refutado` claim, or a node
+  already carrying an `importante` "premisa caída" flag, must address that in
+  its test sketch or it is *refinable*;
+- surface every **`crítico`** problem (cycle, dangling reference, duplicate id,
+  invalid status) to the researcher at the top of the cycle output — this skill
+  does not fix other notes, and a flag never changes anyone's status.
+
+Open individual notes only when a check needs their full text (the citation
+rule below always re-opens the paper note). Exit code 2 from `build_graph.py`
+means a `crítico` finding exists; say so and continue unless it involves the
+candidate's own dependencies.
+
 ## Checks — ordered gate, cheapest first
 
 Run in order. **Stop at the first clear fail.** Each check yields one of:
@@ -524,6 +554,14 @@ From `${CLAUDE_PLUGIN_ROOT}/templates/hypothesis-template.md`. Set at minimum:
   fresh verification returned `errors_found` / `cannot_assess`; otherwise `false`.
 - `verifications:` — never hand-written; appended by `verifications.py append`
   after creation (see "Fresh verification").
+- `depends_on:` — the `H-XXXX` / `C-XXXX` ids this claim logically **relies
+  on** (its premise fails if one of them is refuted), e.g. a hypothesis it
+  refines only under the assumption the parent holds, or a `Claims/` lemma its
+  derivation uses. `[]` when it stands on its own. Not the same as `parent`
+  (refines) or `spawned_from` (provenance). After creating the note, re-run
+  `build_graph.py --vault <vault> --project <slug> --write` (the PostToolUse
+  hook does this too once installed) and report any new `crítico` it prints —
+  e.g. a dangling id you just wrote.
 
 Sections:
 
