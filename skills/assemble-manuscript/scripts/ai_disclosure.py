@@ -28,9 +28,13 @@ Rules this script enforces:
   - It never invents a contribution. A stage with no record says so
     explicitly ("No consta en los registros de Kairo ...").
   - It never claims human involvement it cannot see. Evidence of a human is
-    `generated_by.origin: human`, a `by:` that is not an agent id, an explicit
+    `generated_by.origin: human`, a history `by:` that matches a `--researcher`
+    name (or the literal label human/investigador), an explicit, non-negated
     approval sentence in `## Enmiendas` / `## Revisión del ciclo`, or the
-    manuscript's `ai_disclosure_confirmed_by`. Absence is not evidence.
+    manuscript's `ai_disclosure_confirmed_by`. Absence is not evidence. A `by:`
+    that is neither an agent (model id, Kairo skill/agent name, `@`, `->`,
+    `kairo/`) nor a declared researcher is "unknown": rendered as "no consta si
+    fue una persona o un agente", never as human.
     `autonomy_defaults` is reported as configuration, never as an act.
   - Every `verifications:` entry is reported. `no_errors_found` is rendered
     only as "a verifier found no errors in <scope>" -- never as correct.
@@ -42,7 +46,8 @@ Rules this script enforces:
 Usage:
     python ai_disclosure.py --vault <vault> --project <slug|PROJ-XXX> \\
         --thread <paper_thread> [--hypotheses H-0001,H-0002] \\
-        [--manuscript <path>] [--format markdown|json] [--lang es|en|both]
+        [--manuscript <path>] [--researcher "<name>" ...] \\
+        [--format markdown|json] [--lang es|en|both]
     python ai_disclosure.py --version
 
 Exit codes: 0 ok (flags do not change the exit code; read them),
@@ -55,6 +60,7 @@ Standard library only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -525,6 +531,9 @@ def load_note(path: Path, kind: str, vault: Path, fallback_id: str | None = None
         rel = path.relative_to(vault).as_posix()
     except ValueError:
         rel = path.as_posix()
+    if send_never and not fm.get("id") and not m and not fallback_id:
+        # the file stem may be a title: never output it for a send: never note
+        nid = f"{kind}-sin-id-{hashlib.sha1(rel.encode('utf-8')).hexdigest()[:8]}"
     return Note(nid, kind, path, rel, fm, body, send_never, err)
 
 
@@ -548,24 +557,91 @@ def s(v) -> str:
 
 
 _PLACEHOLDER_RE = re.compile(r"^<.*>$")
+# generic agent markers: model families, pipeline arrows, versioned ids, kairo/ prefix
 _AGENT_BY_RE = re.compile(
-    r"claude|gpt|gemini|llama|mistral|qwen|deepseek|sonnet|opus|haiku|kairo/|->|→|"
-    r"\bagent\b|\bagente\b|@|skill|hypothesis-cycle|update-confidence|preregister|"
-    r"run-experiment|create-project|assemble-manuscript|fresh-verifier",
+    r"claude|gpt|gemini|llama|mistral|mixtral|qwen|deepseek|sonnet|opus|haiku|kimi|grok|gemma|"
+    r"\bo[1-9](?:-[a-z0-9]+)*\b|kairo/|->|→|\bagent\b|\bagente\b|@|\bskill\b",
     re.IGNORECASE)
+# a bare model-id-like token: lowercase, no spaces, contains a digit (o3, kimi-k2, glm-4.5)
+_MODEL_ID_LIKE_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_.:/][a-z0-9]+)*$")
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[3]
+# fallback when the plugin tree is not next to the script; includes Block B names
+_STATIC_KAIRO_NAMES = (
+    "adr-check", "assemble-manuscript", "create-project", "hypothesis-cycle", "literature-search",
+    "paper-to-tool", "preregister-experiment", "run-experiment", "serendipity-scan", "spawn-hypothesis",
+    "update-confidence", "facet-searcher", "facet-summarizer", "second-critic", "evolve-program",
+    "fresh-verifier",
+)
+_HUMAN_LABELS = ("human", "humano", "researcher", "investigador", "investigadora")
 
 
-def classify_by(by, known_models: set[str]) -> str:
-    """agent | human | unknown. Only a non-empty `by:` that does not look like an
-    agent id is read as a human; an empty one is unknown, never human."""
+def kairo_component_names(root: Path | None = None) -> set[str]:
+    """Names of Kairo skills (`skills/<name>/SKILL.md`) and agents (`agents/<name>.md`)
+    in the plugin tree, plus a static fallback list."""
+    root = PLUGIN_ROOT if root is None else Path(root)
+    names = set(_STATIC_KAIRO_NAMES)
+    try:
+        for d in (root / "skills").iterdir():
+            if d.is_dir() and (d / "SKILL.md").is_file():
+                names.add(d.name.lower())
+    except OSError:
+        pass
+    try:
+        for p in (root / "agents").glob("*.md"):
+            names.add(p.stem.lower())
+    except OSError:
+        pass
+    return names
+
+
+_KAIRO_NAMES_RE: re.Pattern | None = None
+
+
+def _kairo_names_re() -> re.Pattern:
+    global _KAIRO_NAMES_RE
+    if _KAIRO_NAMES_RE is None:
+        alts = "|".join(re.escape(n) for n in sorted(kairo_component_names(), key=len, reverse=True))
+        _KAIRO_NAMES_RE = re.compile(rf"(?<![\w-])(?:{alts})(?![\w-])", re.IGNORECASE)
+    return _KAIRO_NAMES_RE
+
+
+def _norm_name(x: str) -> str:
+    return re.sub(r"\s+", " ", s(x)).strip().casefold()
+
+
+def classify_by(by, known_models: set[str], researchers=()) -> str:
+    """agent | human | unknown.
+
+    agent   -- a model id (or model-id-like token), a Kairo skill / agent name, or a
+               generic agent marker (`@`, `->`, `kairo/`, ...);
+    human   -- only positive evidence: the literal label `human` / `investigador`, or
+               a name declared with `--researcher`;
+    unknown -- everything else (incl. empty): never read as a person."""
     b = s(by).strip()
     if not b or _PLACEHOLDER_RE.match(b):
         return "unknown"
-    if b.lower() in ("human", "humano", "researcher", "investigador"):
+    if b.lower() in _HUMAN_LABELS:
         return "human"
-    if _AGENT_BY_RE.search(b) or any(m and m in b for m in known_models):
+    if (_AGENT_BY_RE.search(b) or _kairo_names_re().search(b)
+            or any(m and m in b for m in known_models)
+            or (_MODEL_ID_LIKE_RE.match(b) and re.search(r"\d", b))):
         return "agent"
-    return "human"
+    nb = _norm_name(b)
+    for r in researchers or ():
+        nr = _norm_name(r)
+        if nr and re.search(rf"(?<!\w){re.escape(nr)}(?!\w)", nb):
+            return "human"
+    return "unknown"
+
+
+def _unknown_by_note(by, known_models: set[str], researchers) -> tuple[str, str]:
+    """Suffix for a rendered non-empty `by:` that is neither agent nor declared researcher."""
+    b = s(by).strip()
+    if b and not _PLACEHOLDER_RE.match(b) and classify_by(b, known_models, researchers) == "unknown":
+        return ("; no consta si fue una persona o un agente",
+                "; not recorded whether this was a person or an agent")
+    return "", ""
 
 
 def is_unknown_model(m) -> bool:
@@ -593,6 +669,7 @@ class Ctx:
     papers: list[Note] = field(default_factory=list)
     manuscript: Note | None = None
     exp_links: dict[str, list[str]] = field(default_factory=dict)
+    researchers: list[str] = field(default_factory=list)
     flags: list[dict] = field(default_factory=list)
     statements: list[dict] = field(default_factory=list)
 
@@ -787,6 +864,13 @@ def known_models(ctx: Ctx) -> set[str]:
     return out
 
 
+_NOT_AN_APPROVAL_RE = re.compile(
+    r"(?<!\w)(?:no|nunca|jamás|ni|debe|deben|debería|deberían|deberá|tiene que|hay que|pendiente|"
+    r"pendientes|falta|faltan|sin aprobar|sin confirmar|a la espera|requiere|to be|must|should|"
+    r"pending|not|never|awaiting|requires?|needs? to)(?!\w)",
+    re.IGNORECASE)
+
+
 def _approval_sentences(text: str) -> list[str]:
     pats = [
         r"aprobad[oa]s?\s+por\s+(?:el|la)\s+investigador[a]?",
@@ -801,6 +885,8 @@ def _approval_sentences(text: str) -> list[str]:
     out = []
     flat = re.sub(r"\s+", " ", text)
     for sent in re.split(r"(?<=[.;])\s+", flat):
+        if _NOT_AN_APPROVAL_RE.search(sent):
+            continue   # negated / modal / pending: not a record that it happened
         if rx.search(sent):
             sent = sent.strip()
             out.append(sent if len(sent) <= 240 else sent[:237] + "…")
@@ -1044,12 +1130,13 @@ def analyze(ctx: Ctx) -> dict:
             first = hist[0]
             by = s(first.get("by"))
             ev = s(first.get("evidence"))
+            unk_es, unk_en = _unknown_by_note(by, km, ctx.researchers)
             ctx.say("hipotesis", "record",
                     f"{h.id}: primer registro del historial ({s(first.get('date'))}, status "
-                    f"{s(first.get('status'))}, by: {by or 'no consta'})"
+                    f"{s(first.get('status'))}, by: {by or 'no consta'}{unk_es})"
                     + (f": «{ev}»." if ev else "."),
                     f"{h.id}: first history entry ({s(first.get('date'))}, status {s(first.get('status'))}, "
-                    f"by: {by or 'not recorded'})" + (f": “{ev}”." if ev else "."),
+                    f"by: {by or 'not recorded'}{unk_en})" + (f": “{ev}”." if ev else "."),
                     [f"{h.id} history {s(first.get('date'))}"])
         else:
             ctx.say("hipotesis", "none", f"{h.id}: no tiene historial de estado registrado.",
@@ -1091,12 +1178,17 @@ def analyze(ctx: Ctx) -> dict:
                    "historial: transiciones de estado")
             for mid in models_in_text(by):
                 add_model(mid, use, f"{src} by")
-            cls = classify_by(by, km)
+            cls = classify_by(by, km, ctx.researchers)
             if cls == "human":
                 human_evidence.append((f"{h.id}: el historial atribuye la transición a «{st}» del {date} "
                                        f"a «{by}».",
                                        f"{h.id}: the history attributes the {date} transition to “{st}” "
                                        f"to “{by}”.", [src]))
+            elif cls == "unknown" and by.strip() and not _PLACEHOLDER_RE.match(by.strip()):
+                ctx.flag("menor", f"{src}: by «{by}» no identifica ni un agente de Kairo ni un investigador "
+                         f"declarado (--researcher); se declara que no consta si fue una persona o un agente",
+                         h.id, "history.by")
+            unk_es, unk_en = _unknown_by_note(by, km, ctx.researchers)
             if st == "preregistrada":
                 for x in exps:
                     prereg_by.setdefault(x, []).append((by, src))
@@ -1104,11 +1196,11 @@ def analyze(ctx: Ctx) -> dict:
                 continue
             comb = s(e.get("combination"))
             ev = s(e.get("evidence"))
-            es = (f"{h.id}: {date} → {st} (by: {by or 'no consta'}"
+            es = (f"{h.id}: {date} → {st} (by: {by or 'no consta'}{unk_es}"
                   f"{'; experimentos ' + ', '.join(exps) if exps else ''}"
                   f"{'; combinación ' + comb if comb and comb != 'n/a' else ''})"
                   + (f": «{ev}»." if ev else "."))
-            en = (f"{h.id}: {date} → {st} (by: {by or 'not recorded'}"
+            en = (f"{h.id}: {date} → {st} (by: {by or 'not recorded'}{unk_en}"
                   f"{'; experiments ' + ', '.join(exps) if exps else ''}"
                   f"{'; combination ' + comb if comb and comb != 'n/a' else ''})"
                   + (f": “{ev}”." if ev else "."))
@@ -1131,12 +1223,15 @@ def analyze(ctx: Ctx) -> dict:
         tier, ap = s(fm.get("tier")), s(fm.get("analysis_plan"))
         if fa:
             ctx.say("preregistro", "record",
-                    f"{e.id}: preregistro congelado el {fa}{' (commit ' + fc + ')' if fc else ''}, antes de "
-                    f"ejecutar código; tier {tier or 'no consta'}, plan de análisis {ap or 'no consta'}, "
+                    f"{e.id}: preregistro congelado el {fa} (frozen_at{'; commit ' + fc if fc else ''}); "
+                    f"según el protocolo de Kairo, el preregistro se congela antes de ejecutar código "
+                    f"(frozen_at registra el congelado, no cuándo se ejecutó el código); tier "
+                    f"{tier or 'no consta'}, plan de análisis {ap or 'no consta'}, "
                     f"rol {role_es}, peldaño {rung_es}.",
-                    f"{e.id}: preregistration frozen at {fa}{' (commit ' + fc + ')' if fc else ''}, before any "
-                    f"code ran; tier {tier or 'not recorded'}, analysis plan {ap or 'not recorded'}, role "
-                    f"{role_en}, rung {rung_en}.",
+                    f"{e.id}: preregistration frozen at {fa} (frozen_at{'; commit ' + fc if fc else ''}); "
+                    f"under Kairo's protocol the preregistration is frozen before any code runs (frozen_at "
+                    f"records the freeze, not when the code ran); tier {tier or 'not recorded'}, analysis plan "
+                    f"{ap or 'not recorded'}, role {role_en}, rung {rung_en}.",
                     [f"{e.id} frozen_at", f"{e.id} frozen_commit", f"{e.id} tier", f"{e.id} analysis_plan",
                      f"{e.id} role", f"{e.id} rung"])
         else:
@@ -1159,9 +1254,11 @@ def analyze(ctx: Ctx) -> dict:
                 ctx.flag("importante", f"{e.id}: generated_by sin modelo reconocible", e.id, "generated_by.model")
         elif e.id in prereg_by:
             for by, src in prereg_by[e.id]:
-                who = classify_by(by, km)
-                who_es = {"agent": "un agente", "human": "una persona", "unknown": "alguien no identificado"}[who]
-                who_en = {"agent": "an agent", "human": "a person", "unknown": "an unidentified actor"}[who]
+                who = classify_by(by, km, ctx.researchers)
+                who_es = {"agent": "un agente", "human": "una persona",
+                          "unknown": "un actor del que no consta si fue una persona o un agente"}[who]
+                who_en = {"agent": "an agent", "human": "a person",
+                          "unknown": "an actor for whom it is not recorded whether it was a person or an agent"}[who]
                 ctx.say("preregistro", "ai" if who == "agent" else "record",
                         f"{e.id}: la transición de la hipótesis a «preregistrada» la registró {who_es} "
                         f"(by: {by or 'no consta'}). La nota del experimento no registra quién redactó el diseño.",
@@ -1247,24 +1344,49 @@ def analyze(ctx: Ctx) -> dict:
         res = fm.get("result") if isinstance(fm.get("result"), dict) else {}
         if st == "completed":
             script = ANALYSIS_SCRIPTS.get(ap)
-            ctx.say("ejecucion", "mechanical",
-                    f"{e.id}: ejecutado (status: completed; experiment_validity: "
-                    f"{s(fm.get('experiment_validity')) or 'no consta'}). "
-                    + (f"El veredicto lo aplica mecánicamente el script de análisis congelado del plan {ap} "
-                       f"({script}) sobre los umbrales del preregistro; la IA no juzgó la significación."
-                       if script else "El plan de análisis no consta, así que no puede afirmarse qué script "
-                                      "fijó el veredicto.")
-                    + (f" Veredicto registrado: «{s(res.get('verdict'))}»." if res.get("verdict") else ""),
-                    f"{e.id}: executed (status: completed; experiment_validity: "
-                    f"{s(fm.get('experiment_validity')) or 'not recorded'}). "
-                    + (f"The verdict is applied mechanically by the frozen analysis script of the {ap} plan "
-                       f"({script}) to the preregistered thresholds; the AI did not judge significance."
-                       if script else "The analysis plan is not recorded, so which script set the verdict "
-                                      "cannot be stated.")
-                    + (f" Recorded verdict: “{s(res.get('verdict'))}”." if res.get("verdict") else ""),
-                    [f"{e.id} status", f"{e.id} experiment_validity", f"{e.id} analysis_plan", f"{e.id} result.verdict"])
-            if script:
-                skill_versions.setdefault(script, []).append(f"{e.id} analysis_plan")
+            resultado = e.sections().get("Resultado", "")
+            ran = [p for p in ANALYSIS_SCRIPTS.values() if p.rsplit("/", 1)[-1] in resultado]
+            head_es = (f"{e.id}: ejecutado (status: completed; experiment_validity: "
+                       f"{s(fm.get('experiment_validity')) or 'no consta'}). ")
+            head_en = (f"{e.id}: executed (status: completed; experiment_validity: "
+                       f"{s(fm.get('experiment_validity')) or 'not recorded'}). ")
+            verdict_es = f" Veredicto registrado: «{s(res.get('verdict'))}»." if res.get("verdict") else ""
+            verdict_en = f" Recorded verdict: “{s(res.get('verdict'))}”." if res.get("verdict") else ""
+            srcs = [f"{e.id} status", f"{e.id} experiment_validity", f"{e.id} analysis_plan",
+                    f"{e.id} result.verdict"]
+            if ran:
+                names = ", ".join(ran)
+                ctx.say("ejecucion", "mechanical",
+                        head_es + f"La sección «Resultado» registra la ejecución del script de análisis "
+                        f"congelado ({names}); el veredicto lo fijó ese script sobre los umbrales del "
+                        f"preregistro; la IA no juzgó la significación." + verdict_es,
+                        head_en + f"The “Resultado” section records the run of the frozen analysis script "
+                        f"({names}); that script set the verdict against the preregistered thresholds; the AI "
+                        f"did not judge significance." + verdict_en,
+                        srcs + [f"{e.id} §Resultado"])
+                for p in ran:
+                    skill_versions.setdefault(p, []).append(f"{e.id} §Resultado")
+                if script and script not in ran:
+                    ctx.flag("importante", f"{e.id}: analysis_plan: {ap} prevé {script}, pero «Resultado» "
+                             f"registra {names}", e.id, "analysis_plan")
+            else:
+                ctx.say("ejecucion", "record",
+                        head_es + (f"Según el protocolo de Kairo, el veredicto lo aplica mecánicamente el script "
+                                   f"de análisis congelado del plan {ap} ({script}); no consta en la nota "
+                                   f"(sección «Resultado») que ese script se ejecutara, así que no puede "
+                                   f"afirmarse quién o qué fijó el veredicto."
+                                   if script else "El plan de análisis no consta, así que no puede afirmarse "
+                                                  "qué script fijó el veredicto.") + verdict_es,
+                        head_en + (f"Under Kairo's protocol the verdict is applied mechanically by the frozen "
+                                   f"analysis script of the {ap} plan ({script}); the note (“Resultado” section) "
+                                   f"does not record that this script ran, so who or what set the verdict cannot "
+                                   f"be stated." if script else "The analysis plan is not recorded, so which "
+                                                                "script set the verdict cannot be stated.")
+                        + verdict_en,
+                        srcs + [f"{e.id} §Resultado (sin registro del script)"])
+                if script:
+                    ctx.flag("importante", f"{e.id}: «Resultado» no registra la ejecución de {script}; no "
+                             f"puede declararse que el veredicto lo fijara el script", e.id, "Resultado")
             if fm.get("cost_actual"):
                 ctx.say("ejecucion", "record", f"{e.id}: coste real registrado: «{s(fm.get('cost_actual'))}».",
                         f"{e.id}: recorded actual cost: “{s(fm.get('cost_actual'))}”.", [f"{e.id} cost_actual"])
@@ -1407,17 +1529,39 @@ def analyze(ctx: Ctx) -> dict:
                     f"{' with ' + sv if sv else ''} (generated {gen or 'date not recorded'}, status "
                     f"{s(m.fm.get('status')) or 'not recorded'}), from the Kairo notes cited above.",
                     [f"{m.id} generated_by", f"{m.id} generated", f"{m.id} status"])
-        else:
+        elif g and s(g.get("origin")).strip() == "agent":
+            sv = s(g.get("skill_version"))
+            if sv:
+                skill_versions.setdefault(sv, []).append(f"{m.id} generated_by.skill_version")
             ctx.say("redaccion", "ai",
-                    f"El borrador del manuscrito lo generó la skill assemble-manuscript de Kairo, un sistema de IA "
-                    f"(generado {gen or 'fecha no registrada'}, status {s(m.fm.get('status')) or 'no consta'}); "
-                    f"el modelo concreto no consta en el manuscrito.",
-                    f"The manuscript draft was generated by Kairo's assemble-manuscript skill, an AI system "
-                    f"(generated {gen or 'date not recorded'}, status {s(m.fm.get('status')) or 'not recorded'}); "
-                    f"the specific model is not recorded in the manuscript.",
-                    [f"{m.id} generated", f"{m.id} status", f"{m.id} generated_by (ausente)"])
+                    f"El borrador del manuscrito lo redactó IA según su generated_by (origin: agent"
+                    f"{', ' + sv if sv else ''}); el modelo concreto no consta (generado "
+                    f"{gen or 'fecha no registrada'}, status {s(m.fm.get('status')) or 'no consta'}).",
+                    f"The manuscript draft was written by AI according to its generated_by (origin: agent"
+                    f"{', ' + sv if sv else ''}); the specific model is not recorded (generated "
+                    f"{gen or 'date not recorded'}, status {s(m.fm.get('status')) or 'not recorded'}).",
+                    [f"{m.id} generated_by", f"{m.id} generated", f"{m.id} status"])
             ctx.flag("importante", f"{m.id}: el modelo que redactó el manuscrito no está registrado "
-                     f"(añadir generated_by al frontmatter)", m.id, "generated_by")
+                     f"(generated_by sin model)", m.id, "generated_by.model")
+        elif g and s(g.get("origin")).strip() == "human":
+            ctx.say("redaccion", "human",
+                    "El borrador del manuscrito está registrado como de origen humano (generated_by.origin: human).",
+                    "The manuscript draft is recorded as human-written (generated_by.origin: human).",
+                    [f"{m.id} generated_by.origin"])
+            human_evidence.append(("El borrador del manuscrito es de origen humano (generated_by.origin: human).",
+                                   "The manuscript draft is human-written (generated_by.origin: human).",
+                                   [f"{m.id} generated_by.origin"]))
+        else:
+            ctx.say("redaccion", "none",
+                    f"No consta en los registros de Kairo quién redactó el borrador del manuscrito (IA o "
+                    f"investigador) ni con qué modelo: la nota {m.id} no tiene generated_by (generado "
+                    f"{gen or 'fecha no registrada'}, status {s(m.fm.get('status')) or 'no consta'}).",
+                    f"Kairo's records do not show who drafted the manuscript (AI or researcher) or with which "
+                    f"model: the note {m.id} has no generated_by (generated {gen or 'date not recorded'}, status "
+                    f"{s(m.fm.get('status')) or 'not recorded'}).",
+                    [f"{m.id} generated", f"{m.id} status", f"{m.id} generated_by (ausente)"])
+            ctx.flag("importante", f"{m.id}: la autoría y el modelo de la redacción del manuscrito no están "
+                     f"registrados (añadir generated_by al frontmatter)", m.id, "generated_by")
     elif m:
         ctx.say("redaccion", "none",
                 f"La nota del manuscrito {m.id} no puede declararse automáticamente (send: never o frontmatter "
@@ -1425,13 +1569,11 @@ def analyze(ctx: Ctx) -> dict:
                 f"The manuscript note {m.id} cannot be declared automatically (send: never or unreadable "
                 f"frontmatter); the drafting model and date are not stated here.", [f"{m.id}"])
     else:
-        ctx.say("redaccion", "ai",
-                "Esta declaración la generó ai_disclosure.py para la skill assemble-manuscript de Kairo, que "
-                "redacta borradores de manuscrito con IA; no se proporcionó la nota del manuscrito, así que el "
-                "modelo y la fecha de redacción no constan.",
-                "This statement was generated by ai_disclosure.py for Kairo's assemble-manuscript skill, which "
-                "drafts manuscripts with AI; the manuscript note was not provided, so the drafting model and date "
-                "are not recorded.", ["--manuscript (no dado)"])
+        ctx.say("redaccion", "none",
+                "No se proporcionó la nota del manuscrito: no consta en los registros quién redactó el borrador "
+                "(IA o investigador), ni el modelo ni la fecha de redacción.",
+                "The manuscript note was not provided: the records do not show who drafted the manuscript (AI or "
+                "researcher), nor the drafting model or date.", ["--manuscript (no dado)"])
         ctx.flag("importante", "No se pasó --manuscript: la etapa de redacción no tiene registro del modelo "
                  "ni la fecha", None, "--manuscript")
     ctx.say("redaccion", "none",
@@ -1597,6 +1739,7 @@ def render_markdown(ctx: Ctx, info: dict, langs: list[str]) -> str:
 def build(args) -> tuple[Ctx, dict]:
     hyp = [x.strip() for x in args.hypotheses.split(",") if x.strip()] if args.hypotheses else None
     ctx = collect(Path(args.vault), args.project, args.thread, hyp, args.manuscript)
+    ctx.researchers = [r.strip() for r in (getattr(args, "researcher", None) or []) if r and r.strip()]
     info = analyze(ctx)
     return ctx, info
 
@@ -1607,8 +1750,10 @@ def to_json(ctx: Ctx, info: dict) -> dict:
         "project": ctx.project_id,
         "project_dir": ctx.project_dir.relative_to(ctx.vault).as_posix(),
         "thread": ctx.thread,
-        "notes": [{"id": n.id, "kind": n.kind, "path": n.rel, "send_never": n.send_never,
-                   "parse_error": None if n.send_never else n.parse_error} for n in ctx.all_notes()],
+        # send: never -> id only (a path like `Papers/P-XXXX <title>.md` would leak the title)
+        "notes": [{"id": n.id, "kind": n.kind, "send_never": True} if n.send_never else
+                  {"id": n.id, "kind": n.kind, "path": n.rel, "send_never": False, "parse_error": n.parse_error}
+                  for n in ctx.all_notes()],
         "hypotheses": [h.id for h in ctx.hypotheses],
         "experiments": [e.id for e in ctx.experiments],
         "tools": [t.id for t in ctx.tools],
@@ -1628,6 +1773,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--thread", required=True, help="paper_thread slug")
     ap.add_argument("--hypotheses", help="comma-separated ids (the gate's qualifying list)")
     ap.add_argument("--manuscript", help="manuscript note path (absolute or vault-relative)")
+    ap.add_argument("--researcher", action="append", default=[], metavar="NAME",
+                    help="name of a human researcher (repeatable); a history `by:` is read as a person "
+                         "only if it matches one of these (or the literal label human/investigador)")
     ap.add_argument("--format", choices=("markdown", "json"), default="markdown")
     ap.add_argument("--json", action="store_true", help="alias for --format json")
     ap.add_argument("--lang", choices=("es", "en", "both"), default="both")

@@ -196,8 +196,15 @@ AI-generated images. Do not write or paraphrase the disclosure yourself.
    python "${CLAUDE_PLUGIN_ROOT}/skills/assemble-manuscript/scripts/ai_disclosure.py" \
      --vault <vault> --project <slug> --thread <paper_thread> \
      --hypotheses <qualifying ids from Step 2, comma-separated> \
-     --manuscript Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md
+     --manuscript Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md \
+     --researcher "<name as it appears in history by:>"   # repeatable flag
    ```
+
+   `--researcher`: a history `by:` counts as a person only when it matches a
+   name passed here. **Ask the researcher for the name(s) — never guess.**
+   Without it, a `by:` that is neither a model nor a Kairo component is
+   reported as "no consta si fue una persona o un agente" and never credited to
+   the researcher.
 
    Exit `2` = wrong project/thread/id/path (fix the input). Exit `1` = the script failed: say so and do not
    write a disclosure by hand. Pass `--format json` to read the flags programmatically.

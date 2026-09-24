@@ -249,6 +249,11 @@ def build_vault(root: Path) -> None:
 
         Test.
 
+        ## Resultado
+
+        Comando: `python scripts/analysis/two_proportion_test.py 30 100 18 100 --alpha 0.05`
+        Salida: p = 0.01, verdict apoyada.
+
         ## Enmiendas
 
         ### 2026-09-04 — Activación ReLU
@@ -401,7 +406,7 @@ class YamlSubsetTests(unittest.TestCase):
             self.assertFalse(ad.raw_send_never(fm), fm)
 
     def test_classify_by(self):
-        self.assertEqual(ad.classify_by("Ana Pérez", set()), "human")
+        self.assertEqual(ad.classify_by("Ana Pérez", set(), ["Ana Pérez"]), "human")
         self.assertEqual(ad.classify_by("claude-sonnet-5 (a -> b)", set()), "agent")
         self.assertEqual(ad.classify_by("", set()), "unknown")
         self.assertEqual(ad.classify_by(None, set()), "unknown")
@@ -414,6 +419,7 @@ class DisclosureTests(unittest.TestCase):
         cls.vault = cls.tmp / "vault"
         build_vault(cls.vault)
         cls.base = ["--vault", str(cls.vault), "--project", SLUG, "--thread", "hilo-uno",
+                    "--researcher", "Ana Pérez",
                     "--manuscript", f"Projects/{SLUG}/Manuscritos/manuscript-hilo-uno.md"]
         code, cls.md = run(cls.base)
         assert code == 0, cls.md
@@ -623,7 +629,7 @@ class HistoryModelTests(unittest.TestCase):
 
     def test_models_in_text(self):
         self.assertEqual(ad.models_in_text("claude-opus-5-5 (x -> y); gpt-4o."), ["claude-opus-5-5", "gpt-4o"])
-        self.assertEqual(ad.models_in_text("Hugo Gómez"), [])
+        self.assertEqual(ad.models_in_text("Ana Pérez"), [])
 
 
 class ZeroVerificationTests(unittest.TestCase):
@@ -647,6 +653,250 @@ class ZeroVerificationTests(unittest.TestCase):
             self.assertTrue(any("No consta en los registros de Kairo" in s for s in lit))
             self.assertTrue(any("No consta en los registros de Kairo ningún preregistro" in s["es"]
                                 for s in js["statements"]))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class ClassifyByTests(unittest.TestCase):
+    """I6: three-way agent / human / unknown; human only from a declared researcher."""
+
+    AGENTS = ("spawn-hypothesis", "second-critic", "evolve-program", "paper-to-tool", "literature-search",
+              "serendipity-scan", "adr-check", "o3", "kimi-k2", "fresh-verifier", "facet-searcher",
+              "kairo/run-experiment@1.0.0", "x -> y", "bot@host")
+
+    def test_kairo_names_and_models_are_agents(self):
+        for by in self.AGENTS:
+            self.assertEqual(ad.classify_by(by, set()), "agent", by)
+            self.assertEqual(ad.classify_by(by, set(), ["Ana Pérez"]), "agent", by)
+
+    def test_unlisted_name_is_unknown_not_human(self):
+        for by in ("Ana Pérez", "Bob", "someone", "equipo"):
+            self.assertEqual(ad.classify_by(by, set()), "unknown", by)
+        self.assertEqual(ad.classify_by("Bob", set(), ["Ana Pérez"]), "unknown")
+
+    def test_declared_researcher_is_human(self):
+        self.assertEqual(ad.classify_by("ana  pérez", set(), ["Ana Pérez"]), "human")
+        self.assertEqual(ad.classify_by("Ana Pérez (manual)", set(), ["Ana Pérez"]), "human")
+        self.assertEqual(ad.classify_by("Anastasia", set(), ["Ana"]), "unknown")
+
+    def test_component_names_dynamic_plus_static(self):
+        names = ad.kairo_component_names()
+        for n in ("paper-to-tool", "adr-check", "second-critic", "facet-searcher", "facet-summarizer",
+                  "evolve-program", "fresh-verifier", "assemble-manuscript"):
+            self.assertIn(n, names)
+        tmp = Path(tempfile.mkdtemp(prefix="kairo-a2n-"))
+        try:
+            w(tmp, "skills/brand-new-skill/SKILL.md", "x\n")
+            w(tmp, "agents/brand-new-agent.md", "x\n")
+            (tmp / "skills" / "not-a-skill").mkdir()
+            names = ad.kairo_component_names(tmp)
+            self.assertIn("brand-new-skill", names)
+            self.assertIn("brand-new-agent", names)
+            self.assertNotIn("not-a-skill", names)
+            self.assertIn("evolve-program", names)   # static fallback still present
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_unknown_by_rendered_as_unknown_never_human(self):
+        tmp = Path(tempfile.mkdtemp(prefix="kairo-a2c-"))
+        try:
+            w(tmp, "Projects/p/Hipotesis/H-0001 x.md", """
+                ---
+                id: H-0001
+                paper_thread: t
+                generated_by: {origin: agent, model: claude-sonnet-5}
+                history:
+                  - date: 2026-09-01
+                    status: propuesta
+                    by: spawn-hypothesis
+                  - date: 2026-09-02
+                    status: preregistrada
+                    by: Bob Desconocido
+                    experiments: [E-0001]
+                  - date: 2026-09-03
+                    status: en_ejecucion
+                    by: kimi-k2
+                ---
+                """)
+            argv = ["--vault", str(tmp), "--project", "p", "--thread", "t", "--format", "json"]
+            js = json.loads(run(argv)[1])
+            hum = "\n".join(s["es"] for s in js["statements"] if s["stage"] == "humano")
+            for name in ("Bob Desconocido", "spawn-hypothesis", "kimi-k2"):
+                self.assertNotIn(name, hum)
+            self.assertIn("ninguna acción atribuida al investigador", hum)
+            bob = [s["es"] for s in js["statements"] if "Bob Desconocido" in s["es"]]
+            self.assertTrue(bob and all("no consta si fue una persona o un agente" in s for s in bob), bob)
+            self.assertTrue(any("Bob Desconocido" in f["message"] and "--researcher" in f["message"]
+                                for f in js["flags"]))
+            # declared researcher -> human evidence
+            js = json.loads(run(argv + ["--researcher", "Bob Desconocido"])[1])
+            hum = "\n".join(s["es"] for s in js["statements"] if s["stage"] == "humano")
+            self.assertIn("«Bob Desconocido»", hum)
+            self.assertNotIn("spawn-hypothesis", hum)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class ApprovalNegationTests(unittest.TestCase):
+    """M1: negated / modal / pending approval sentences are not evidence."""
+
+    def test_negated_or_modal_excluded(self):
+        for txt in ("Debe ser aprobado por el investigador.",
+                    "No consta que el investigador aprobó el cambio.",
+                    "Pendiente: aprobado por el investigador.",
+                    "Falta que el investigador confirmó.",
+                    "El investigador nunca aprobó esto.",
+                    "Debería ser decidido por el investigador.",
+                    "Sin aprobar por el investigador.",
+                    "To be approved by the researcher.",
+                    "This must be approved by the researcher.",
+                    "Should be approved by the researcher.",
+                    "Pending: approved by the researcher.",
+                    "Not approved by the researcher."):
+            self.assertEqual(ad._approval_sentences(txt), [], txt)
+
+    def test_positive_kept(self):
+        self.assertEqual(ad._approval_sentences("Aprobado por el investigador antes de ejecutar código."),
+                         ["Aprobado por el investigador antes de ejecutar código."])
+        self.assertEqual(len(ad._approval_sentences("Motivo X. The researcher approved it.")), 1)
+
+
+class OverclaimTests(unittest.TestCase):
+    """M2: protocol statements / 'no consta' instead of unrecorded facts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="kairo-a2o-"))
+        w(cls.tmp, "Projects/p/Hipotesis/H-0001 x.md", """
+            ---
+            id: H-0001
+            paper_thread: t
+            generated_by: {origin: agent, model: claude-sonnet-5}
+            linked_experiment: [E-0001, E-0002]
+            ---
+            """)
+        w(cls.tmp, "Projects/p/Experimentos/E-0001.md", """
+            ---
+            id: E-0001
+            hypothesis: H-0001
+            analysis_plan: frequentist
+            status: completed
+            frozen_at: 2026-09-03T10:00:00Z
+            result: {verdict: apoyada}
+            ---
+
+            ## Resultado
+
+            Veredicto apoyada (analizado a mano).
+            """)
+        w(cls.tmp, "Projects/p/Experimentos/E-0002.md", """
+            ---
+            id: E-0002
+            hypothesis: H-0001
+            analysis_plan: bayesian
+            status: completed
+            ---
+
+            ## Resultado
+
+            `python scripts/analysis/bayes_factor_proportions.py 30 100 18 100` -> BF 12
+            """)
+        w(cls.tmp, "Projects/p/Manuscritos/m.md", """
+            ---
+            status: draft
+            generated: 2026-09-15
+            ---
+            Texto.
+            """)
+        cls.argv = ["--vault", str(cls.tmp), "--project", "p", "--thread", "t", "--format", "json"]
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def js(self, extra=()):
+        code, out = run(self.argv + list(extra))
+        self.assertEqual(code, 0)
+        return json.loads(out)
+
+    def st(self, js, stage):
+        return [s["es"] + "\n" + s["en"] for s in js["statements"] if s["stage"] == stage]
+
+    def test_prereg_freeze_is_protocol_not_fact(self):
+        pre = "\n".join(self.st(self.js(), "preregistro"))
+        self.assertIn("E-0001: preregistro congelado el 2026-09-03T10:00:00Z", pre)
+        self.assertIn("según el protocolo de Kairo", pre)
+        self.assertNotIn(", antes de ejecutar código;", pre)
+        self.assertNotIn("before any code ran;", pre)
+
+    def test_mechanical_verdict_only_when_resultado_records_script(self):
+        js = self.js()
+        ex = self.st(js, "ejecucion")
+        e1 = "\n".join(s for s in ex if s.startswith("E-0001"))
+        e2 = "\n".join(s for s in ex if s.startswith("E-0002"))
+        self.assertNotIn("la IA no juzgó", e1)
+        self.assertNotIn("the AI did not judge", e1)
+        self.assertIn("no consta", e1)
+        self.assertIn("la IA no juzgó la significación", e2)
+        self.assertIn("bayes_factor_proportions.py", e2)
+        kinds = {s["es"][:6]: s["kind"] for s in js["statements"] if s["stage"] == "ejecucion"}
+        self.assertEqual(kinds["E-0001"], "record")
+        self.assertEqual(kinds["E-0002"], "mechanical")
+
+    def test_drafting_not_attributed_without_generated_by(self):
+        for extra in ((), ("--manuscript", "Projects/p/Manuscritos/m.md")):
+            js = self.js(extra)
+            red = self.st(js, "redaccion")
+            joined = "\n".join(red)
+            self.assertNotIn("lo generó la skill assemble-manuscript", joined)
+            self.assertNotIn("drafts manuscripts with AI", joined)
+            self.assertNotIn("was generated by Kairo's assemble-manuscript", joined)
+            self.assertTrue(any("no consta" in s.lower() for s in red), red)
+            self.assertNotIn("ai", [s["kind"] for s in js["statements"] if s["stage"] == "redaccion"])
+
+
+class SendNeverLeakTests(unittest.TestCase):
+    """M3: send: never notes output only their id (no path, no title)."""
+
+    def test_no_path_or_title_for_send_never(self):
+        tmp = Path(tempfile.mkdtemp(prefix="kairo-a2s-"))
+        try:
+            w(tmp, "Projects/p/Hipotesis/H-0001 x.md", """
+                ---
+                id: H-0001
+                paper_thread: t
+                generated_by: {origin: human}
+                linked_papers: [P-0007]
+                ---
+                """)
+            w(tmp, "Papers/P-0007 Titulo Secreto Muy Revelador.md", """
+                ---
+                id: P-0007
+                send: never
+                title: Titulo Secreto Muy Revelador
+                ---
+                """)
+            w(tmp, "Projects/p/Hipotesis/Hipotesis Confidencial.md", """
+                ---
+                send: never
+                paper_thread: t
+                ---
+                """)
+            argv = ["--vault", str(tmp), "--project", "p", "--thread", "t"]
+            code, md = run(argv)
+            self.assertEqual(code, 0)
+            code, out = run(argv + ["--format", "json"])
+            js = json.loads(out)
+            for text in (md, out):
+                for secret in ("Titulo Secreto", "Revelador", "Confidencial"):
+                    self.assertNotIn(secret, text)
+            sn = [n for n in js["notes"] if n["send_never"]]
+            self.assertEqual(len(sn), 2)
+            self.assertTrue(any(n["id"] == "P-0007" for n in sn))
+            for n in sn:
+                self.assertNotIn("path", n)
+                self.assertNotIn("parse_error", n)
+            self.assertTrue(all("path" in n for n in js["notes"] if not n["send_never"]))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

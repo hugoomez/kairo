@@ -3,11 +3,11 @@
 Files (Block A, A2):
 
 - `skills/assemble-manuscript/scripts/ai_disclosure.py` — the generator (stdlib only, `--version` → `kairo/ai_disclosure.py@1.0.0`).
-- `skills/assemble-manuscript/scripts/test_ai_disclosure.py` — 23 unittest tests, synthetic temp vault only.
+- `skills/assemble-manuscript/scripts/test_ai_disclosure.py` — 34 unittest tests, synthetic temp vault only.
   Run: `cd skills/assemble-manuscript/scripts && python -m unittest test_ai_disclosure -v`.
 - This file. `skills/assemble-manuscript/SKILL.md` is **not** edited by A2; the exact text to add is in §3.
 
-Smoke-tested read-only against the real vault (PROJ-001, `--hypotheses H-0006,H-0001`): all 34 vault notes
+Smoke-tested read-only against the real vault (its one project, two hypotheses): all 34 vault notes
 parse, exit 0, output only on stdout. Nothing was written to the vault.
 
 ## 1. Venue requirements matrix (retrieved 2026-09-24)
@@ -62,7 +62,7 @@ text afterwards, which could drift from what the records show. `--lang es|en` gi
 
 ## 2. What the script does (for review)
 
-`python ai_disclosure.py --vault <vault> --project <slug|PROJ-XXX> --thread <paper_thread> [--hypotheses H-…] [--manuscript <path>] [--format markdown|json] [--lang es|en|both]`
+`python ai_disclosure.py --vault <vault> --project <slug|PROJ-XXX> --thread <paper_thread> [--hypotheses H-…] [--manuscript <path>] [--researcher "<name>" …] [--format markdown|json] [--lang es|en|both]`
 
 Exit codes: `0` ok (flags don't change the exit code), `1` error, `2` invalid input (vault, project, thread,
 a `--hypotheses` id, or the manuscript path not found).
@@ -85,12 +85,27 @@ a `--hypotheses` id, or the manuscript path not found).
   "no errors found" result is not a certification of correctness. It never writes "correcto" or
   "verificado". A verdict outside the enum is quoted verbatim, flagged `importante`, and not interpreted.
 - Human involvement comes only from these records: `generated_by.origin: human`; a history `by:` that
-  isn't agent-like (a heuristic: model names, `->`, `@`, skill names count as agent-like; an empty `by:`
-  counts as unknown, never as human); explicit approval or override sentences in `## Enmiendas` or
-  `## Revisión del ciclo`; and the manuscript's `ai_disclosure_confirmed_by`. `autonomy_defaults` is
-  reported as "configuración, no un registro de cada decisión". The execution stage says the verdict came
-  from the frozen analysis script (`analysis_plan` → `two_proportion_test.py` / `bayes_factor_proportions.py`),
-  not from an AI judgement. It says this only when `status: completed` and `analysis_plan` is recorded.
+  matches a name passed with **`--researcher "<name>"`** (repeatable; case/whitespace-insensitive, whole
+  words) or the literal label `human` / `investigador`; explicit, non-negated approval or override
+  sentences in `## Enmiendas` or `## Revisión del ciclo` (sentences with no/nunca/debe/debería/pendiente/
+  falta/sin aprobar/to be/must/should/pending/not … are ignored); and the manuscript's
+  `ai_disclosure_confirmed_by`. `by:` is classified three ways: **agent** (model id or model-id-like token
+  such as `o3` / `kimi-k2`; any Kairo skill or agent name, read from the plugin's `skills/*/SKILL.md` and
+  `agents/*.md` plus a static fallback incl. `evolve-program`, `fresh-verifier`, `second-critic`; `@`,
+  `->`, `kairo/`), **human** (above), **unknown** (everything else, incl. empty). Unknown is rendered as
+  "no consta si fue una persona o un agente", never in stage 9, and gets a `menor` flag suggesting
+  `--researcher`. The project template has no researcher field, so the names come from the CLI only.
+  `autonomy_defaults` is reported as "configuración, no un registro de cada decisión".
+- Protocol vs. record: `frozen_at` is reported as the freeze time plus "según el protocolo de Kairo, el
+  preregistro se congela antes de ejecutar código" (not as a fact about when code ran). The execution stage
+  says the verdict was set by the frozen analysis script **only when `## Resultado` names the script**
+  (`two_proportion_test.py` / `bayes_factor_proportions.py`); otherwise it states the protocol and "no
+  consta … que ese script se ejecutara" and flags `importante`. Drafting is attributed only from the
+  manuscript note's `generated_by` (agent → AI; human → human); without it, or without `--manuscript`, it
+  says "no consta".
+- JSON `notes[]`: a `send: never` note is `{id, kind, send_never: true}` only (no `path`, no
+  `parse_error`); if such a note has no id in frontmatter or filename, a hashed placeholder id is used so
+  the file stem (possibly a title) never appears.
 - **`send: never` (A3 requirement):** a note whose top-level frontmatter has `send: never` (case-insensitive,
   quoted or not, trailing comment allowed; the check runs on the raw line and on the parsed value) contributes
   **only its id** and the flag `importante — <id> marcado send: never; su contribución no puede declararse
@@ -137,11 +152,14 @@ AI-generated images. Do not write or paraphrase the disclosure yourself.
    python "${CLAUDE_PLUGIN_ROOT}/skills/assemble-manuscript/scripts/ai_disclosure.py" \
      --vault <vault> --project <slug> --thread <paper_thread> \
      --hypotheses <qualifying ids from Step 2, comma-separated> \
-     --manuscript Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md
+     --manuscript Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md \
+     --researcher "<name the researcher gave you>"   # repeat per researcher; never guess a name
    ```
 
    Exit `2` = wrong project/thread/id/path (fix the input). Exit `1` = the script failed: say so and do not
-   write a disclosure by hand. Pass `--format json` to read the flags programmatically.
+   write a disclosure by hand. Pass `--format json` to read the flags programmatically. Without
+   `--researcher`, history `by:` entries naming a person are declared "no consta si fue una persona o un
+   agente"; ask the researcher for the names rather than inferring them from `by:` values.
 2. Insert its stdout **verbatim** into the manuscript as the section `## Declaración de uso de IA`, placed
    after `## Discusión` and before the references list. Keep its two internal subsections
    (`### Trazabilidad …` and `### Avisos de cumplimiento …`). They are marked "eliminar antes de enviar"
