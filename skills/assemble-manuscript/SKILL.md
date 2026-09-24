@@ -137,6 +137,45 @@ amendments as such, per `preregister-experiment`'s own rule).
   appendix mapping each in-text citation back to its `P-XXXX` id is fine to
   include, kept clearly separate from the manuscript body.)
 
+## Step 4 — Declaración de uso de IA (generated from records, never written by hand)
+
+Every manuscript this skill drafts carries an AI-use disclosure, built mechanically from what Kairo
+recorded. The disclosure is required by all target venues. The strictest combination: ICLR 2027 wants a
+dedicated section listing, task by task, what AI did, what it didn't, and how its output was reviewed.
+Science wants the tool, its version and the prompt. Nature and Science want Methods placement and ban
+AI-generated images. Do not write or paraphrase the disclosure yourself.
+
+1. Write the manuscript note first (Output below), including `generated_by`. Then run:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/skills/assemble-manuscript/scripts/ai_disclosure.py" \
+     --vault <vault> --project <slug> --thread <paper_thread> \
+     --hypotheses <qualifying ids from Step 2, comma-separated> \
+     --manuscript Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md
+   ```
+
+   Exit `2` = wrong project/thread/id/path (fix the input). Exit `1` = the script failed: say so and do not
+   write a disclosure by hand. Pass `--format json` to read the flags programmatically.
+2. Insert its stdout **verbatim** into the manuscript as the section `## Declaración de uso de IA`, placed
+   after `## Discusión` and before the references list. Keep its two internal subsections
+   (`### Trazabilidad …` and `### Avisos de cumplimiento …`). They are marked "eliminar antes de enviar"
+   and are the researcher's checklist.
+3. Add one pointer sentence at the end of `## Método`: "El uso de herramientas de IA en cada etapa de este
+   trabajo se detalla en la sección *Declaración de uso de IA*." Add the same sentence in an
+   `## Agradecimientos` section (create it if absent). Science asks for the disclosure in Methods or
+   Acknowledgments **and** in the cover letter, so tell the researcher to copy the English version into
+   the cover letter.
+4. Show the researcher the flags, most severe first:
+   - **`crítico`** (a verification whose latest verdict for that scope is `errors_found`): in its own
+     callout at the top. The manuscript must not describe that note or section as verified, and the
+     affected content should be fixed and re-verified before submission.
+   - `importante` / `menor`: list them. Each is a gap that would fail the strictest venue: an unrecorded
+     model, unrecorded code authorship, `send: never` notes the researcher has to declare by hand,
+     unrecorded prompts, and the unconfirmed responsibility statement.
+5. Lines marked `[PENDIENTE — …]` are for the researcher to confirm or correct: human responsibility,
+   no AI authorship, no AI-generated figures. Never fill them in yourself, and never set
+   `ai_disclosure_confirmed_by`. Only the researcher does that.
+
 ## Output
 
 Write `Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md` (create the
@@ -153,6 +192,17 @@ hypotheses_included: [H-XXXX, ...]
 hypotheses_excluded:
   - id: H-YYYY
     reason: <exact missing-rigor reason from the Step 2 table>
+generated_by:
+  origin: agent
+  model: <model id of the session drafting the manuscript, e.g. claude-opus-5-5>
+  skill_version: kairo/assemble-manuscript@<plugin version>
+ai_disclosure:
+  script: kairo/ai_disclosure.py@<version printed by --version>
+  generated: <YYYY-MM-DD>
+  flags: {critico: <n>, importante: <n>, menor: <n>}
+# set ONLY by the researcher, by hand, after reading the disclosure — never by this skill:
+# ai_disclosure_confirmed_by: <name>
+# ai_disclosure_confirmed: <YYYY-MM-DD>
 ```
 
 This skill **never** edits hypothesis `status`, `linea_publicacion`,
@@ -182,3 +232,13 @@ fix is upstream (`preregister-experiment` completo tier, `run-experiment`,
   "here's what's not done yet," not a quiet omission.
 - **Editing hypothesis status or Estado-del-arte.md from this skill.** It's
   read-only over everything except the new manuscript note.
+- **Writing or "improving" the AI-use disclosure by hand.** It is generated from the records by
+  `ai_disclosure.py`, and every sentence traces to a note field. Paraphrasing it can invent a contribution
+  or drop a gap. Re-run the script instead.
+- **Presenting a `no_errors_found` verification as "verified correct".** It only means a verifier found no
+  errors in that scope. A scope whose latest verdict is `errors_found` (a `crítico` flag) must not be
+  called verified anywhere in the manuscript.
+- **Claiming human involvement the records don't show.** No record means the disclosure says "no consta".
+  Filling in `[PENDIENTE]` lines or `ai_disclosure_confirmed_by` is the researcher's job, never this skill's.
+- **Quoting a `send: never` note's content into the disclosure.** The script outputs only its id and a
+  flag. The researcher declares that contribution by hand.
