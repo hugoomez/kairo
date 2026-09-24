@@ -37,7 +37,11 @@ Crossref has carried the Retraction Watch Database since 2023 (entries with
 arXiv (any arXiv id) -- `https://export.arxiv.org/api/query?id_list=...`
 -----------------------------------------------------------------------
 arXiv has no boolean for "withdrawn"; detect from text, case-insensitive:
-`arxiv:comment` mentions withdrawn / withdrawal; `title` starts `Withdrawn:`;
+`arxiv:comment` is a withdrawal notice about THIS submission (a clause
+starting "Withdrawn", "this paper has been withdrawn", "withdrawn by the
+author(s)", "paper withdrawn", "withdrawn due to ...") -- a mention of another
+withdrawn paper ("supersedes the withdrawn arXiv:1901.00001", "withdrawn
+version of ...") is not; `title` starts `Withdrawn:`;
 `summary` is a withdrawal notice ("This paper has been withdrawn ...").
 A later version number alone is NOT a withdrawal. Live example checked
 2026-09-24: arXiv:0910.4008 (comment "Withdrawn", summary "This paper has
@@ -80,8 +84,19 @@ PRECEDENCE = {"clear": 0, "concern": 1, "withdrawn": 2, "retracted": 3}
 
 _ATOM = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 _TITLE_PREFIX = re.compile(r"^\s*(retracted|withdrawn|removed)\s*[:\-]", re.IGNORECASE)
-_WD_COMMENT = re.compile(r"\bwithdrawn\b|\bwithdrawal\b|\bwithdraw(?:ing)? (?:this|the) (?:paper|submission|article)\b",
-                         re.IGNORECASE)
+# A comment is a withdrawal notice only when it says THIS submission is
+# withdrawn -- not when it mentions another, withdrawn one ("supersedes the
+# withdrawn arXiv:1901.00001"). "withdrawn" followed by an identifier /
+# "version of" never counts.
+_WD_NOT_ID = r"(?!\s*(?:\(|\[)?\s*(?:arxiv\s*:|version\s+of\b|doi\b|v\d+\b|\d{4}\.\d{4,5}|[a-z\-]+(?:\.[a-z]{2})?/\d{7}))"
+_WD_COMMENT = re.compile(
+    r"(?:^|[.;:!?]\s+)\W*withdrawn\b" + _WD_NOT_ID                          # clause starts "Withdrawn"
+    + r"|^\W*(?:this\s+)?(?:paper|submission|article|manuscript|preprint)\s+withdrawn\b" + _WD_NOT_ID
+    + r"|\bthis\s+(?:paper|submission|article|manuscript|preprint|version|work)\s+(?:has\s+been|is|was)\s+withdrawn\b"
+    + r"|\bwithdrawn\s+by\s+(?:the\s+)?(?:authors?|arxiv|moderators?|administrators?)\b"
+    + r"|\bwithdrawn\s+(?:due\s+to|because|owing\s+to)\b"
+    + r"|\bwithdraw(?:s|ing)?\s+(?:this|the)\s+(?:paper|submission|article|manuscript|preprint)\b",
+    re.IGNORECASE)
 _WD_TITLE = re.compile(r"^\s*withdrawn\b\s*[:\-.]?", re.IGNORECASE)
 _WD_SUMMARY = re.compile(
     r"^\W*(this (paper|submission|article|manuscript|preprint|version|work)\s+(has been|is|was)\s+withdrawn"

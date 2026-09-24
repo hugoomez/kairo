@@ -218,13 +218,19 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    / `withdrawn` / not-found-anywhere are `crítico`). A `mismatch` means the
    note mixes metadata of two papers (a "chimeric" citation) — fix it by hand
    from the sources the script names; never "fix" it by trusting one source
-   blindly. A `send: never` note is skipped entirely (nothing is sent).
+   blindly (a `mismatch` also covers a DOI and arXiv id that point to two
+   different works). A note missing its first author or year stays
+   `unresolved` ("note lacks author/year — cannot prove match", `importante`)
+   until they are added. A `send: never` note is skipped entirely (nothing is sent).
    **OpenAlex API key:** `OPENALEX_API_KEY` is optional — keyless OpenAlex
    singleton lookups are free (checked 2026-09-24) — but the keyless daily
    budget is small ($0.10). If OpenAlex is unreachable or the budget is spent,
-   the script still writes `resolved: false` / `resolution_status: unresolved`
-   with the reason in `resolution_evidence`; flag that paper `importante` in
-   step 10 and tell the researcher to get a free key at
+   the lookup is LOST: the script does **not** write `resolved` /
+   `openalex_id` / `resolution_checked` / `resolution_status` (they keep their
+   previous values, or stay absent on a new note) and only appends
+   `last check LOST <date>: …` to `resolution_evidence` — so go by the
+   script's output (it reports the paper as `unresolved`, `importante`), not
+   by the fields. Flag that paper `importante` in step 10 and tell the researcher to get a free key at
    `https://openalex.org/settings/api`, export `OPENALEX_API_KEY` in the
    environment that runs Claude Code (never commit it), and re-run the command
    above.
@@ -435,9 +441,11 @@ code_repo_evidence: <"where it was found", e.g. "arXiv comments: 'Code
 # Citation resolution (step 6.9, written only by scripts/citations/resolve_refs.py
 # --write or retraction_sweep.py --write — never by hand). All absent = never checked.
 resolved: <true | false — true only with a matching OpenAlex record (the paper
-  exists); false = checked and not found, ambiguous (mismatch), confirmed only
-  by a fallback source, or OpenAlex unreachable. A retracted paper that exists
-  is still `true` — see resolution_status>
+  exists); false = checked and not found, ambiguous (mismatch, incl. a DOI and
+  arXiv id that point to different works), confirmed only by a fallback source,
+  or the note lacks author/year. A lookup LOST to errors/budget never writes
+  these fields (the previous values stay; the loss goes in resolution_evidence).
+  A retracted paper that exists is still `true` — see resolution_status>
 openalex_id: <W followed by digits, e.g. W2741809807 — empty when resolved is false>
 resolution_checked: <YYYY-MM-DD of the last check, updated on every re-check>
 resolution_status: <resolved | unresolved | mismatch | retracted | withdrawn —

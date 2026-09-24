@@ -44,7 +44,15 @@ Usage:
     python retraction_sweep.py --vault <vault> --write
     python retraction_sweep.py --version
 
-Exit codes: 0 ok (flags are in the report), 1 error (could not run),
+A check that could not run -- Crossref / OpenAlex LOST to errors or budget
+after retries, or arXiv answering without an entry for the note's id -- is
+reported as `[importante] check LOST (...)` per paper (JSON: `lost_checks`,
+one entry per paper with `sources` and `severity: importante`). Such a paper is
+NOT proven clear. With --write, a LOST OpenAlex lookup never overwrites the
+paper's §1c fields (see resolve_refs.fields_for).
+
+Exit codes: 0 ok, every check ran (flags are in the report); 1 error (could
+not run) OR at least one check LOST (re-run later; JSON `exit` says which);
 2 invalid input (no Papers/ directory under --vault).
 Standard library only.
 """
@@ -150,7 +158,9 @@ def already_logged(text: str, pid: str, status: str) -> bool:
 
 def check_paper(note: dict, fm_openalex: str | None, entries: dict, lost: dict) -> tuple[str, list[str], list[str]]:
     base = retraction.check_one(note["doi"], note["arxiv"], entries, lost)
-    lost_srcs = [s for s, v in base["checks"].items() if v["state"] == "lost"]
+    # arXiv answering without an entry for the note's id = withdrawal check not run -> LOST
+    lost_srcs = [s for s, v in base["checks"].items()
+                 if v["state"] == "lost" or (s == "arxiv" and v["state"] == "not_found")]
     checks_status, ev = base["status"], list(base["evidence"])
     try:
         work = None
@@ -205,6 +215,18 @@ def sweep(vault: Path, write: bool, today: str) -> list[PaperFlag]:
 # Output
 # --------------------------------------------------------------------------- #
 
+LOST_SEVERITY = "importante"
+
+
+def lost_message(p: PaperFlag) -> str:
+    return (f"[{LOST_SEVERITY}] check LOST ({', '.join(p.lost)}) -- retraction/withdrawal status not proven; "
+            "re-run later")
+
+
+def exit_code(flags: list[PaperFlag]) -> int:
+    return 1 if any(p.lost for p in flags) else 0
+
+
 def to_json(flags: list[PaperFlag], today: str) -> dict:
     papers = []
     for p in flags:
@@ -219,7 +241,9 @@ def to_json(flags: list[PaperFlag], today: str) -> dict:
                for k in ("clear", "concern", "withdrawn", "retracted", "skipped_send_never")}
     summary["lost_checks"] = sum(1 for p in flags if p.lost)
     summary["citing_notes_flagged"] = sum(len(p.citers) for p in flags)
-    return {"version": __version__, "checked": today, "papers": papers, "summary": summary}
+    lost_checks = [{"id": p.id, "sources": list(p.lost), "severity": LOST_SEVERITY} for p in flags if p.lost]
+    return {"version": __version__, "checked": today, "papers": papers, "summary": summary,
+            "lost_checks": lost_checks, "exit": exit_code(flags)}
 
 
 def print_report(flags: list[PaperFlag], write: bool) -> None:
@@ -231,6 +255,8 @@ def print_report(flags: list[PaperFlag], write: bool) -> None:
         if p.lost:
             line += f"  [check LOST: {', '.join(p.lost)}]"
         print(line)
+        if p.lost:
+            print(f"  ! {lost_message(p)}")
         for e in p.evidence:
             print(f"  . {e}")
         for c in p.citers:
@@ -272,7 +298,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(to_json(flags, today), indent=2, ensure_ascii=False, default=str))
     else:
         print_report(flags, a.write)
-    return 0
+        if exit_code(flags):
+            print("SWEEP INCOMPLETE -- at least one check was LOST; those papers are not proven clear (exit 1)")
+    return exit_code(flags)
 
 
 if __name__ == "__main__":

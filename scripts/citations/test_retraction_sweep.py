@@ -185,6 +185,57 @@ class TestSweep(unittest.TestCase):
         by = {p["id"]: p for p in json.loads(out)["papers"]}
         self.assertFalse(by["P-0001"]["newly"])    # already recorded as retracted
 
+    def test_lost_check_is_importante_and_exits_1(self):
+        # M6: a LOST check is flagged `importante`, reported in JSON, and exits 1
+        def down(url, headers=None, **kw):
+            if "openalex" in url:
+                raise net.HttpError(url, 429, "Too Many Requests")
+            return fake_get(url, headers)
+        with mock.patch.object(net, "get", side_effect=down):
+            code, out, _ = self.run_cli()
+            self.assertEqual(code, 1)
+            self.assertIn("[importante]", out)
+            self.assertIn("LOST", out)
+            code, out, _ = self.run_cli("--json")
+        self.assertEqual(code, 1)
+        d = json.loads(out)
+        self.assertEqual(d["exit"], 1)
+        lost = {x["id"]: x for x in d["lost_checks"]}
+        self.assertEqual(lost["P-0001"]["severity"], "importante")
+        self.assertIn("openalex", lost["P-0001"]["sources"])
+        self.assertNotIn("P-0005", lost)
+
+    def test_no_lost_check_exits_0(self):
+        code, out, _ = self.run_cli("--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["lost_checks"], [])
+
+    def test_arxiv_answer_without_entry_is_lost(self):
+        (self.vault / "Papers" / "P-0006 gone.md").write_text(
+            paper("P-0006", "Missing Entry Paper", "Gone, Gil", 2020, arxiv="9999.00066"), encoding="utf-8")
+        code, out, _ = self.run_cli("--json")
+        self.assertEqual(code, 1)
+        lost = {x["id"]: x for x in json.loads(out)["lost_checks"]}
+        self.assertIn("arxiv", lost["P-0006"]["sources"])
+
+    def test_write_with_openalex_lost_keeps_resolution_fields(self):
+        # I3 via the sweep: P-0001 was resolved before; OpenAlex now down
+        p = self.vault / "Papers" / "P-0001 retr.md"
+        p.write_text(vn.set_fields(p.read_text(encoding="utf-8"),
+                                   {"resolved": True, "openalex_id": "W222", "resolution_checked": "2020-01-01",
+                                    "resolution_status": "resolved"}), encoding="utf-8")
+        def down(url, headers=None, **kw):
+            if "openalex" in url:
+                raise net.HttpError(url, 429, "Too Many Requests")
+            return fake_get(url, headers)
+        with mock.patch.object(net, "get", side_effect=down):
+            self.run_cli("--write")
+        fm = vn.split_frontmatter(p.read_text(encoding="utf-8"))[0]
+        self.assertEqual(vn.fm_get(fm, "resolved"), "true")
+        self.assertEqual(vn.fm_get(fm, "openalex_id"), "W222")
+        self.assertEqual(vn.fm_get(fm, "resolution_checked"), "2020-01-01")
+        self.assertEqual(vn.fm_get(fm, "resolution_status"), "retracted")   # definite Crossref finding
+
     def test_invalid_vault(self):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(sw.main(["--vault", str(self.vault / "nope")]), 2)

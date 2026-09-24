@@ -184,10 +184,13 @@ class TestDecide(unittest.TestCase):
     def test_openalex_wrong_title_but_registrar_agrees_is_source_error(self):
         # OpenAlex record for the note's DOI: right authors/year, corrupted title;
         # the arXiv record (the id's registrar) matches the note exactly
+        # (both fetched by the same identifier -- OpenAlex via the arXiv DOI of that id)
         o = self.oa(title="Certified Widgets: a derivative work about something else")
-        ax = rec("arxiv", X["title"], ["Marta Alvarez", "Li Chen"], 2021)
+        o.id_key = "arxiv:9999.00001"
+        ax = rec("arxiv", X["title"], ["Marta Alvarez", "Li Chen"], 2021, id_key="arxiv:9999.00001")
         r = rr.decide(self.note, [o, ax], o, False, "clear", [], False, trace("openalex", "arxiv"))
         self.assertEqual((r.status, r.match, r.resolved, r.openalex_id), ("resolved", "close", True, "W9"))
+        self.assertEqual(rr.gate_exit([r]), 2)          # a human confirms a source_error
         self.assertIn("source_error", [d["level"] for d in r.diff])
         self.assertIn("importante", [f["severity"] for f in r.flags])
 
@@ -416,6 +419,223 @@ class TestCli(unittest.TestCase):
         self.assertTrue(any("api_key=SEKRITKEY" in u for u in self.web.urls if "openalex" in u))
         self.assertNotIn("SEKRITKEY", out + err)
         self.assertEqual(json.loads(out)["openalex_key"], "set")
+
+
+# --------------------------------------------------------------------------- #
+# Review findings (C1, I3, I4, M4) -- synthetic data only
+# --------------------------------------------------------------------------- #
+
+# B: another synthetic paper by X's first author, same year (the C1 attacker's pick)
+B = {"title": "Dense Doohickeys Hurt Gizmo Transfer", "authors": ["Alvarez, Marta"], "year": 2021}
+OA_B = {"id": "https://openalex.org/W444", "display_name": B["title"], "publication_year": 2021,
+        "is_retracted": False, "doi": "https://doi.org/10.5281/zenodo.777",
+        "authorships": [{"author": {"display_name": "Marta Alvarez"}}]}
+
+
+class FakeWebReview(FakeWeb):
+    """FakeWeb plus: a DataCite (non-Crossref) DOI and an arXiv DOI that both
+    resolve in OpenAlex to paper B; an arXiv id OpenAlex knows but arXiv's
+    answer omits."""
+
+    def __call__(self, url, headers=None, **kw):
+        if ("api.openalex.org/works/doi:10.5281/zenodo.777" in url
+                or "api.openalex.org/works/doi:10.48550/arxiv.9999.00009" in url):
+            self.urls.append(url)
+            return json.dumps(OA_B).encode()
+        if "api.openalex.org/works/doi:10.48550/arxiv.9999.00055" in url:
+            self.urls.append(url)
+            return json.dumps({"id": "https://openalex.org/W555", "display_name": Y["title"],
+                               "publication_year": 2018, "is_retracted": False,
+                               "authorships": [{"author": {"display_name": "Ngozi Okafor"}}]}).encode()
+        return super().__call__(url, headers, **kw)
+
+
+class TestReviewFindingsCli(unittest.TestCase):
+    run_cli = TestCli.run_cli
+
+    def setUp(self):
+        TestCli.setUp(self)
+        self.web = FakeWebReview()
+        p = mock.patch.object(net, "get", side_effect=self.web)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def add(self, name, text):
+        (self.papers / name).write_text(text, encoding="utf-8")
+
+    def result(self, pid):
+        code, out, _ = self.run_cli("--json", "--only", pid)
+        return {r["id"]: r for r in json.loads(out)["results"]}[pid]
+
+    # C1 ------------------------------------------------------------------ #
+    def test_c1_datacite_doi_of_other_paper_is_mismatch(self):
+        # note = A's metadata + arxiv A, but doi = a DataCite DOI of B (same first author + year);
+        # Crossref 404s, OpenAlex (queried by DOI first) returns B
+        self.add("P-0010 c1.md", note_text("P-0010", X["title"], X["authors"], 2021,
+                                           doi="10.5281/zenodo.777", arxiv="9999.00001"))
+        r = self.result("P-0010")
+        self.assertEqual(r["status"], "mismatch")
+        self.assertFalse(r["resolved"])
+        self.assertTrue(any(f["severity"] == "crítico" for f in r["flags"]))
+        self.assertEqual(self.run_cli("--gate", "--only", "P-0010")[0], 2)
+
+    def test_c1_arxiv_doi_of_other_paper_is_mismatch(self):
+        self.add("P-0011 c1b.md", note_text("P-0011", X["title"], X["authors"], 2021,
+                                            doi="10.48550/arXiv.9999.00009", arxiv="9999.00001"))
+        r = self.result("P-0011")
+        self.assertEqual(r["status"], "mismatch")
+        self.assertTrue(any("different works" in f["message"] for f in r["flags"]))
+        self.assertEqual(self.run_cli("--gate", "--only", "P-0011")[0], 2)
+
+    # I3 ------------------------------------------------------------------ #
+    def _down(self, url, headers=None, **kw):
+        if "openalex" in url:
+            raise net.HttpError(url, 429, "Too Many Requests")
+        return self.web(url, headers)
+
+    def test_i3_lost_openalex_keeps_previous_resolution(self):
+        self.assertEqual(self.run_cli("--write", "--only", "P-0001")[0], 0)
+        p = self.papers / "P-0001 x.md"
+        p.write_text(vn.set_fields(p.read_text(encoding="utf-8"), {"resolution_checked": "2020-01-01"}),
+                     encoding="utf-8")
+        with mock.patch.object(net, "get", side_effect=self._down):
+            self.run_cli("--write", "--only", "P-0001")
+            self.run_cli("--write", "--only", "P-0001")      # twice: LOST note not duplicated
+        fm = vn.split_frontmatter(p.read_text(encoding="utf-8"))[0]
+        self.assertEqual(vn.fm_get(fm, "resolved"), "true")
+        self.assertEqual(vn.fm_get(fm, "openalex_id"), "W111")
+        self.assertEqual(vn.fm_get(fm, "resolution_checked"), "2020-01-01")
+        self.assertEqual(vn.fm_get(fm, "resolution_status"), "resolved")
+        ev = vn.fm_get(fm, "resolution_evidence")
+        self.assertIn("last check LOST", ev)
+        self.assertEqual(ev.count("last check LOST"), 1)
+        self.assertIn("OpenAlex W111", ev)                   # previous evidence kept
+
+    def test_i3_lost_openalex_on_unchecked_note_leaves_1c_absent(self):
+        with mock.patch.object(net, "get", side_effect=self._down):
+            self.run_cli("--write", "--only", "P-0001")
+        fm = vn.split_frontmatter((self.papers / "P-0001 x.md").read_text(encoding="utf-8"))[0]
+        for k in ("resolved", "openalex_id", "resolution_checked", "resolution_status"):
+            self.assertIsNone(vn.fm_get(fm, k), k)
+        self.assertIn("last check LOST", vn.fm_get(fm, "resolution_evidence"))
+
+    # I4 ------------------------------------------------------------------ #
+    def test_i4_arxiv_answer_without_entry_is_lost(self):
+        # OpenAlex knows 9999.00055 but arXiv's answer has no entry for it
+        self.add("P-0012 i4.md", note_text("P-0012", Y["title"], Y["authors"], 2018, arxiv="9999.00055"))
+        r = self.result("P-0012")
+        self.assertEqual(r["status"], "resolved")
+        self.assertIn("arxiv", r["retraction_lost"])
+        self.assertEqual(self.run_cli("--gate", "--only", "P-0012")[0], 1)
+
+    # M4 ------------------------------------------------------------------ #
+    def test_m4_note_without_year_fails_gate(self):
+        self.add("P-0013 m4.md", note_text("P-0013", X["title"], X["authors"], "", arxiv="9999.00001"))
+        r = self.result("P-0013")
+        self.assertEqual(r["status"], "unresolved")
+        self.assertTrue(any("note lacks author/year" in f["message"] for f in r["flags"]))
+        self.assertEqual(self.run_cli("--gate", "--only", "P-0013")[0], 2)
+
+
+class TestReviewFindingsPure(unittest.TestCase):
+    note = {**X, "id": "P-0001", "prev_status": None, "doi": None, "arxiv": "9999.00001"}
+
+    def oa(self, title=X["title"], key="arxiv:9999.00001", raw=None, found_by="arxiv-doi"):
+        return rec("openalex", title, ["Marta Alvarez"], 2021, openalex_id="W9", found_by=found_by,
+                   id_key=key, raw=raw or {})
+
+    # C1
+    def test_c1_source_error_requires_same_identifier(self):
+        o = self.oa(title=B["title"], key="doi:10.5281/zenodo.777")
+        ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2021, id_key="arxiv:9999.00001")
+        note = {**self.note, "doi": "10.5281/zenodo.777"}
+        r = rr.decide(note, [o, ax], o, False, "clear", [], False, trace("openalex", "arxiv"))
+        self.assertEqual(r.status, "mismatch")
+
+    def test_c1_source_error_same_identifier_still_accepted_but_gate_fails(self):
+        o = self.oa(title="Certified Widgets: a derivative work about something else")
+        ax = rec("arxiv", X["title"], ["Marta Alvarez", "Li Chen"], 2021, id_key="arxiv:9999.00001")
+        r = rr.decide(self.note, [o, ax], o, False, "clear", [], False, trace("openalex", "arxiv"))
+        self.assertEqual((r.status, r.match, r.resolved), ("resolved", "close", True))
+        self.assertIn("source_error", [d["level"] for d in r.diff])
+        self.assertFalse(rr.gate_passes(r))
+        self.assertEqual(rr.gate_exit([r]), 2)
+
+    def test_c1_source_error_via_openalex_declared_doi(self):
+        # OpenAlex found by title search, but its own `doi` is the DOI Crossref matched
+        note = {**self.note, "doi": "10.1/x", "arxiv": None}
+        o = self.oa(title="Corrupted Title Entirely Unrelated Words", key="",
+                    raw={"doi": "https://doi.org/10.1/X"}, found_by="title-search")
+        cr = rec("crossref", X["title"], ["Marta Alvarez"], 2021, id_key="doi:10.1/x")
+        r = rr.decide(note, [o, cr], o, False, "clear", [], False, trace("openalex", "crossref"))
+        self.assertEqual(r.status, "resolved")
+
+    def test_c1_arxiv_entry_doi_points_elsewhere(self):
+        note = {**self.note, "doi": "10.1/mine"}
+        o = self.oa(key="doi:10.1/mine", found_by="doi")
+        cr = rec("crossref", X["title"], ["Marta Alvarez"], 2021, id_key="doi:10.1/mine")
+        ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2021, id_key="arxiv:9999.00001",
+                 raw={"doi": "10.1/other"})
+        r = rr.decide(note, [o, cr, ax], o, False, "clear", [], False, trace("openalex", "crossref", "arxiv"))
+        self.assertEqual(r.status, "mismatch")
+        self.assertTrue(any("different works" in f["message"] for f in r.flags))
+
+    def test_c1_openalex_declared_arxiv_points_elsewhere(self):
+        note = {**self.note, "doi": "10.1/mine"}
+        o = self.oa(key="doi:10.1/mine", found_by="doi", raw={"ids": {"arxiv": "arXiv:9999.00077"}})
+        r = rr.decide(note, [o], o, False, "clear", [], False, trace("openalex"))
+        self.assertEqual(r.status, "mismatch")
+
+    def test_c1_registrar_records_disagree(self):
+        note = {**self.note, "doi": "10.1/mine"}
+        cr = rec("crossref", Y["title"], ["Ngozi Okafor"], 2018, id_key="doi:10.1/mine")
+        ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2021, id_key="arxiv:9999.00001")
+        o = self.oa()
+        r = rr.decide(note, [o, cr, ax], o, False, "clear", [], False, trace("openalex", "crossref", "arxiv"))
+        self.assertEqual(r.status, "mismatch")
+        self.assertTrue(any("different works" in f["message"] for f in r.flags))
+
+    def test_c1_consistent_ids_not_flagged(self):
+        note = {**self.note, "doi": "10.1/mine"}
+        o = self.oa(key="doi:10.1/mine", found_by="doi", raw={"doi": "https://doi.org/10.1/mine"})
+        cr = rec("crossref", X["title"], ["Marta Alvarez"], 2021, id_key="doi:10.1/mine")
+        ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2022, id_key="arxiv:9999.00001", raw={"doi": "10.1/mine"})
+        r = rr.decide(note, [o, cr, ax], o, False, "clear", [], False, trace("openalex", "crossref", "arxiv"))
+        self.assertEqual(r.status, "resolved")
+
+    # M4
+    def test_m4_no_suffix_matching(self):
+        self.assertFalse(rr.surname_matches("Chan", "Jane Buchan"))
+        self.assertFalse(rr.surname_matches("Hill", "Winston Churchill"))
+
+    def test_m4_given_name_is_not_family_name(self):
+        self.assertEqual(rr.surname_of("Thomas, P."), "Thomas")
+        self.assertEqual(rr.author_level("Thomas", [{"name": "Thomas Kipf"}]), "differs")
+        self.assertFalse(rr.surname_matches("Thomas", "Thomas Kipf"))
+
+    def test_m4_family_name_parsing(self):
+        self.assertEqual(rr.surname_of("Laurens van der Maaten"), "van der Maaten")
+        self.assertEqual(rr.surname_of("van der Maaten, Laurens"), "van der Maaten")
+        self.assertTrue(rr.surname_matches("van der Maaten", "Laurens van der Maaten"))
+        self.assertTrue(rr.surname_matches("Maaten", "Laurens van der Maaten"))
+        self.assertTrue(rr.surname_matches("García Márquez", "Gabriel García Márquez"))
+        self.assertTrue(rr.surname_matches("Kramár", "János Kramar"))
+        self.assertTrue(rr.surname_matches("Vaswani", "Vaswani A."))
+        self.assertTrue(rr.surname_matches("Kipf", "Thomas N. Kipf"))
+        self.assertTrue(rr.surname_matches("Smith", "John Smith Jr."))
+
+    def test_m4_note_missing_author_or_year_cannot_pass(self):
+        o = self.oa()
+        for note in ({**self.note, "year": None}, {**self.note, "authors": []}):
+            r = rr.decide(note, [o], o, False, "clear", [], False, trace("openalex"))
+            self.assertEqual(r.status, "unresolved")
+            self.assertTrue(any("note lacks author/year" in f["message"] and f["severity"] == "importante"
+                                for f in r.flags))
+            self.assertEqual(rr.gate_exit([r]), 2)
+        # source-side missing stays close
+        o2 = rec("openalex", X["title"], [], None, openalex_id="W9", found_by="doi")
+        r = rr.decide(self.note, [o2], o2, False, "clear", [], False, trace("openalex"))
+        self.assertEqual((r.status, r.match), ("resolved", "close"))
 
 
 if __name__ == "__main__":

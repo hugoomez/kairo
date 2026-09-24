@@ -154,6 +154,23 @@ class TestArxiv(unittest.TestCase):
         long_abs = "We model drug withdrawal effects in rats. " * 20
         self.assertEqual(R.arxiv_withdrawn("Drug study", "", long_abs), [])
 
+    def test_comment_mentioning_another_withdrawn_paper(self):
+        # M5: "withdrawn" about ANOTHER submission is not a withdrawal of this one
+        for cm in ("v2: supersedes the withdrawn arXiv:1901.00001",
+                   "Withdrawn arXiv:1901.00001 is superseded by this paper",
+                   "Replaces a withdrawn version of 1901.00001; 12 pages",
+                   "Extends our earlier (withdrawn) work, see 1901.00001",
+                   "12 pages; discusses the withdrawal of drug X"):
+            self.assertEqual(R.arxiv_withdrawn("T", cm, "Normal abstract."), [], cm)
+
+    def test_comment_withdrawal_notice_variants(self):
+        for cm in ("Withdrawn", "withdrawn.", "Withdrawn: error in proof",
+                   "This paper has been withdrawn by the author due to a crucial error",
+                   "This submission is withdrawn", "Paper withdrawn",
+                   "withdrawn by the authors", "12 pages; withdrawn due to an error in Lemma 3",
+                   "The authors withdraw this paper"):
+            self.assertTrue(R.arxiv_withdrawn("T", cm, "Normal abstract."), cm)
+
     def test_missing_entry(self):
         self.assertEqual(R.arxiv_check(None).state, "not_found")
 

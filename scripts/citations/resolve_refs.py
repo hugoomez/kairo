@@ -25,23 +25,41 @@ Sources (all public):
      by title) -- only when OpenAlex did not produce a matching record. Optional
      SEMANTIC_SCHOLAR_API_KEY is sent as `x-api-key`.
   429/406/5xx: retried with backoff, 3 attempts, then that source is LOST for
-  that note (reported, never silently treated as "not found").
+  that note (reported, never silently treated as "not found"). An arXiv answer
+  with no entry for an id the note declares is LOST too (the withdrawal check
+  did not run).
 
 Metadata match (note vs each source record found by identifier):
   title   normalized (NFKD, accents stripped, casefold, HTML/LaTeX/punctuation
           removed, leading RETRACTED:/WITHDRAWN: dropped). equal -> exact;
           difflib ratio >= 0.90, or token Jaccard >= 0.80, or one title is a
           >=3-word prefix of the other (subtitle dropped) -> close; else differs.
-  author  first-author surname, accent-insensitive, multi-word aware. Source's
-          first author -> exact; among the source's first 3 authors -> close
-          (order differs); else differs. Missing on either side -> close.
+  author  first-author FAMILY name only (given names never compared): 'Last,
+          First' / 'First [particles] Last' ('Laurens van der Maaten' -> 'van
+          der Maaten') / 'Last F.'; Crossref's `family` when present. Whole
+          tokens, accent-insensitive, particles and hyphens ignored, compound
+          surnames contained ('Márquez' ~ 'García Márquez'); no suffix rule
+          ('Chan' != 'Buchan'). Source's first author -> exact; among its first
+          3 -> close (order differs); else differs. Missing on the source ->
+          close.
   year    equal -> exact; off by one (preprint vs proceedings) -> close;
-          >= 2 -> differs. Missing on either side -> close.
+          >= 2 -> differs. Missing on the source -> close.
+  A NOTE missing its first author or year cannot prove a match: `unresolved`,
+  flagged `importante` "note lacks author/year -- cannot prove match".
   Level:  all exact -> exact; any differs -> mismatch; else close.
   A note's overall match is the WORST level over the sources that returned a
   record for its identifiers. A mismatch is the fingerprint of a "chimeric"
   citation (the title of one real paper with the authors/year of another) and
   is a failure.
+  OpenAlex title-only mismatch (`source_error`): accepted as `close` ONLY when
+  a registrar (Crossref / arXiv) record for the SAME identifier -- the one
+  OpenAlex was fetched by, or a DOI / arXiv id OpenAlex declares for itself --
+  matches the note. Flagged `importante`; --gate still fails (exit 2) until the
+  researcher confirms it by hand.
+  Identifier conflict: the note's DOI and arXiv id pointing to different works
+  (an arXiv DOI of another id; the arXiv entry's `doi` or OpenAlex's `doi` /
+  `ids` naming a different identifier; or the records behind the two ids not
+  matching each other) -> `mismatch`, crítico.
 
 Status per note (precedence top-down):
   skipped_send_never  note has `send: never` -- nothing is sent anywhere; the
@@ -50,7 +68,8 @@ Status per note (precedence top-down):
   retracted/withdrawn any source flags it (concern is reported, not a status).
   resolved            OpenAlex record found, match exact/close.
   unresolved          no OpenAlex record (maybe a fallback confirmed it -- see
-                      evidence), or OpenAlex could not be reached.
+                      evidence), OpenAlex could not be reached, or the note
+                      lacks author/year.
 
 Fields written with --write (never without it), per docs/v3-interfaces.md §1c:
   resolved: true|false       true only with a matching OpenAlex record, so
@@ -66,6 +85,13 @@ Fields written with --write (never without it), per docs/v3-interfaces.md §1c:
   resolution_match: exact|close|mismatch  (empty when no record matched)
   resolution_evidence: "<one line: which sources, what differed/flagged>"
   send: never notes are never written.
+  OpenAlex LOST (unreachable / budget): resolved, openalex_id and
+  resolution_checked are NOT written -- previous values stay, or stay absent
+  on a never-checked note (§1c: false means "checked and not found"). Nor is
+  resolution_status / resolution_match, unless a registrar gave a definite
+  retracted / withdrawn (then those two are written) or the ids conflict
+  (mismatch, written in full). The loss is appended to resolution_evidence as
+  "last check LOST <date>: ..." (replacing an earlier LOST note).
 
 Usage:
     python resolve_refs.py --papers <vault>/Papers                     # report all
@@ -81,7 +107,9 @@ Exit codes:
                   retracted/withdrawn), live-checked now -- stored fields are
                   never trusted; 2 at least one selected note fails
                   (incl. send: never, fallback-only, not found, mismatch,
-                  retracted, withdrawn); 1 error -- could not run, or the only
+                  retracted, withdrawn, an OpenAlex `source_error` -- the
+                  researcher confirms it by hand -- or a note lacking
+                  author/year); 1 error -- could not run, or the only
                   failures are lookups LOST to errors/budget (OpenAlex, or the
                   Crossref/arXiv retraction check) -- cannot prove either way. Invalid input is also 1 here
                   (the gate could not run).
@@ -171,36 +199,69 @@ def title_level(note: str, source: str) -> tuple[str, float]:
     return "differs", round(score, 3)
 
 
+# lowercase surname particles ("van der Maaten", "de la Cruz", "bin Talal")
+PARTICLES = {"van", "von", "der", "den", "de", "del", "della", "degli", "da", "di", "du", "dos", "das",
+             "do", "le", "la", "les", "ten", "ter", "te", "bin", "ibn", "al", "el", "zu", "af", "av"}
+SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+_INITIAL = re.compile(r"^(?:[^\W\d_]\.?-?)+$")      # "A." / "A" / "A.B." / "J.-P."
+
+
+def _is_initials(tok: str) -> bool:
+    return bool(_INITIAL.match(tok)) and len(tok.replace(".", "").replace("-", "")) <= 2
+
+
 def surname_of(author: str) -> str:
-    """'Last, First' -> 'Last'; 'First Middle Last' -> 'Last'."""
-    a = (author or "").strip()
+    """The family name only. 'Last, First' -> 'Last' (whatever its length);
+    'First Middle Last' -> 'Last' plus any preceding particles ('Laurens van der
+    Maaten' -> 'van der Maaten'); trailing 'Jr.' / 'III' dropped; 'Last F.'
+    (initials after the surname) -> 'Last'. Never returns a given name."""
+    a = " ".join((author or "").split())
     if "," in a:
         return a.split(",", 1)[0].strip()
     parts = a.split()
-    return parts[-1] if parts else ""
+    while len(parts) > 1 and fold(parts[-1]) in SUFFIXES:
+        parts.pop()
+    if not parts:
+        return ""
+    if len(parts) > 1 and not _is_initials(parts[0]) and all(_is_initials(x) for x in parts[1:]):
+        return parts[0]                                   # "Vaswani A." / "Kipf T. N."
+    i = len(parts) - 1
+    while i > 1 and fold(parts[i - 1]) in PARTICLES:
+        i -= 1
+    return " ".join(parts[i:])
+
+
+def family_matches(a: str, b: str) -> bool:
+    """Two FAMILY names (already extracted), accent-insensitive. Equal ignoring
+    spaces/hyphens ('Ben-David' / 'Ben David' / 'BenDavid'), equal once leading
+    particles are dropped ('Maaten' / 'van der Maaten'), or one's tokens appear
+    contiguously in the other's (compound surnames: 'Márquez' / 'García
+    Márquez'). Whole tokens only -- 'Chan' never matches 'Buchan'."""
+    ta, tb = fold(a).split(), fold(b).split()
+    if not ta or not tb:
+        return False
+    if "".join(ta) == "".join(tb):
+        return True
+
+    def core(tk):
+        k = 0
+        while k < len(tk) - 1 and tk[k] in PARTICLES:
+            k += 1
+        return tk[k:]
+    ca, cb = core(ta), core(tb)
+    if "".join(ca) == "".join(cb):
+        return True
+    short, long_ = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
+    return any(long_[i:i + len(short)] == short for i in range(len(long_) - len(short) + 1))
 
 
 def surname_matches(surname: str, name: str, family: str | None = None) -> bool:
-    """Accent-insensitive; multi-word surnames ('van den Oord'), hyphens and
-    spacing variants ('Ben-David' / 'Ben David' / 'BenDavid') all match."""
-    s = fold(surname)
-    if not s:
+    """Does the note's first-author family name match a source author? The
+    source's `family` field is used when it has one, else the family name
+    parsed from `name` -- given names are never compared."""
+    if not fold(surname):
         return False
-    cands = [fold(family)] if family else []
-    cands.append(fold(name))
-    for c in cands:
-        if not c:
-            continue
-        if c == s or c.replace(" ", "") == s.replace(" ", ""):
-            return True
-        ct, st = c.split(), s.split()
-        # surname tokens appear contiguously in the name, ending at a word boundary
-        for i in range(len(ct) - len(st) + 1):
-            if ct[i:i + len(st)] == st:
-                return True
-        if c.replace(" ", "").endswith(s.replace(" ", "")) and len(s.replace(" ", "")) >= 4:
-            return True
-    return False
+    return family_matches(surname, family if family else surname_of(name))
 
 
 @dataclass
@@ -212,6 +273,7 @@ class SourceRecord:
     year: int | None = None
     found_by: str = ""             # doi | arxiv-doi | arxiv | title-search
     openalex_id: str | None = None
+    id_key: str = ""               # identifier it was fetched by: "doi:<doi>" | "arxiv:<id>"; "" = title search
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -265,6 +327,90 @@ def worst(levels: list[str]) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# Identifier consistency (pure -- unit-tested)
+# --------------------------------------------------------------------------- #
+
+def key_for_doi(doi: str | None) -> str:
+    """'doi:<doi>', or 'arxiv:<id>' for an arXiv DataCite DOI; '' when none."""
+    d = retraction.normalize_doi(doi)
+    if not d:
+        return ""
+    return f"arxiv:{retraction.arxiv_from_doi(d)}" if retraction.is_arxiv_doi(d) else f"doi:{d}"
+
+
+def key_for_arxiv(aid: str | None) -> str:
+    a = retraction.normalize_arxiv(aid)
+    return f"arxiv:{a.lower()}" if a else ""
+
+
+def declared_keys(rec: SourceRecord) -> set[str]:
+    """Identifiers a record declares for itself (OpenAlex `doi` / `ids.doi` /
+    `ids.arxiv`; arXiv entry `doi`)."""
+    raw = rec.raw or {}
+    out = {key_for_doi(raw.get("doi"))}
+    ids = raw.get("ids") or {}
+    if isinstance(ids, dict):
+        out.add(key_for_doi(ids.get("doi")))
+        out.add(key_for_arxiv(ids.get("arxiv")))
+    out.discard("")
+    return out
+
+
+def note_keys(note: dict) -> dict[str, str]:
+    """{'doi': 'doi:<doi>', 'arxiv': 'arxiv:<id>'} for the identifiers the note
+    declares (an arXiv DataCite DOI in `doi:` stands for `arxiv:` when that is empty)."""
+    out = {}
+    dk, ak = key_for_doi(note.get("doi")), key_for_arxiv(note.get("arxiv"))
+    if dk.startswith("doi:"):
+        out["doi"] = dk
+    if ak:
+        out["arxiv"] = ak
+    elif dk.startswith("arxiv:"):
+        out["arxiv"] = dk
+    return out
+
+
+def rec_as_note(rec: SourceRecord) -> dict:
+    first = rec.authors[0] if rec.authors else None
+    fam = (first.get("family") or surname_of(first.get("name", ""))) if first else ""
+    return {"title": rec.title, "authors": [f"{fam}, "] if fam else [], "year": rec.year}
+
+
+def identifier_conflicts(note: dict, records: list[SourceRecord]) -> list[str]:
+    """Evidence that the note's DOI and arXiv id point to DIFFERENT works:
+    an arXiv DOI naming another arXiv id; a record fetched by one identifier
+    declaring a different value for the other (arXiv entry `doi`, OpenAlex
+    `doi` / `ids`); or the records behind the two identifiers not matching
+    each other (the registrar's record stands for its identifier when present)."""
+    msgs: list[str] = []
+    nd, na = retraction.normalize_doi(note.get("doi")), retraction.normalize_arxiv(note.get("arxiv"))
+    if nd and retraction.is_arxiv_doi(nd) and na and retraction.arxiv_from_doi(nd) != na.lower():
+        msgs.append(f"doi {nd} is the arXiv DOI of {retraction.arxiv_from_doi(nd)}, but arxiv: is {na}")
+    mine = note_keys(note)
+    for rec in records:
+        if not rec.id_key:
+            continue                       # title-search hits are not tied to either identifier
+        fetched_kind = rec.id_key.split(":", 1)[0]
+        for k in sorted(declared_keys(rec)):
+            kind = k.split(":", 1)[0]
+            if kind != fetched_kind and kind in mine and k != mine[kind]:
+                msgs.append(f"{rec.source} record for {rec.id_key} declares {k}, but the note has {mine[kind]}")
+    reps: dict[str, SourceRecord] = {}
+    for rec in records:
+        if rec.id_key and (rec.id_key not in reps
+                           or (rec.source in REGISTRARS and reps[rec.id_key].source not in REGISTRARS)):
+            reps[rec.id_key] = rec
+    dk, ak = mine.get("doi"), mine.get("arxiv")
+    if dk in reps and ak in reps:
+        lvl, diff = match_record(rec_as_note(reps[dk]), reps[ak])
+        if lvl == "mismatch":
+            bad = ", ".join(d["field"] for d in diff if d["level"] == "differs")
+            msgs.append(f"the {reps[dk].source} record for {dk} and the {reps[ak].source} record for {ak} "
+                        f"are different works ({bad} differ)")
+    return msgs
+
+
+# --------------------------------------------------------------------------- #
 # Source adapters (pure -- unit-tested with synthetic JSON)
 # --------------------------------------------------------------------------- #
 
@@ -303,7 +449,8 @@ def from_arxiv(entry: dict) -> SourceRecord:
     y = entry.get("published", "")[:4]
     return SourceRecord("arxiv", title=entry.get("title", ""),
                         authors=[{"name": n} for n in entry.get("authors", [])],
-                        year=int(y) if y.isdigit() else None, found_by="arxiv", raw={})
+                        year=int(y) if y.isdigit() else None, found_by="arxiv",
+                        raw={"doi": entry["doi"]} if entry.get("doi") else {})
 
 
 def from_s2(p: dict, found_by: str) -> SourceRecord:
@@ -418,6 +565,7 @@ class Result:
     evidence: list[str] = field(default_factory=list)
     flags: list[dict] = field(default_factory=list)
     openalex_lost: bool = False
+    note_incomplete: bool = False            # note has no first author or no year -> cannot prove a match
     retraction_lost: list[str] = field(default_factory=list)   # checks that could not run
     newly_flagged: bool = False
     written: bool = False
@@ -429,35 +577,50 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
     """Pure: combine per-source records + retraction verdict into a Result."""
     r = Result(id=note["id"], status="unresolved", sources=traces, concern=concern, openalex_lost=oa_lost,
                retraction_lost=list(ret_lost or []))
+    r.note_incomplete = not note.get("authors") or note.get("year") is None
     per = [(rec, *match_record(note, rec)) for rec in records]
-    registrar_ok = [rec.source for rec, lvl, _ in per
-                    if rec.source in REGISTRARS and lvl in ("exact", "close")]
+    registrar_ok = {rec.id_key: rec.source for rec, lvl, _ in per
+                    if rec.source in REGISTRARS and lvl in ("exact", "close") and rec.id_key}
     levels = []
     for rec, lvl, diff in per:
-        if (rec.source == "openalex" and lvl == "mismatch" and registrar_ok
+        same_work = (sorted(({rec.id_key} | declared_keys(rec)) & set(registrar_ok))
+                     if rec.source == "openalex" else [])
+        if (same_work and lvl == "mismatch"
                 and {d["field"] for d in diff if d["level"] == "differs"} == {"title"}):
-            # OpenAlex holds a wrong title for this id while the registrar (arXiv /
-            # Crossref) record matches the note and OpenAlex's author + year agree:
-            # an OpenAlex data error, not a chimeric note. A chimera cannot pass this,
-            # because the registrar record would disagree with the note too.
+            # OpenAlex holds a wrong title while the registrar (arXiv / Crossref)
+            # record for the SAME identifier -- the one OpenAlex was fetched by, or
+            # one OpenAlex declares for itself -- matches the note, and OpenAlex's
+            # author + year agree: probably an OpenAlex data error, not a chimera.
+            # Not proven automatically: --gate fails until a human confirms it.
             lvl = "close"
             for d in diff:
                 if d["field"] == "title":
                     d["level"] = "source_error"
             r.flags.append({"severity": "importante",
                             "message": f"OpenAlex's title for {rec.openalex_id} differs from the "
-                                       f"{'/'.join(registrar_ok)} record, which matches the note (DOI, first "
-                                       "author and year agree) -- OpenAlex data error; id accepted"})
+                                       f"{'/'.join(registrar_ok[k] for k in same_work)} record for the same "
+                                       f"identifier ({', '.join(same_work)}), which matches the note (first "
+                                       "author and year agree) -- probably an OpenAlex data error; id recorded, "
+                                       "but --gate fails until the researcher confirms it by hand"})
         levels.append(lvl)
         r.diff.extend(diff)
         for t in traces:
             if t.name == rec.source and t.state == "found":
                 t.match = lvl
     r.match = worst(levels)
+    conflicts = identifier_conflicts(note, records)
+    if conflicts:
+        r.match = "mismatch"
     r.retraction = {"status": ret_status, "evidence": ret_ev}
     r.evidence.extend(ret_ev)
     oa_ok = oa_rec is not None and oa_rec.openalex_id and r.match in ("exact", "close")
-    if r.match == "mismatch":
+    if conflicts:
+        r.status = "mismatch"
+        r.flags.append({"severity": "crítico",
+                        "message": "the note's DOI and arXiv id point to different works -- "
+                                   + "; ".join(conflicts) + ". Fix the note's identifiers by hand."})
+        r.evidence.append("identifier conflict: " + "; ".join(conflicts))
+    elif r.match == "mismatch":
         r.status = "mismatch"
         bad = sorted({f"{d['field']} ({d['source_name']})" for d in r.diff if d["level"] == "differs"})
         r.flags.append({"severity": "crítico",
@@ -468,13 +631,19 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
         r.flags.append({"severity": "crítico",
                         "message": f"paper is {ret_status.upper()} -- never counts as support "
                                    f"({'; '.join(ret_ev[:2])})"})
-    elif oa_ok:
+    elif oa_ok and not r.note_incomplete:
         r.status = "resolved"
     else:
         r.status = "unresolved"
     r.resolved = bool(oa_ok) and r.status in ("resolved", "retracted", "withdrawn")
     r.openalex_id = oa_rec.openalex_id if (oa_rec and r.resolved) else None
-    if r.status == "unresolved":
+    if r.note_incomplete:
+        missing = "/".join(f for f, ok in (("author", bool(note.get("authors"))),
+                                           ("year", note.get("year") is not None)) if not ok)
+        r.flags.append({"severity": "importante",
+                        "message": f"note lacks author/year ({missing} missing) -- cannot prove match; "
+                                   "add it to the note and re-run"})
+    if r.status == "unresolved" and not (oa_ok and r.note_incomplete):
         confirmed = [rec.source for rec in records if rec.source != "openalex"]
         if oa_lost:
             r.flags.append({"severity": "importante",
@@ -524,6 +693,7 @@ def resolve_note(note: dict, arxiv_entries: dict, arxiv_lost: dict) -> Result:
             continue
         if w:
             oa_rec = from_openalex(w, "doi" if d == doi else "arxiv-doi")
+            oa_rec.id_key = key_for_doi(d)
             break
     rejected = None
     if oa_rec is None and not oa_lost and note["title"]:
@@ -556,7 +726,9 @@ def resolve_note(note: dict, arxiv_entries: dict, arxiv_lost: dict) -> Result:
         msg, chk = retraction.fetch_crossref(doi)
         checks.append(chk)
         if msg:
-            records.append(from_crossref(msg))
+            cr = from_crossref(msg)
+            cr.id_key = key_for_doi(doi)
+            records.append(cr)
             traces.append(SourceTrace("crossref", "found", "doi"))
         else:
             traces.append(SourceTrace("crossref", chk.state, "doi", error=chk.error))
@@ -569,11 +741,17 @@ def resolve_note(note: dict, arxiv_entries: dict, arxiv_lost: dict) -> Result:
             checks.append(retraction.Check("arxiv", state="lost", error=arxiv_lost[aid]))
             traces.append(SourceTrace("arxiv", "lost", "arxiv", error=net.redact(arxiv_lost[aid])))
         elif aid in arxiv_entries:
-            records.append(from_arxiv(arxiv_entries[aid]))
+            ax = from_arxiv(arxiv_entries[aid])
+            ax.id_key = key_for_arxiv(aid)
+            records.append(ax)
             checks.append(retraction.arxiv_check(arxiv_entries[aid]))
             traces.append(SourceTrace("arxiv", "found", "arxiv"))
         else:
-            traces.append(SourceTrace("arxiv", "not_found", "arxiv"))
+            # arXiv answered but returned no entry for an id the note declares: the
+            # withdrawal check did not run for it -> LOST (never "clear")
+            err = f"arXiv returned no entry for {aid}"
+            checks.append(retraction.Check("arxiv", state="lost", error=err))
+            traces.append(SourceTrace("arxiv", "lost", "arxiv", error=err))
     else:
         traces.append(SourceTrace("arxiv", "not_applicable"))
 
@@ -584,6 +762,8 @@ def resolve_note(note: dict, arxiv_entries: dict, arxiv_lost: dict) -> Result:
             p = s2_lookup(pid, note["title"] if not pid else None)
             if p:
                 rec = from_s2(p, "id" if pid else "title-search")
+                if pid:
+                    rec.id_key = key_for_doi(pid[4:]) if pid.startswith("DOI:") else key_for_arxiv(pid[6:])
                 if pid or match_record(note, rec)[0] != "mismatch":
                     records.append(rec)
                     traces.append(SourceTrace("semantic_scholar", "found", rec.found_by))
@@ -615,20 +795,46 @@ def resolve_note(note: dict, arxiv_entries: dict, arxiv_lost: dict) -> Result:
 # Writing
 # --------------------------------------------------------------------------- #
 
-def fields_for(r: Result, today: str) -> dict:
+EVIDENCE_MAX = 400
+_LOST_TAIL = re.compile(r"(?:;\s*)?last check LOST \d{4}-\d{2}-\d{2}\b.*$")
+
+
+def _join_ev(head: str, tail: str) -> str:
+    """head + '; ' + tail within EVIDENCE_MAX, truncating head (never tail)."""
+    if not head:
+        return tail[:EVIDENCE_MAX]
+    room = EVIDENCE_MAX - len(tail) - 2
+    return (head[:room].rstrip() + "; " + tail) if room > 0 else tail[:EVIDENCE_MAX]
+
+
+def fields_for(r: Result, today: str, prev_evidence: str | None = None) -> dict:
+    """Frontmatter fields to write. OpenAlex lookup LOST: the §1c fields
+    (resolved, openalex_id, resolution_checked) are NOT written -- previous
+    values stay, or stay absent -- nor is resolution_status / resolution_match,
+    unless a registrar gave a definite retracted / withdrawn; the loss goes into
+    resolution_evidence as 'last check LOST <date>' (previous evidence kept).
+    A definite `mismatch` is written in full even then."""
     ev = "; ".join(r.evidence[:3])
     if r.diff:
         ev += ("; " if ev else "") + "diff: " + ", ".join(f"{d['field']}={d['level']}" for d in r.diff)
     flags = [f["message"] for f in r.flags if f["severity"] != "menor"]
     if flags and r.status == "unresolved":
         ev += ("; " if ev else "") + flags[0]
+    if r.openalex_lost and r.status != "mismatch":
+        lost = (f"last check LOST {today}: OpenAlex unreachable (errors/budget) -- resolved/openalex_id/"
+                "resolution_checked left unchanged; re-run")
+        if r.status in ("retracted", "withdrawn"):
+            return {"resolution_status": r.status, "resolution_match": r.match or "",
+                    "resolution_evidence": _join_ev(ev, lost)}
+        prev = _LOST_TAIL.sub("", prev_evidence or "").strip().rstrip(";").strip()
+        return {"resolution_evidence": _join_ev(prev, lost)}
     return {
         "resolved": r.resolved,
         "openalex_id": r.openalex_id or "",
         "resolution_checked": today,
         "resolution_status": r.status,
         "resolution_match": r.match or "",
-        "resolution_evidence": ev[:400],
+        "resolution_evidence": ev[:EVIDENCE_MAX],
     }
 
 
@@ -636,7 +842,9 @@ def write_result(path: Path, r: Result, today: str) -> bool:
     if r.status == "skipped_send_never":
         return False
     text, nl = vn.read_text(path)
-    vn.write_text(path, vn.set_fields(text, fields_for(r, today)), nl)
+    split = vn.split_frontmatter(text)
+    prev = vn.fm_get(split[0], "resolution_evidence") if split else None
+    vn.write_text(path, vn.set_fields(text, fields_for(r, today, prev)), nl)
     return True
 
 
@@ -675,17 +883,27 @@ def print_report(results: list[Result], key_set: bool, written: bool) -> None:
         print("Nothing was written (report-only). Re-run with --write to record the resolution fields.")
 
 
+def has_source_error(r: Result) -> bool:
+    return any(d.get("level") == "source_error" for d in r.diff)
+
+
 def gate_passes(r: Result) -> bool:
-    return r.status == "resolved" and r.match in ("exact", "close") and not r.retraction_lost
+    return (r.status == "resolved" and r.match in ("exact", "close") and not r.retraction_lost
+            and not has_source_error(r) and not r.note_incomplete)
 
 
 def gate_exit(results: list[Result]) -> int:
-    """0 all pass; 2 any definite failure; 1 only 'could not prove' failures
-    (OpenAlex lookup or a retraction check LOST to errors)."""
+    """0 all pass; 2 any definite failure (incl. an accepted OpenAlex title
+    `source_error` -- a human must confirm it -- and a note lacking author/year);
+    1 only 'could not prove' failures (OpenAlex lookup or a retraction check
+    LOST to errors)."""
     failing = [r for r in results if not gate_passes(r)]
     if not failing:
         return 0
+
     def indefinite(r: Result) -> bool:
+        if r.note_incomplete or has_source_error(r):
+            return False
         return (r.status == "unresolved" and r.openalex_lost) or (r.status == "resolved" and r.retraction_lost)
     return 2 if any(not indefinite(r) for r in failing) else 1
 
@@ -697,7 +915,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--write", action="store_true", help="write the resolution fields into the notes")
     ap.add_argument("--json", action="store_true", help="machine-readable report on stdout")
     ap.add_argument("--gate", action="store_true",
-                    help="exit 0 only if every selected note is live-resolved (exact/close, not retracted/withdrawn)")
+                    help="exit 0 only if every selected note is live-resolved (exact/close, not retracted/"
+                         "withdrawn, no LOST check); 2 on any definite failure, incl. an OpenAlex title "
+                         "source_error (the researcher confirms it by hand) or a note lacking author/year; "
+                         "1 if the only failures are LOST lookups")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args(argv)
     bad_input = 1 if a.gate else 2
