@@ -70,14 +70,44 @@ table.
   `experiment_validity` and, from `## Resultado`, each verdict + effect estimate +
   CI (or SE).
 
+## Exploratory experiments never move status — enforced by script
+
+Contract `docs/v3-interfaces.md` §1d: an experiment is `role: confirmatory` or
+`role: exploratory` (simplification-ladder rungs, `rung: 0–2`; program
+evolution). **This skill never moves a hypothesis's status on an exploratory
+experiment** — and that is checked mechanically, not by reading prose:
+
+1. **Every trigger that carries an experiment id** (`prereg frozen`,
+   `preregistrada → en_experimento`, `evidence result`) starts with
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py check --experiment <E-XXXX.md>
+   ```
+   Exit `3` → **refuse the trigger**: no status change, no `linked_experiment`
+   append, no `history`, no digest. Tell the caller the printed reason
+   (`exploratory (rung N) …`, or a `crítico` malformed `role` / `rung`, or a
+   `confirmatory` note with `rung` ≠ 3). A rung's outcome belongs to its
+   `Claims/` node (`claim_status.py`), not here. Exit `0` → continue. An absent
+   `role` (every v2 note) reads as confirmatory and passes.
+2. **The evidence set for an evidence edge comes only from**
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py gather --hypothesis <H-XXXX.md> --json
+   ```
+   Its `eligible` list is exactly: in `linked_experiment`, primary `hypothesis:`
+   is this one, `experiment_validity: valid`, and not exploratory. Only those
+   ids enter step 1 below and `combine_effects.py`. Its `excluded` list (with
+   reasons — exploratory rungs appear there even when nobody linked them) goes
+   into the output so the researcher sees what did **not** count. Never add an
+   experiment to the evidence set by hand.
+
 ## Deciding an evidence transition
 
-1. Confirm the hypothesis is `en_experimento`. Gather **only
-   `experiment_validity: valid`** experiments that **adjudicate** it — the ones
-   in its `linked_experiment` list, i.e. where this hypothesis is the experiment's
-   primary `hypothesis:`. An experiment that lists this hypothesis only under
-   `secondary_hypotheses:` (tracked in the hypothesis's `collateral_evidence:`)
-   is **never** gathered here and never enters `combine_effects.py`. Take each
+1. Confirm the hypothesis is `en_experimento`. The adjudicating experiments are
+   **exactly** `evidence_gate.py gather`'s `eligible` list (previous section):
+   `experiment_validity: valid`, confirmatory, in its `linked_experiment` list
+   with this hypothesis as the experiment's primary `hypothesis:`. An
+   experiment that lists this hypothesis only under `secondary_hypotheses:`
+   (tracked in `collateral_evidence:`) or that is `role: exploratory` is
+   **never** gathered here and never enters `combine_effects.py`. Take each
    adjudicating experiment's mechanical verdict (`apoyada` / `refutada` /
    `inconclusa`) and effect + CI/SE from `run-experiment`.
 2. **"Independent" replication** = a distinct `E-XXXX`, a **different seed**, and
@@ -301,6 +331,12 @@ this skill does all of it.
 | `hypothesis-cycle` | budget overflow — more candidates passed than the per-cycle budget | `budget overflow` | ordered list of the overflow candidate `H-XXXX` ids (already created at `propuesta`) | `propuesta → en_cola` for each, in the given order; `history`; digest |
 | `hypothesis-cycle` / human | a queued candidate is picked up | `budget freed` | `H-XXXX` id(s) | `en_cola → propuesta`; `history`; digest |
 
+A caller that fires `prereg frozen`, `preregistrada → en_experimento` or
+`evidence result` for a `role: exploratory` experiment is **refused**
+(`evidence_gate.py check` exit 3) — callers should not fire them for rungs at
+all (`preregister-experiment` step 0 and `run-experiment` skip them for
+rungs), but the refusal here is what makes the rule hold regardless.
+
 `run-experiment`'s invalid / flagged case passes **no** trigger — an invalid
 experiment never moves the state (the hypothesis stays `en_experimento`;
 `run-experiment` records its own `needs_human_review` flag on the experiment
@@ -314,6 +350,10 @@ note).
   with `preregister-experiment` / `run-experiment`.)
 - **Counting an invalid experiment.** Only `experiment_validity: valid` moves the
   state.
+- **Counting an exploratory experiment (a ladder rung, an evolution run), or
+  building the evidence set by hand.** Run `evidence_gate.py check` on every
+  trigger's experiment and take the evidence set only from `gather`'s
+  `eligible` list; exit 3 means refuse, even if the rung "clearly" supports.
 - **Counting a collateral-evidence experiment.** Only experiments where the
   hypothesis is the primary `hypothesis:` (its `linked_experiment`) are gathered;
   `secondary_hypotheses` / `collateral_evidence` links never enter the combine.
@@ -342,6 +382,7 @@ note).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/combine_effects.py` — replication combiner (random-effects
   DerSimonian–Laird; `--help` documents the `consistency` band cut-points).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — single-experiment mechanical test.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py` — exploratory experiments never count (`check`, `gather`).
 - `${CLAUDE_PLUGIN_ROOT}/agents/fresh-verifier.md`,
   `${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py`,
   `${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py` — the `apoyada` gate.

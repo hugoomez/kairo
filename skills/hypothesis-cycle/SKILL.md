@@ -418,6 +418,31 @@ status change" step 2). So appending here is safe — a later regeneration will 
 drop your row, and it must not: losing it would let the rejected candidate be
 re-proposed.
 
+## Optional stage — simplification ladder for an expensive or hard test
+
+After a candidate passes and its note exists, look at its test sketch. If the
+confirmatory test will be **expensive** (above the hub's
+`ladder_cost_threshold`; without that field: it needs a GPU, or ≥ 1 GPU-h, or
+the cost is unknown) or **hard** (it reproduces a paper's method with no
+`validated` tool in `Tools/`, so it would be reimplemented from the text),
+**offer** a simplification ladder — never force it; one line per trigger that
+fired.
+
+If the researcher accepts, append to the note a `## Escalera de simplificación`
+**plan** (not a preregistration): 2–3 relaxed versions of the test sketch, each
+with its rung (`0` toy/smoke on CPU in minutes — does the instrument work at
+all?; `1` reduced scale — is the effect there?; `2` near-full at reduced power),
+**what is relaxed and by how much** (smaller n, fewer qubits, simpler noise, a
+smaller modulus, toy data, shorter training), the relaxed prediction, the design
+question it answers, and which rungs are independent (run in parallel) vs.
+sequential. Everything not relaxed stays exactly as in the sketch.
+
+That is all this skill does: `preregister-experiment` step 0 turns each rung
+into its own `ligero` exploratory preregistration (`role: exploratory`,
+`rung: 0–2`) and `Claims/` node, runs them, and only then freezes the
+confirmatory design. Rungs never count as evidence for the hypothesis and never
+move its status (`update-confidence` refuses them mechanically).
+
 ## Budget overflow — tournament, evolution, wildcard, meta-review
 
 Create **all** passing candidates as `propuesta` notes (next `H-XXXX` each), in
