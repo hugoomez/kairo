@@ -98,7 +98,7 @@ Binding rules:
   .venv/                             isolated environment
   reference/  extracted/  logs/  runs.jsonl
 
-<vault>/Tools/P-XXXX/<method>/       the shared library entry (Block: storage)
+<vault>/Tools/P-XXXX/<method>/       the shared library entry (see the vault's Tools/README.md)
   TOOL.md                            manifest (templates/tool-template.md)
   MANIFEST.sha256                    per-file hashes; its sha256 = validation_hash
   tool/<method>.py                   the extracted, parameterized function (+ CLI)
@@ -163,6 +163,11 @@ approval as `<sandbox>/approved-commands.json` (argv lists exactly as shown,
 `sandbox_guard.py run --plan …`, which refuses anything not in that file. A
 command that turns out to be needed later (a missing package, a patched
 path) goes back to the researcher as a new approval — never an ad-hoc run.
+
+On Windows under Git Bash, export `MSYS_NO_PATHCONV=1` before calling
+`sandbox_guard.py run`: MSYS otherwise rewrites POSIX-looking arguments
+(`-w /work` → `C:/Program Files/Git/work`), the argv no longer matches the
+approved plan, and the guard (correctly) refuses it.
 
 Never run anything with the vault as working directory; never pass a
 `Papers/` or `Projects/` path to third-party code (`sandbox_guard` refuses

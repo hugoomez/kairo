@@ -36,7 +36,8 @@ cost:
   wall_clock: "<total, and per phase: env build / reference run / validation>"
   compute: "<CPU-h / GPU-h, local or Kaggle>"
   claude_session: "<from /cost if readable; else `not measured`>"
-used_by: []                         # experiment ids whose preregistration froze this tool's hash
+# Which experiments use this tool is NOT recorded here (TOOL.md is frozen):
+# grep -rl "Tools/P-XXXX/<method>" Projects/*/Experimentos/
 ---
 
 # <P-XXXX> — <method>

@@ -78,6 +78,7 @@ claude --plugin-dir /path/to/kairo
 | `kairo:update-confidence` | The single writer of hypothesis `status` after `propuesta`. Implements an exact state machine; enforces the replication gate for `apoyada`; routes disagreement to `evidencia_mixta` and spawns a moderator hypothesis; keeps the digest and the state-of-the-art map in sync. |
 | `kairo:adr-check` | For an Architecture Decision Record that cites hypotheses: compares each cited hypothesis's status now against its status when the ADR was written, flags any change, and drives the Nygard supersession lifecycle when a decision must actually change. |
 | `kairo:assemble-manuscript` | For a `paper_thread` of `linea_publicacion: true` hypotheses: gates per-hypothesis on `apoyada` status + `completo`-tier evidence, then drafts Introducción / Trabajo relacionado / Método / Resultados / Discusión from Estado-del-arte.md and the qualifying hypotheses' own sections, with real APA citations. Refuses (naming exactly what's missing) around anything that doesn't clear the bar. |
+| `kairo:paper-to-tool` | **On demand only.** Extracts *one* specific method from a paper's own public code (`code_repo:`) into a standalone, parameterized function with a line-level source map, and validates it against that code's reference outputs under a tolerance frozen in advance (≤ 6 fix attempts). Nothing executes before the researcher approves the repo, pinned commit and exact commands. Result: a `validated` (frozen, hashed) or `rejected` tool in the vault's shared `Tools/`. See "paper-to-tool" below. |
 
 ### Subagents
 
@@ -90,7 +91,7 @@ claude --plugin-dir /path/to/kairo
 ### Templates & scripts
 
 - `templates/` — note templates for projects, hypotheses, experiments, ADRs,
-  and tasks. The skills copy these into your vault; you never edit them in
+  tasks, and extracted tools (`tool-template.md` → `TOOL.md`). The skills copy these into your vault; you never edit them in
   place. Referenced from skills as `${CLAUDE_PLUGIN_ROOT}/templates/…`.
 - `scripts/analysis/` — two standard-library-only Python scripts the experiment
   skills call so statistics are applied mechanically:
@@ -99,6 +100,19 @@ claude --plugin-dir /path/to/kairo
   - `combine_effects.py` — combines two independent effect estimates
     (random-effects DerSimonian–Laird by default) and flags heterogeneity /
     disagreement.
+- `scripts/code_repo/find_code_repo.py` — backfills `code_repo:` for papers
+  ingested before the field existed. Reads public metadata only (arXiv
+  comments/abstract, the paper's LaTeX source, one author-stated hop,
+  Hugging Face Papers as corroboration), reports each candidate with a
+  confidence and the exact sentence it came from, and writes a note only on
+  an explicit `--confirm P-XXXX <url> --evidence "…"`. Never clones or runs
+  anything.
+- `scripts/paper_to_tool/` — `paper-to-tool`'s mechanical parts:
+  `sandbox_guard.py` (runs only the approved argv, never inside the vault's
+  git tree or with vault paths, credentials scrubbed; not OS isolation),
+  `compare_outputs.py` (pass/fail against a frozen rtol/atol), and
+  `tool_hash.py` (a tool's `validation_hash`, re-verified by
+  `run-experiment` pre-flight).
 - `scripts/second_critic/agreement_log.py` — append-only log of every
   `hypothesis-cycle` v2 primary-vs-second-critic comparison (agree/disagree,
   actual DeepInfra cost). `summary` reports the agreement rate and warns
@@ -115,6 +129,7 @@ generic helpers. They expect a vault laid out like this:
 
 ```
 Papers/                     P-XXXX <short title>.md   — shared paper library
+Tools/P-XXXX/<method>/      TOOL.md + extracted tool  — shared tool library (paper-to-tool; created on first use)
 Projects/<slug>/
   _hub.md                   PROJ-XXX project hub
   Hipotesis/                H-XXXX <slug>.md
@@ -137,6 +152,54 @@ propuesta | en_cola | preregistrada | en_experimento | apoyada | refutada | inco
 
 If you want a running example of the layout, create a project with
 `kairo:create-project` and let it scaffold one.
+
+---
+
+## paper-to-tool — when it triggers, and when it doesn't
+
+When an experiment must reproduce a specific paper's method, the old default
+was for Claude to reimplement it from the paper's text. That is how this
+plugin's own reference vault lost an experiment: the reimplemented grokking
+transformer had LayerNorm and a tied unembedding that the paper's code never
+had, and the control could not reproduce the paper's result. `paper-to-tool`
+extracts the method from the paper's own code instead, and proves the
+extraction computes what that code computes. It is inspired by Paper2Agent
+(Miao et al., *Nature* 2026), but deliberately narrow: one paper, one method,
+one tool, shared across every project in the vault, never "agentify every
+paper".
+
+**It runs only when:**
+
+- the researcher asks for it ("extract <method> from P-XXXX's code"), or
+- `preregister-experiment` step 3f **offers** it (the design reproduces a
+  paper's method, the paper has `code_repo:`, no tool exists yet), with a
+  time/cost estimate, **and the researcher says yes**.
+
+**It never runs:** at ingestion (`create-project` only *records* `code_repo:`),
+in the background or on a schedule, for "the whole paper", or before the
+researcher has approved the exact commands (a `crítico` gate: repo, pinned
+commit, sandbox, isolation level, network use, exact argv).
+
+**What preregistration does with it (step 3f):**
+
+| Situation | What happens |
+|---|---|
+| `validated` tool in `Tools/` | used as is; path + `validation_hash` frozen in `environment.tools`; its exact spec copied into `## Variables`; an undeclared departure from it is `crítico` |
+| `code_repo:` but no tool | `paper-to-tool` offered with an estimate; never run silently |
+| no code / tool `rejected` / offer declined | reimplemented from the text as before, `method_provenance: reimplemented_from_text`, flagged `importante`: "método reimplementado desde el texto, no validado contra el código original" |
+
+`run-experiment` re-verifies every tool hash in pre-flight, the same way it
+checks dependency and dataset hashes.
+
+**Isolation, honestly.** With Docker available, the paper's code runs in a
+container with `--network none` and only the sandbox mounted. Without it,
+`sandbox_guard.py` enforces location, approved-argv-only, no vault paths and
+no credentials, but it is not an OS sandbox: the process could read your
+files, and your approval is the real control. The sandbox defaults to
+`~/.kairo-sandbox/` (`KAIRO_SANDBOX` overrides it); only the small frozen
+result is copied into the vault. **No local GPU?** A GPU-only reference is
+never faked on CPU: `paper-to-tool` looks for a CPU-sized reference, or builds
+a Kaggle transfer bundle under `run-experiment`'s no-vault-remote rule.
 
 ---
 
