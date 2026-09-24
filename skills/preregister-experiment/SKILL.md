@@ -230,16 +230,68 @@ hypothesis never gets a `T_apoyo` / `T_refuta` (or BF threshold); if you find
 yourself wanting to set one, it is not secondary — make it the primary of its
 own preregistration.
 
+**f. Paper-method provenance (only if the design reproduces a specific paper's
+method)** → `method_provenance:` + `environment.tools` frontmatter,
+`## Variables`, `## Manifiesto de entorno`
+
+"The canonical setup of P-XXXX", "P-XXXX's training procedure", "the
+analysis of P-XXXX §…" — whenever the control, the model, or the analysis is
+meant to *be* a specific paper's method, settle where that method's code comes
+from **before freezing**. Three cases, checked in this order:
+
+1. **A `validated` tool exists** in `Tools/P-XXXX/<method>/` (`TOOL.md`
+   `status: validated`) → use it. Set `method_provenance: validated_tool`;
+   add `{path: Tools/P-XXXX/<method>, validation_hash: <from TOOL.md>}` to
+   `environment.tools`; copy the tool's `## Especificación exacta` into
+   `## Variables` (Controladas) instead of re-describing the method from
+   the paper; state any parameter the design sets differently from the
+   tool's default (e.g. a different modulus) as a declared parameter. Any
+   other departure from the tool's exact specification — an added
+   normalization, a tied matrix, a different init — is **`crítico`**: it is
+   "a model/architecture detail that could suppress the effect being
+   measured", the E-0001 failure, and blocks the freeze until the
+   researcher decides. Never edit the tool itself — which experiments use a
+   tool is found by grepping `environment.tools`, not recorded in `TOOL.md`.
+   A tool whose `status` isn't `validated` (e.g. `in_progress`) cannot be
+   frozen into a preregistration.
+2. **The paper has `code_repo:` but no tool yet** → **offer** `paper-to-tool`
+   to the researcher, with an estimate: wall-clock (a CPU-only reference is
+   typically tens of minutes to a few hours; a GPU-only one adds a Kaggle
+   round-trip), compute (CPU-h / GPU-h), whether the reference needs a GPU
+   (from a read-only look at the repo), and that it executes third-party
+   code only after its own approval gate. **Don't run it silently** and
+   don't block on it: if the researcher declines or defers, continue with
+   case 3 and say in the flag that the tool was offered and declined.
+   If they accept, pause this preregistration and hand off to
+   `paper-to-tool` — a separate skill with its own approval gate; this skill
+   itself still executes nothing. Resume here with case 1 (or case 3 if the
+   tool ends `rejected`).
+3. **No `code_repo:`, a `rejected` tool, or the offer was declined** → the
+   current flow: Claude implements the method from the paper's text.
+   Set `method_provenance: reimplemented_from_text` and flag **`importante`**,
+   verbatim in `## Manifiesto de entorno` under **Procedencia del método**:
+   *"método reimplementado desde el texto, no validado contra el código
+   original"* — plus why (no public code / tool rejected: <reason> /
+   offered and declined). The frontmatter field makes every experiment that
+   carries this risk findable with one grep.
+
+Designs that reproduce no specific paper's method: `method_provenance: n/a`,
+`environment.tools: []`.
+
 ### 4. Freeze
 
-Only once a–d (and e, if `secondary_hypotheses` is non-empty) are complete and
-exact, **and no `crítico` risk is still open** (see "Flagging risks and
-ambiguities" — this now includes an unmet `completo` requirement and an
-unacknowledged bayesian+linea_publicacion gap, step 1e). An unresolved
-`crítico` ambiguity blocks the freeze — resolve it with the researcher first.
+Only once a–d (and e, if `secondary_hypotheses` is non-empty; and f, if the
+design reproduces a paper's method) are complete and exact, **and no
+`crítico` risk is still open** (see "Flagging risks and ambiguities" — this
+now includes an unmet `completo` requirement, an unacknowledged
+bayesian+linea_publicacion gap, step 1e, and an undeclared departure from a
+validated tool's specification, step 3f). An unresolved `crítico` ambiguity
+blocks the freeze — resolve it with the researcher first.
 
 1. `environment.seed`, `dependencies_hash`, `dependencies_lockfile`,
-   `dataset_hash`, `hardware` all filled (step 3d).
+   `dataset_hash`, `hardware` all filled (step 3d); `method_provenance` set
+   and every `environment.tools` entry carrying the tool's `validation_hash`
+   (step 3f).
 2. Set `frozen_at` = current UTC timestamp, ISO 8601 (`YYYY-MM-DDTHH:MM:SSZ`).
 3. Set `frozen_commit` = current commit hash (`git rev-parse HEAD`). Use the
    **experiment-code** repo's HEAD if code lives in its own repo; otherwise the
@@ -283,9 +335,12 @@ Fill `environment:` in frontmatter; record how each value was produced in
 | `dependencies_hash` | `sha256` of that saved snapshot file. |
 | `dataset_hash` | `sha256` of the dataset file. Multiple files → list per-file `sha256` in the body and put the hash of the sorted-hash manifest here. No dataset → `n/a`. |
 | `hardware` | one line, e.g. `1x RTX 4090 24GB, 32 GB RAM` or `MacBook Pro M2, CPU only`. |
+| `tools` | step 3f: one `{path, validation_hash}` per validated `Tools/P-XXXX/<method>` the design uses — `path` relative to the vault root, `validation_hash` copied from that `TOOL.md`. `[]` when none. `run-experiment` re-verifies each hash in pre-flight. |
 
 `## Manifiesto de entorno` records: exact commands run and when, per-file dataset
-hashes, the snapshot file paths, and which repo `frozen_commit` refers to.
+hashes, the snapshot file paths, which repo `frozen_commit` refers to, and —
+when step 3f applies — a **Procedencia del método** line (the tool path + hash,
+or the `importante` "reimplementado desde el texto" flag with its reason).
 
 ## Flagging risks and ambiguities — with a severity
 
@@ -296,8 +351,8 @@ presented with the same weight as a trivial one.
 
 | Tag | Meaning | What it forces |
 |---|---|---|
-| **`crítico`** | can invalidate the entire experiment or spend the full compute budget with no readable result — e.g. a control that won't reproduce the cited result, a model/architecture detail that could suppress the effect being measured, a stopping rule open to interpretation, a primary metric that doesn't actually measure the claim, a threshold with no `inconclusa` band, an unmet `completo` requirement, an unacknowledged bayesian+linea_publicacion combination gap | **Blocks the freeze.** Present it in its **own callout at the top** of what you show the researcher — never a bullet among minor items. The design is not frozen until the researcher gives an explicit decision on it. If found *after* freeze: `## Enmiendas` entry + a direct `crítico`-tagged question before any run. |
-| **`importante`** | plausibly shifts the result or its interpretation, but the experiment stays readable either way — a defensible-but-contested hyperparameter, an estimator choice, a borderline exclusion criterion, a cost-based `completo` trigger that couldn't be evaluated (missing/mismatched threshold) | Flag prominently with a proposed default + rationale. Get a decision before freezing if the researcher is available; otherwise freeze on the stated default and note the choice in `## Manifiesto de entorno`. |
+| **`crítico`** | can invalidate the entire experiment or spend the full compute budget with no readable result — e.g. a control that won't reproduce the cited result, a model/architecture detail that could suppress the effect being measured, a stopping rule open to interpretation, a primary metric that doesn't actually measure the claim, a threshold with no `inconclusa` band, an unmet `completo` requirement, an unacknowledged bayesian+linea_publicacion combination gap, a design that departs from a validated tool's exact specification without declaring it (step 3f) | **Blocks the freeze.** Present it in its **own callout at the top** of what you show the researcher — never a bullet among minor items. The design is not frozen until the researcher gives an explicit decision on it. If found *after* freeze: `## Enmiendas` entry + a direct `crítico`-tagged question before any run. |
+| **`importante`** | plausibly shifts the result or its interpretation, but the experiment stays readable either way — a defensible-but-contested hyperparameter, an estimator choice, a borderline exclusion criterion, a cost-based `completo` trigger that couldn't be evaluated (missing/mismatched threshold), a paper's method reimplemented from its text rather than taken from a validated tool (`method_provenance: reimplemented_from_text`, step 3f) | Flag prominently with a proposed default + rationale. Get a decision before freezing if the researcher is available; otherwise freeze on the stated default and note the choice in `## Manifiesto de entorno`. |
 | **`menor`** | implementation detail, low impact either way — activation function where the design doesn't turn on it, logging cadence, variable naming, RNG library when results are seed-identical | State the choice in one line. No decision needed, no freeze block. |
 
 Never fold a `crítico` risk into a list next to `menor` ones. "This control may
@@ -310,7 +365,7 @@ Once `status: preregistered` (and absolutely once code has run), the original
 sections — `## Predicción`, `## Plan de análisis` (including the stopping rule),
 `## Variables` (including the primary/secondary split), `## Diseño`,
 `## Umbral de invalidez`, `## Manifiesto de entorno`, and the `environment` /
-`frozen_*` / `tier` / `analysis_plan` frontmatter — are **immutable**.
+`frozen_*` / `tier` / `analysis_plan` / `method_provenance` frontmatter — are **immutable**.
 
 Every later change goes in a `## Enmiendas` section, append-only:
 
@@ -334,7 +389,9 @@ disclosed as such when results are reported.
   (step 1c), `status: preregistered`
 - `frozen_at` (ISO 8601 UTC), `frozen_commit` (sha)
 - `environment.seed`, `.dependencies_lockfile`, `.dependencies_hash`,
-  `.dataset_hash`, `.hardware`
+  `.dataset_hash`, `.hardware`, `.tools` (`[]` or `{path, validation_hash}`
+  entries, step 3f)
+- `method_provenance: <n/a | validated_tool | reimplemented_from_text>` (step 3f)
 - `experiment_validity`, `sanity_checks.*`, `cost_actual`, `result.*` — left as
   placeholders for the run/analysis skill
 - `cost_estimated` — a rough figure if the sketch supports one, else placeholder
@@ -391,6 +448,15 @@ disclosed as such when results are reported.
 - **Letting `bayesian` + `linea_publicacion` through without the step-1e flag.**
   There is no combination method yet for two Bayesian replications — say so at
   freeze time, don't discover it at the second experiment.
+- **Re-describing a paper's method from its text when a validated tool
+  exists.** Copy the tool's `## Especificación exacta`; the E-0001 control
+  failed because a from-text reimplementation added LayerNorm and a tied
+  unembedding the paper's code never had.
+- **Running `paper-to-tool` silently.** Offer it with a time/cost estimate
+  (step 3f case 2); it executes third-party code and has its own approval gate.
+- **Leaving `method_provenance` unset on a design that reproduces a paper.**
+  The `reimplemented_from_text` flag is how the researcher finds which
+  experiments carry that risk.
 
 ## Related
 
@@ -400,6 +466,9 @@ disclosed as such when results are reported.
   `frequentist` mechanical test, run by `run-experiment` step 5.
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py` — the
   `bayesian` mechanical test, run by `run-experiment` step 5.
+- `paper-to-tool` — builds the validated `Tools/P-XXXX/<method>` tools that
+  step 3f uses or offers; `TOOL.md`'s `## Especificación exacta` is what
+  step 3f copies into `## Variables`.
 - `update-confidence` — the `prereg frozen` trigger this skill fires (step 4b);
   also owns the replication combiner that cannot yet combine two Bayes factors
   (step 1e).

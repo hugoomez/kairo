@@ -73,6 +73,14 @@ and ambiguities"):**
 `crítico` sentence — it must never be presented with the same weight as
 "ReLU or GELU?".
 
+**Use validated tools as they are.** If the prereg lists `environment.tools`
+(`method_provenance: validated_tool`), the experiment code **calls** each
+tool's `tool/<method>.py` (import it, or run its CLI) with the parameters the
+frozen design declares. Never re-transcribe, "simplify", or copy-and-edit a
+tool's code — a changed copy is a from-text reimplementation again, and its
+hash no longer proves anything. A tool that can't express the frozen design
+is a `crítico` ambiguity (above), not a licence to patch it.
+
 **Record the code commit.** The frozen prereg predates the code, so
 `frozen_commit` (often the vault HEAD at freeze) does not by itself pin the
 implementation. Once the code is written and committed, add a dated `## Enmiendas`
@@ -88,6 +96,12 @@ Recompute, **the same way `preregister-experiment` did**:
   output, compare to `environment.dependencies_hash`.
 - **Dataset hash(es):** `sha256` each dataset file, rebuild the manifest hash,
   compare to `environment.dataset_hash`.
+- **Tool hash(es):** for every `environment.tools` entry, check that
+  `TOOL.md` says `status: validated`, then
+  `python ${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/tool_hash.py verify
+  <vault>/<path> --expected <validation_hash> --json`. Exit 1 (any changed,
+  added, or missing file under the tool) is a mismatch, exactly like a
+  dependency or dataset hash mismatch.
 - **Code commit:** verify the working tree is at the experiment-code sha — the
   one recorded in `## Enmiendas` (step 0), or `frozen_commit` itself if that
   already points at the code repo. If it isn't and can't be checked out, that is
@@ -135,6 +149,11 @@ this machine doesn't have — Kaggle, Colab, a rented box:
   scripts), `E-XXXX.data.json` (frozen data manifest), `E-XXXX.deps.txt`
   (lockfile), and a `MANIFEST.sha256` covering every file in the bundle. Nothing
   from the wider vault tree — no `Projects/…` notes, no other experiments.
+  Tools listed in `environment.tools` are the one addition: copy each
+  `Tools/P-XXXX/<method>/` folder (its `tool/`, `env/`, and its own
+  `MANIFEST.sha256`) into the bundle, and in the runtime also run
+  `sha256sum -c MANIFEST.sha256` inside each tool folder — the same file
+  `tool_hash.py` hashed, so a byte-identical tool is proven on the runtime too.
 - Transfer the bundle by whatever the runtime supports — dataset upload, file
   copy, or a throwaway scratch repo that is **not** the vault. In the runtime,
   run `sha256sum -c MANIFEST.sha256` and re-check the `dependencies_hash` before
@@ -315,6 +334,9 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - **Cloning `vault/` or giving it a git remote to run on Kaggle/Colab.** The
   vault stays local. Ship a flat, self-contained bundle of just the experiment's
   own files (scripts + `E-XXXX.data.json` + lockfile + `MANIFEST.sha256`).
+- **Running with a tool whose hash doesn't match the prereg**, or editing a
+  tool's code "just to make it fit". Pre-flight mismatch = stop; a tool that
+  can't express the frozen design is a `crítico` question.
 - **Shipping a script that hard-codes a vault path.** Bundled scripts resolve
   inputs from `Path(__file__).parent`; a vault-tree dependency breaks the run on
   any external runtime.
@@ -330,3 +352,6 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py` — the
   `bayesian` mechanical test for step 5. `--help` documents the Bayes factor
   and verdict thresholds.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/tool_hash.py` — the pre-flight
+  check of every `environment.tools` hash (step 1); tools are built by
+  `paper-to-tool`.

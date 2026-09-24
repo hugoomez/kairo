@@ -27,6 +27,13 @@ environment:
   dependencies_hash: <sha256 of that snapshot file>
   dataset_hash: <sha256 of the dataset snapshot, or n/a>
   hardware: <e.g. 1x A100 80GB>
+  # tools — validated paper-to-tool tools this design uses (preregister-experiment
+  # step 3f); run-experiment pre-flight re-verifies each hash with tool_hash.py.
+  tools: []   # e.g. [{path: Tools/P-0002/modular-addition-training, validation_hash: <sha256>}]
+# method_provenance — where the code of a reproduced paper's method comes from.
+# reimplemented_from_text carries an `importante` flag: "método reimplementado
+# desde el texto, no validado contra el código original" (see ## Manifiesto de entorno).
+method_provenance: <n/a | validated_tool | reimplemented_from_text>
 experiment_validity: <valid | invalid>
 sanity_checks:
   baseline_reproduces: <true | false>
@@ -97,6 +104,12 @@ preregistrado).>
 
 <Comandos exactos y cuándo se corrieron, hashes por archivo de dataset, rutas de
 los snapshots, y a qué repo apunta `frozen_commit`.>
+
+**Procedencia del método:** <solo si el diseño reproduce el método de un paper:
+`Tools/P-XXXX/<method>` + `validation_hash`, o — `importante` — "método
+reimplementado desde el texto, no validado contra el código original" + motivo
+(sin código público / herramienta rechazada: <motivo> / ofrecida y declinada).
+Omitir si `method_provenance: n/a`.>
 
 ## Resultado
 
