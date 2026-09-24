@@ -283,23 +283,12 @@ class TestCleanBundle(unittest.TestCase):
                              {(".env.example", "env_template", "warn"),
                               ("data.py", "vault_path_reference", "warn")})
 
-    def test_truncated_scan_warns(self):
+    def test_large_file_over_window_is_clean_without_warn(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / "b"
             write(root, "big.txt", "a" * 5000)
-            rc, out, _ = run_cli(root, "--max-bytes", "1000")
-            self.assertEqual(rc, 0)
-            self.assertEqual(json.loads(out)["findings"],
-                             [{"path": "big.txt", "kind": "truncated_scan", "severity": "warn"}])
-
-    def test_corrupt_archive_warns(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d) / "b"
-            write(root, "broken.zip", b"PK\x03\x04 not really", binary=True)
-            rc, out, _ = run_cli(root)
-            self.assertEqual(rc, 0)
-            self.assertEqual(json.loads(out)["findings"],
-                             [{"path": "broken.zip", "kind": "archive_unreadable", "severity": "warn"}])
+            rc, out, _ = run_cli(root, "--max-bytes", "1024")
+            self.assertEqual((rc, json.loads(out)), (0, {"status": "clean", "findings": []}))
 
 
 class _Out:
@@ -379,6 +368,242 @@ class TestErrors(unittest.TestCase):
             for target in (clean, dirty, Path(d) / "missing"):
                 rc, out, _ = run_cli(target)
                 self.assertEqual(json.loads(out)["status"], expected[rc])
+
+
+# ---- I1: fail closed on content that cannot be scanned -------------------------
+
+HEX = "0123456789abcdef"
+GLPAT = "gl" + "pat-" + fake(20, ALNUM + "_-", 20)
+MIXED_SNAKE = fake(5, ALNUM, 21) + "_" + fake(8, ALNUM, 22) + "_" + fake(5, ALNUM, 23)
+PUNCT_PW = fake(7, ALNUM, 24) + "!" + fake(6, ALNUM, 25) + "#" + fake(4, ALNUM, 26)
+KAGGLE_HEX = fake(32, HEX, 27)
+PPK_HEAD = "PuTTY-User-" + "Key-File-3: ssh-ed25519\nEncryption: none\n"
+ALL_SECRETS += [GLPAT, MIXED_SNAKE, PUNCT_PW, KAGGLE_HEX]
+
+
+def nested_zip(levels: int, payload: dict) -> bytes:
+    blob = zip_bytes(payload)
+    for i in range(levels - 1):
+        blob = zip_bytes({f"l{i}.zip": blob})
+    return blob
+
+
+def scan(root: Path, *args):
+    rc, out, err = run_cli(root, *args)
+    doc = json.loads(out.decode("utf-8"))
+    return rc, doc, {(f["path"], f["kind"]): f["severity"] for f in doc["findings"]}, out + err
+
+
+def scan_inproc(root: Path, *args):
+    buf, old = io.BytesIO(), sys.stdout
+    try:
+        sys.stdout = _Out(buf)
+        rc = cb.main([str(root), *map(str, args)])
+    finally:
+        sys.stdout = old
+    doc = json.loads(buf.getvalue().decode("utf-8"))
+    return rc, {(f["path"], f["kind"]): f["severity"] for f in doc["findings"]}
+
+
+class TestFailClosed(unittest.TestCase):
+    """I1: a transfer gate must not pass what it did not read."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "b"
+        self.root.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_secret_at_end_of_file_bigger_than_default_cap(self):
+        rows = "id,value,label\n" + "1,2,label_a\n" * (9 * 1024 * 1024 // 12)
+        self.assertGreater(len(rows), cb.DEFAULT_MAX_BYTES)
+        write(self.root, "data/big.csv", rows + "99,note," + ANT + "\n")
+        rc, _, by, text = scan(self.root)
+        self.assertEqual(rc, 2)
+        self.assertEqual(by.get(("data/big.csv", "api_key")), "block")
+        self.assertNotIn(("data/big.csv", "truncated_scan"), by)
+        self.assertNotIn(ANT.encode(), text)
+
+    def test_secret_straddling_window_boundary(self):
+        write(self.root, "f.txt", "a" * 4080 + " " + ANT + " " + "b" * 3000)
+        rc, _, by, _ = scan(self.root, "--max-bytes", "4096")
+        self.assertEqual(by.get(("f.txt", "api_key")), "block")
+
+    def test_archive_member_bigger_than_window_fully_scanned(self):
+        write(self.root, "a.zip", zip_bytes({"m.txt": "z" * 20000 + "\n" + GH + "\n"}), binary=True)
+        rc, _, by, _ = scan(self.root, "--max-bytes", "4096")
+        self.assertEqual(by.get(("a.zip!m.txt", "api_key")), "block")
+
+    def test_7z_blocks(self):
+        write(self.root, "x.7z", b"7z\xbc\xaf\x27\x1c\x00\x04" + os.urandom(64), binary=True)
+        rc, _, by, _ = scan(self.root)
+        self.assertEqual(rc, 2)
+        self.assertEqual(by.get(("x.7z", "archive_unscanned")), "block")
+
+    def test_rar_by_magic_without_extension_blocks(self):
+        write(self.root, "payload.bin", b"Rar!\x1a\x07\x01\x00" + os.urandom(64), binary=True)
+        rc, _, by, _ = scan(self.root)
+        self.assertEqual(by.get(("payload.bin", "archive_unscanned")), "block")
+
+    def test_corrupt_zip_blocks(self):
+        write(self.root, "broken.zip", b"PK\x03\x04 not really", binary=True)
+        rc, doc, by, _ = scan(self.root)
+        self.assertEqual(rc, 2)
+        self.assertEqual(doc["findings"],
+                         [{"path": "broken.zip", "kind": "archive_unreadable", "severity": "block"}])
+
+    def test_empty_file_with_archive_name_is_not_a_finding(self):
+        write(self.root, "empty.whl", b"", binary=True)
+        rc, doc, _, _ = scan(self.root)
+        self.assertEqual((rc, doc), (0, {"status": "clean", "findings": []}))
+
+    def test_encrypted_zip_member_blocks(self):
+        blob = bytearray(zip_bytes({"secret.txt": os.urandom(40)}))
+        # zipfile clears the "encrypted" bit on write: set it in both headers by hand
+        blob[blob.index(b"PK\x03\x04") + 6] |= 0x1
+        blob[blob.index(b"PK\x01\x02") + 8] |= 0x1
+        write(self.root, "enc.zip", bytes(blob), binary=True)
+        rc, _, by, _ = scan(self.root)
+        self.assertEqual(rc, 2)
+        self.assertEqual(by.get(("enc.zip", "archive_unreadable")), "block")
+
+    def test_truncated_gzip_blocks(self):
+        import gzip
+        blob = gzip.compress(os.urandom(20000))
+        write(self.root, "t.txt.gz", blob[: len(blob) // 2], binary=True)
+        rc, _, by, _ = scan(self.root)
+        self.assertEqual(by.get(("t.txt.gz", "archive_unreadable")), "block")
+
+    def test_gzip_by_magic_without_extension_is_opened(self):
+        import gzip
+        write(self.root, "blob.dat", gzip.compress(("k = 1\n" + HF + "\n").encode()), binary=True)
+        rc, _, by, _ = scan(self.root)
+        self.assertEqual(by.get(("blob.dat!blob.dat", "api_key")), "block", sorted(by))
+
+    def test_nesting_within_limit_scanned_beyond_blocks(self):
+        write(self.root, "ok.zip", nested_zip(cb.MAX_ARCHIVE_DEPTH, {".env": "A=1\n"}), binary=True)
+        write(self.root, "deep.zip", nested_zip(cb.MAX_ARCHIVE_DEPTH + 1, {"a.txt": "x\n"}), binary=True)
+        rc, _, by, _ = scan(self.root)
+        self.assertTrue(any(k == "env_file" and p.startswith("ok.zip!") for p, k in by), by)
+        self.assertTrue(any(k == "archive_unscanned" and s == "block" and p.startswith("deep.zip")
+                            for (p, k), s in by.items()), by)
+
+    def test_expanded_size_ceiling_blocks(self):
+        write(self.root, "big.zip", zip_bytes({"m.bin": b"\x00" * 50000}), binary=True)
+        old = getattr(cb, "EXPANDED_CAP", None)
+        cb.EXPANDED_CAP = 10000
+        try:
+            rc, by = scan_inproc(self.root)
+        finally:
+            if old is None:
+                del cb.EXPANDED_CAP
+            else:
+                cb.EXPANDED_CAP = old
+        self.assertEqual(rc, 2)
+        self.assertEqual(by.get(("big.zip", "truncated_scan")), "block")
+
+
+# ---- I2: false negatives ------------------------------------------------------
+
+class TestFalseNegatives(unittest.TestCase):
+    CASES = {
+        "environ_subscript.py": ("api_key", 'os.environ["OPENALEX_API_KEY"] = "' + fake(24, ALNUM, 28) + '"\n'),
+        "kaggle.sh": ("api_key", "export KAGGLE_USERNAME=someone\nKAGGLE_KEY=" + KAGGLE_HEX + "\n"),
+        "kaggle_cfg.json": ("api_key", json.dumps({"username": "someone", "key": KAGGLE_HEX})),
+        "mixed_snake.py": ("token", 'DEEPINFRA_TOKEN = "' + MIXED_SNAKE + '"\n'),
+        "pw.sh": ("token", "PASSWORD=" + PUNCT_PW + "\n"),
+        "db.yaml": ("token", "db:\n  passwd: '" + PUNCT_PW + "'\n"),
+        "gitlab.txt": ("api_key", "token " + GLPAT + "\n"),
+        "notes_ppk.txt": ("private_key", PPK_HEAD + "Public-Lines: 2\n" + fake(60, ALNUM, 29) + "\n"),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name) / "b"
+        for rel, (_, content) in cls.CASES.items():
+            write(root, rel, content)
+        write(root, "wide.txt", ("OPENAI_API_KEY=" + GENERIC + "\n" + ANT + "\n").encode("utf-16-le"),
+              binary=True)
+        write(root, "id_work.ppk", PPK_HEAD + "Private-Lines: 1\n" + fake(40, ALNUM, 30) + "\n")
+        write(root, "blob.bin", b"\x00\x01" + PEM.encode() + b"\x00", binary=True)
+        write(root, "sa.bin", b"\x00\x01" + json.dumps({"private_key": PEM}).encode() + b"\x00", binary=True)
+        cls.rc, cls.doc, cls.by, cls.text = scan(root)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_each_case_blocks(self):
+        for rel, (kind, _) in self.CASES.items():
+            with self.subTest(rel=rel):
+                self.assertEqual(self.by.get((rel, kind)), "block", sorted(self.by))
+
+    def test_utf16le_without_bom(self):
+        self.assertEqual(self.by.get(("wide.txt", "api_key")), "block", sorted(self.by))
+
+    def test_putty_ppk_file(self):
+        self.assertEqual(self.by.get(("id_work.ppk", "private_key")), "block", sorted(self.by))
+
+    def test_private_key_with_body_in_binary(self):
+        self.assertEqual(self.by.get(("blob.bin", "private_key")), "block", sorted(self.by))
+        self.assertEqual(self.by.get(("sa.bin", "private_key")), "block", sorted(self.by))
+
+    def test_no_leak(self):
+        for s in ALL_SECRETS:
+            self.assertNotIn(s.encode(), self.text)
+
+
+class TestStillNotSecrets(unittest.TestCase):
+    def test_new_name_rules_do_not_overreach(self):
+        hi = fake(28, ALNUM, 31)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "b"
+            write(root, "code.py", "\n".join([
+                'keys = "' + hi + '"',
+                'key_path = "' + hi + '"',
+                'monkey = "' + hi + '"',
+                'hotkey = "' + hi + '"',
+                'public_key = "' + hi + '"',
+                "items = sorted(items, key=operator.itemgetter(1))",
+                "if api_key == expected_api_key_value_long: pass",
+                "EQ_TOKEN = default_token_name_v2",
+                "PAD_TOKEN = SPECIAL_PAD_TOKEN_V2",
+                "password = get_password(user_name_value)",
+                "password = self.config.password",
+                "password = request.form['password']",
+                'password = "<your-password-here!>"',
+                "PASSWORD=${DB_PASSWORD}",
+                "password: str = field(default_factory=str)",
+                "        password: _PasswordType | None = None,",
+                "password: Optional[Callable_Type] = None",
+                "os.environ['OPENAI_API_KEY'] = os.environ.get('BACKUP_KEY', '')",
+                'db_pass = "%(password)s"',
+                "bypass = 'Zq8!rT2#mK9$wL4@'",
+                # shapes from the site-packages false-positive sweep
+                "    key: _ArrayLikeInt_co | None = ...,",
+                "def __init__(self, key: QuadraticTermKey, coefficient: float) -> None:",
+                "    key: PositionalIndexer2D,",
+                "key = 'arrow-datasets/nyc-taxi/year=2019/month=6/part-0.parquet'",
+            ]) + "\n")
+            write(root, "bundle.min.js",
+                  "return Ct(t,[{key:`componentWillUnmount`,value:function(){}}]);"
+                  "Ot(t,[{key:`_isTransitionInProgress`,value:function(){}}]);"
+                  "tz=zoneinfo.ZoneInfo(key='America/Los_Angeles');"
+                  "for(let W of m)V[W.key]=this.nextStencilID++;"
+                  "this.fail=r,this.depthFail=i,this.pass=a}}Ln.disabled=new Ln({func:1});\n")
+            write(root, "lib.dll", b"MZ\x00\x00" + ("-----BEGIN " + "RSA PRIVATE" + " KEY-----").encode()
+                  + b"\x00-----END\x00" + os.urandom(64).replace(b"-", b"."), binary=True)
+            write(root, "wide_clean.txt", "hello world\nnothing here\n".encode("utf-16-le"), binary=True)
+            rc, out, _ = run_cli(root)
+            self.assertEqual((rc, json.loads(out)), (0, {"status": "clean", "findings": []}))
+
+    def test_identifier_shapes(self):
+        self.assertFalse(cb.looks_secret("default_token_name_v2"))
+        self.assertFalse(cb.looks_secret("SPECIAL_PAD_TOKEN_V2_X"))
+        self.assertTrue(cb.looks_secret(MIXED_SNAKE))
 
 
 if __name__ == "__main__":
