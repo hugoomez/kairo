@@ -59,3 +59,47 @@ consistent with that, but a future reader could reasonably pick "any
 
 **Proposed contract change:** add one line to §1b: "For gating, the last entry
 (file order) with a given `scope` governs. For reporting, list all entries."
+
+---
+
+## 3. §1d does not constrain the `role` × `rung` combination
+
+**Target:** `docs/v3-interfaces.md` §1d.
+
+**Issue:** §1d defines `role` and `rung` independently and leaves the meaning
+of each rung to B1. B1 defines rung 3 as "the claim's own conditions", so a
+confirmatory experiment is rung 3 by definition and exploratory rungs are
+0–2. Nothing in the contract says so, so another reader (Block A's
+`run-experiment`, A2's disclosure) could legitimately accept
+`role: confirmatory, rung: 1`.
+
+**Workaround (implemented in B1):** `scripts/analysis/evidence_gate.py check`
+refuses `confirmatory` with `rung` ≠ 3 as `crítico` (it must be fixed by an
+amendment before it can count), and exploratory rungs are created with rung 0–2
+only (`claim_status.py` refuses `--rung 3` for a rung claim). An absent `rung`
+is accepted, per the contract.
+
+**Proposed contract change:** add to §1d: "`role: confirmatory` ⇒ `rung: 3`
+(or absent); `role: exploratory` ⇒ `rung` ∈ {0, 1, 2} or absent (non-ladder
+exploratory work, e.g. program evolution)."
+
+---
+
+## 4. No id scheme for evolve-program runs
+
+**Target:** `docs/v3-interfaces.md` (new), README id schemes.
+
+**Issue:** B3's evaluator preregistration has no primary hypothesis — the
+hypothesis only exists after the search — so it cannot be an `E-XXXX`
+experiment note (whose `hypothesis:` is exactly one). The contract has no id
+for it.
+
+**Workaround:** `Projects/<slug>/Evolucion/EVO-XXXX.md` (vault-wide ids),
+format inline in `skills/evolve-program/SKILL.md`. `claim_status.py` accepts
+`--source EVO-XXXX` for lineage claims; `build_graph.py` does not check
+`source:` for dangling ids (only `depends_on` / `about`). The hypothesis filed
+from a winning program uses `spawned_from: EVO-XXXX`, outside the template's
+documented `<H-XXXX | E-XXXX | F-XXX>`.
+
+**Proposed contract change:** register `EVO-` as an id prefix and `Evolucion/`
+as a project folder; extend `spawned_from` to accept `EVO-XXXX`.

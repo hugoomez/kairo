@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,7 +101,8 @@ def load_nodes(vault: Path) -> tuple[dict[str, Node], list[Finding]]:
                 claim_kind=str(fm.get("kind", "")) if kind == "C" else "",
                 rung=str(fm.get("rung", "")) if kind == "C" else "",
                 role=str(fm.get("role", "")) if kind == "C" else "",
-                source=" ".join(as_list(fm.get("source"))) if kind == "C" else "",
+                source=" ".join(re.findall(r"\b(?:EVO|E)-\d{4}\b", str(fm.get("source", ""))))
+                if kind == "C" else "",
                 title=first_line(title_src),
             )
             if nid in nodes:
