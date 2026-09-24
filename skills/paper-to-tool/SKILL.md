@@ -230,7 +230,13 @@ still exercises the requested method, or (b) build a minimal self-contained
 step 2: never clone, push, or add a git remote for the vault; the bundle is
 only the repo files the method needs at the pinned SHA, the driver, the
 extracted tool (step 5), the lockfile, and a `MANIFEST.sha256`, run with
-`sha256sum -c MANIFEST.sha256` first. Both the upstream reference and the
+`sha256sum -c MANIFEST.sha256` first. Before any upload, run
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/check_bundle.py" <bundle_dir>`
+(`crítico` gate): exit 0 → upload may proceed; exit 2 → do not upload, report
+each `block` finding (path + kind), remove the file or move the secret to
+Kaggle Secrets, rebuild the manifest and re-run until exit 0; exit 1 → the
+check did not complete, not clean, do not upload. Note in `TOOL.md`
+`## Validación` that the check ran and its final `status`. Both the upstream reference and the
 extracted tool run **in the same Kaggle session**, so the step-6 replay
 comparison is same-environment; the outputs come back as JSON and are
 compared locally.
@@ -343,6 +349,10 @@ Third-party research code is untrusted code. The rules above in one place:
 - `pickle.load` / `torch.load` of repo-shipped or downloaded files executes
   code: list every such load in the approval, and use `weights_only=True`
   (or an equivalent safe loader) whenever the file is plain tensors/dicts.
+- Nothing leaves this machine unchecked: a Kaggle bundle (step 4b) is
+  uploaded only after `check_bundle.py` exits 0 on it. Exit 2 (a `.env`,
+  key, token, `.git/`, or `Papers/`/`Projects/` content in the bundle) and
+  exit 1 (check incomplete) both block the upload.
 - Be honest about isolation: without a container, the guard is a set of
   mechanical refusals, not an OS sandbox — the approval is the real control.
 
@@ -381,6 +391,9 @@ Same table as `preregister-experiment`. Typical here:
 
 - `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/sandbox_guard.py` — location
   check, approved-command runner, credential scrubbing, run log.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/security/check_bundle.py` — the isolation
+  check a Kaggle bundle passes before upload (step 4b); same gate as
+  `run-experiment` step 2.
 - `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/compare_outputs.py` — the
   mechanical pass/fail (step 6).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/tool_hash.py` — the
