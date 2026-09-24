@@ -116,7 +116,10 @@ Binding rules:
 
 ### 0. Pre-checks (read-only, no approval needed)
 
-1. Read the paper note: `code_repo:`, `code_repo_evidence:`. If the evidence
+1. If the paper note has `send: never` (`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py"
+   check <note>` exits 3), stop: this skill must read the note and query its
+   repo, and the note is marked not-to-send. Tell the researcher (`importante`).
+   Otherwise read the paper note: `code_repo:`, `code_repo_evidence:`. If the evidence
    is weak (no author statement), say so — `importante`.
 2. Check `Tools/P-XXXX/` for an existing tool for this method (see "When not
    to use").

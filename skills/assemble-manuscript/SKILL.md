@@ -42,6 +42,12 @@ manuscript built on `ligero`-tier thresholds or a hypothesis that's only
 3. `Projects/<slug>/Estado-del-arte.md`.
 4. Every `Papers/P-XXXX.md` cited by a qualifying hypothesis or by the
    Estado-del-arte sections used (for `## Referencia` and `authors`/`year`).
+   A note with `send: never` in its frontmatter is **not** read (the vault's
+   `send_guard` hook blocks it anyway): a hypothesis, experiment or paper marked
+   that way can't be drafted from. A flagged hypothesis or experiment is
+   excluded in Step 2 with reason `send: never` (`importante` — the researcher
+   drafts that part by hand). A flagged paper fails the Step 2b citation gate by
+   name.
 5. Every experiment linked from a qualifying hypothesis's `linked_experiment`.
 
 ## Step 1 — Collect the thread
@@ -61,6 +67,7 @@ for the whole thread:
 | `linea_publicacion: true`, `status: apoyada`, but at least one `linked_experiment` entry is `tier: ligero` | **Excluded — missing `completo` tier.** Name the exact experiment id(s) and say `completo` tier is required before this can go into a `linea_publicacion` manuscript. As of this writing `preregister-experiment` has not yet implemented `completo` — if so, say that plainly too, rather than implying the researcher just forgot a step. |
 | `linea_publicacion: true`, status anything other than `apoyada` (`propuesta`, `en_cola`, `preregistrada`, `en_experimento`) | **Not yet resolved.** Not an error — just not ready. State the current status plainly. |
 | `linea_publicacion: false` (or unset) | **Out of scope for this thread's rigor bar.** If the researcher wants it included, they need to set `linea_publicacion: true` and take it through the `completo`-tier path first — this skill does not draft a publication section around a hypothesis nobody flagged as publication-track. |
+| The hypothesis note, or any of its `linked_experiment` notes, has `send: never` | **Excluded — `send: never`** (`importante`). Don't open it; the researcher drafts that part by hand or unmarks the note. |
 | Any `linked_experiment` entry `experiment_validity: invalid` | **Excluded — invalid evidence.** Name the invalid experiment; `apoyada` should not have been reachable on invalid evidence, so also flag this as a possible upstream data-integrity gap worth a human look (not this skill's job to fix `update-confidence`'s state, just to refuse to build on it). |
 
 `status: apoyada` already guarantees ≥ 2 independent replicating experiments

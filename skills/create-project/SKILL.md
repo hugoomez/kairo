@@ -165,7 +165,11 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    - **New:** create `Papers/<P-id> <short-title>.md` (next `P-XXXX`, scan
      `Papers/` frontmatter for the max), `projects: [<PROJ-XXX>]`.
    - **Exists (from another project):** append `<PROJ-XXX>` to its `projects:`
-     list; refresh full text only if the note had none.
+     list; refresh full text only if the note had none. If the existing note has
+     `send: never`, don't open it (dedup by file name / `send_guard.py check`
+     only): tell the researcher the paper is already in the vault but marked
+     not-to-send, and ask whether to add `<PROJ-XXX>` by hand — never edit or
+     re-derive it yourself.
 7. Include a short **bibliographic section** (see Paper note format below).
 8. **Code repository (`code_repo:`)** — record the paper's own public code
    repository when it is **confidently** identifiable; otherwise leave the
@@ -241,7 +245,11 @@ facet — **reuse the per-candidate `matched:` record from the ranked list; do n
 re-derive facet membership.** Then **dispatch one `facet-summarizer` subagent per
 facet, all launched together in the same turn**, each given its facet + the
 explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
-`type`. Each subagent reads **only its assigned notes** and returns a compact,
+`type`. **Never assign a `send: never` note** (check the candidate list with
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <paths…>`;
+exit 3 names the flagged ones): it stays in `Papers/` but contributes nothing to
+the map, and the end-of-run message lists it as `menor` (`P-XXXX omitida del
+Estado del arte: send: never`). Each subagent reads **only its assigned notes** and returns a compact,
 fully-cited contribution to whichever canonical sections its papers support (it
 never touches §4 or §8). Collect every contribution.
 
@@ -432,6 +440,11 @@ resolution_status: <resolved | unresolved | mismatch | retracted | withdrawn —
 resolution_match: <exact | close | mismatch — title / first author / year vs
   the sources; empty when no source record matched>
 resolution_evidence: <"one line: which sources, what differed or was flagged">
+# send — optional, set only by the researcher. `send: never` = this note's
+# content and metadata must never reach the model or an external API: no
+# skill reads, summarizes, cites or resolves it, and the vault's send_guard
+# PreToolUse hook blocks reading it. Omit the field for normal notes.
+send: <never — or omit>
 ---
 
 ## Referencia
@@ -498,6 +511,9 @@ When a paper is already ingested for another project, only append this project's
   gets `resolve_refs.py --only <P-id> --write` (step 6.9). An unresolved /
   mismatched / retracted paper is still ingested but always surfaces in the
   end-of-run message — never silently.
+- **Reading, assigning or citing a `send: never` note.** It is skipped
+  explicitly (steps 6–7) — never worked around through another tool when the
+  `send_guard` hook refuses a read.
 - **Hand-writing the resolution fields.** `resolved` / `openalex_id` /
   `resolution_*` come only from the script; `resolved: true` without an OpenAlex
   id breaks the contract other skills rely on.

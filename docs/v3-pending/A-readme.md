@@ -66,6 +66,22 @@ Semantic Scholar.
 ---
 ```
 
+### 3. `send: never` notes (A3) — insert as a new bullet list item in the section that documents note frontmatter conventions (or, if none, directly after the new OpenAlex section)
+
+```markdown
+**Do-not-send notes.** Any vault note can carry `send: never` in its
+frontmatter. Its content (and, for external APIs, its metadata) never reaches
+the model or a third-party service: every Kairo skill and agent that reads the
+vault skips it explicitly, the citation scripts never look it up, the AI-use
+disclosure lists it by id only, `check_bundle.py` blocks it inside a transfer
+bundle, and the vault's `send_guard` PreToolUse hook
+(`scripts/security/send_guard.py`, copied to `vault/Scripts/hooks/`) refuses
+`Read`, content-mode `Grep`, shell commands naming it, and Smart Connections
+`get_note` on it. File names and titles can still surface in listings — give a
+sensitive note a neutral file name. List flagged notes with
+`python scripts/security/send_guard.py list <vault>`.
+```
+
 ## Verify
 
 1. `grep -n "scripts/citations/" README.md` shows the new bullet between the
@@ -77,3 +93,4 @@ Semantic Scholar.
    finds no literal key anywhere.
 4. The script names match the files: `ls scripts/citations/` lists
    `resolve_refs.py`, `check_retraction.py`, `retraction_sweep.py`.
+5. `grep -n "send: never" README.md` hits the do-not-send paragraph.

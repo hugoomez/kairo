@@ -20,6 +20,17 @@ observations for the Reduce pass to merge.
   ranking. **Read only these.** Do not scan the rest of `Papers/`, do not open
   other projects, do not pull new sources.
 
+## `send: never` notes — skip, explicitly
+
+A note whose frontmatter has `send: never` must not be read or summarized — its
+content is not to reach the model. The caller should never assign one, but check
+anyway: before reading, run a `Grep` for `^send:\s*["']?never` (case-insensitive,
+`output_mode: files_with_matches`) over your assigned paths. For each hit, do not
+open the note; add it to a `(para el reduce) omitidas por send: never` line with
+its id (from the file name) and nothing else. If a `Read` of an assigned note is
+refused by the `send_guard` hook, treat it the same way — never retry through
+another tool.
+
 ## What to produce
 
 For **only** the sections your assigned papers genuinely speak to, drawn from
@@ -88,6 +99,9 @@ you have not just re-read in this pass.
 
 ### (para el reduce) dificultad de lectura / prerequisitos
 - P-XXXX assumes familiarity with <X>; read P-YYYY first
+
+### (para el reduce) omitidas por send: never        # only if any
+- P-XXXX
 ```
 
 Include only the sections that have real content. Keep each bullet to one line.
