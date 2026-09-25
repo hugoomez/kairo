@@ -444,6 +444,14 @@ claude plugin validate .       # check the manifest and component paths
 /reload-plugins                # pick up edits without restarting
 ```
 
+**Research content never goes in this repo.** This repository is public and
+holds only the plugin: skills, agents, scripts, templates and their synthetic
+test fixtures. Audits, evaluations, and any file that quotes a project's
+claims, hypothesis text, experiment results, or paper text (abstracts,
+excerpts, `## Texto completo`) live **in the vault only**, e.g.
+`vault/Audits/`. That includes audits of the plugin's behaviour on a real
+vault. Tests use invented ids and text, never content copied from a vault.
+
 ---
 
 ## Licensing

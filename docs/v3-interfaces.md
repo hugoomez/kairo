@@ -137,7 +137,7 @@ verify it after it is applied. Each block owns only its own `A-*` / `B-*` files.
 | `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` (version bump) | INTEGRATION |
 | `skills/adr-check/**`, `skills/serendipity-scan/**`, `skills/spawn-hypothesis/**` | INTEGRATION |
 | `templates/adr-template.md`, `templates/task-template.md` | INTEGRATION |
-| `audits/**`, `docs/superpowers/**`, `LICENSE`, `.gitattributes`, `.gitignore` | INTEGRATION |
+| `audits/**` (removed 2026-09-25: audits live in the vault, see README), `docs/superpowers/**`, `LICENSE`, `.gitattributes`, `.gitignore` | INTEGRATION |
 
 Notes on boundaries (adjusted from the initial split after reading the files):
 
