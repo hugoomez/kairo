@@ -36,14 +36,27 @@ or scaffold experiment code.
 - A hypothesis is `status: propuesta` and the team wants to test it now.
 - You have a test sketch (from `hypothesis-cycle`) to harden into an exact,
   falsifiable protocol.
+- A cheap exploratory **ladder rung** (step 0) should be frozen before an
+  expensive confirmatory design — also for a `preregistrada` / `en_experimento`
+  hypothesis whose design already failed.
 
-**When not to use:** the hypothesis isn't `propuesta` yet; you want to execute or
+**When not to use:** the hypothesis isn't `propuesta` yet (except for a rung); you want to execute or
 analyze a run (separate skills).
 
 ## Inputs
 
 1. A **`propuesta`** hypothesis note (`Projects/<slug>/Hipotesis/H-XXXX.md`).
-   Refuse if its `status` is anything else.
+   Refuse if its `status` is anything else — **except** for an exploratory
+   ladder rung (step 0), which may also be preregistered while the hypothesis is
+   `preregistrada` or `en_experimento` (a rung never moves status, so it can
+   diagnose a design whose earlier runs came back invalid). **Also refuse** while its governing
+   fresh verification is unresolved — i.e. while
+   `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py gate --note <H-XXXX.md>`
+   exits `3` (latest `scope: note` entry `errors_found` or `cannot_assess` AND
+   `needs_human_review: true` still set). Name the findings from its
+   `## Verificación independiente`; it clears once a human has reviewed them
+   (and cleared `needs_human_review`) or a re-verification appended a
+   `no_errors_found` entry. No entry at all (a v2 note) does not block.
 2. Its **test sketch** — the manipulation/comparison, what gets measured, what
    result counts against the claim.
 
@@ -66,12 +79,103 @@ mechanically (step 1b), never picked first and rationalized after. **Hard
 floor — no override.** Once `completo` is required, there is no in-spec way
 to freeze at `ligero` anyway; an unresolved requirement blocks the freeze
 exactly like an open `crítico` risk (see "Flagging risks and ambiguities").
+The floor applies to every preregistration that can count as evidence — i.e.
+`role: confirmatory`. **Exploratory ladder rungs (step 0) are exempt and are
+always `ligero`**, even for a `linea_publicacion` hypothesis: they never
+adjudicate anything (`update-confidence` refuses them), so a power
+justification would buy nothing.
 
 **Independent of tier — `analysis_plan`:** `frequentist` (the existing
 mechanical test) or `bayesian` (a Bayes factor, computed via a versioned
 script). Chosen once, at step 1c, regardless of tier.
 
 ## Procedure
+
+### 0. Simplification ladder — optional, offered before the confirmatory design
+
+Before fixing an expensive or hard confirmatory design, **offer** (never force)
+2–3 cheap, relaxed versions of it, run as exploratory experiments. The point is
+to find out, in minutes on a CPU, whether the *instrument* works — whether the
+control reproduces, whether the stopping rule can fire, whether the model can
+show the effect at all — before a multi-GPU-hour run finds out instead.
+
+**When to offer it** (say which trigger fired, with the estimate):
+
+- the confirmatory `cost_estimated` exceeds the project hub's
+  `ladder_cost_threshold` (same unit rules as `completo_cost_threshold`,
+  step 1a) — or, when the hub has no such field, whenever the design needs a
+  GPU or its estimated cost is ≥ 1 GPU-h or unknown; **or**
+- the design reproduces a paper's method and step 3f would end in case 3
+  (`method_provenance: reimplemented_from_text`) — whatever the cost. A method
+  rebuilt from text is exactly where a cheap rung pays off (the E-0001 failure
+  mode in "Common mistakes" below). A rung can also expose an instrument
+  defect — a stopping rule that cannot fire before the effect has already
+  happened — at toy scale. Caveat: a model detail that suppresses an effect
+  only at full scale may look harmless at rung 0, so a clean rung 0 lowers,
+  not removes, the step 3f `crítico` risk.
+
+If `hypothesis-cycle` already drafted a `## Escalera de simplificación` plan
+for this hypothesis, start from it. The researcher may decline; record the
+offer and the decision in `## Manifiesto de entorno` of the confirmatory note.
+
+**Rungs** (contract `docs/v3-interfaces.md` §1d; rung meaning is defined in
+`scripts/analysis/evidence_gate.py` and `templates/experiment-template.md`):
+
+| `rung` | What it relaxes | Question it answers |
+|---|---|---|
+| `0` | toy / smoke: minutes on CPU — tiny modulus / n / model, a few thousand steps, 1–2 seeds | does the instrument work at all? (control reproduces; stopping rule fires; metric moves) |
+| `1` | reduced scale: smaller n / modulus / qubits, simpler noise, toy data, shorter training | is the effect there, in the predicted direction? |
+| `2` | near-full design at reduced power (fewer seeds / shorter budget) | do the thresholds and budget look right? |
+| `3` | — the claim's own conditions: the **confirmatory** experiment itself | — |
+
+Each rung relaxes the confirmatory design **only** along the stated axes and
+otherwise uses its exact model, optimizer, analysis and stopping-rule code — a
+rung that also "fixes" things is testing a different design.
+
+**Per rung — non-negotiable:**
+
+1. **Its own `ligero` preregistration**, via this skill's steps 1–4 on a new
+   `E-XXXX` with `role: exploratory`, `rung: <0|1|2>`, the same primary
+   `hypothesis:`, and a `## Escalera de simplificación` section saying what was
+   relaxed and how much, and which design question it answers. Its decision
+   rule is about the **relaxed prediction** (e.g. "the control groks at P = 31
+   within 15k steps"), not about the hypothesis. Frozen before it runs, like
+   any preregistration.
+2. **A `Claims/` node**, created at freeze by the single claim writer:
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/claim_status.py new \
+     --project-dir <vault>/Projects/<slug> --kind rung --role exploratory --rung <k> \
+     --about <H-XXXX> --source <E-XXXX> --by <who> \
+     --statement "<the relaxed prediction>" --how "<E-XXXX decision rule>"
+   ```
+3. **No `update-confidence` trigger** — not at freeze, not at run start, not at
+   the result. `update-confidence` would refuse it anyway
+   (`evidence_gate.py check` exits 3 on `role: exploratory`); do not add a rung
+   to the hypothesis's `linked_experiment`.
+4. **Run it** with `run-experiment` like any preregistration (literal
+   implementation, pre-flight, sanity checks, frozen analysis). Independent
+   rungs run **in parallel** (e.g. rung 0 of two design axes); a rung whose
+   design depends on another's outcome waits for it.
+5. **Settle its claim** — `claim_status.py set --status probado | refutado |
+   fallido` (relaxed prediction held / contradicted by a valid run / the rung
+   itself failed or was invalid) — then `build_graph.py --write`. **Failed and
+   refuted rungs are recorded exactly like passing ones, never hidden, never
+   silently re-run until they pass.** A failing rung 0 is often the most
+   valuable result of the whole ladder.
+
+**Exploratory rungs never count as evidence** for the hypothesis — they only
+inform the design. This is enforced in `update-confidence`'s logic, not just
+stated here.
+
+**Then the confirmatory design** (steps 1–4 below) is frozen **after** the
+rungs, with `role: confirmatory`, `rung: 3`, `informed_by_rungs: [E-…]`, and a
+`## Escalera de simplificación` table mapping **each** rung (`E-XXXX`, rung,
+claim `C-XXXX`, status) to the design decision it informed — or "no design
+change" — including the failed ones, plus the sentence "Los rungs son
+exploratorios: informaron el diseño y no cuentan como evidencia para
+<H-XXXX>." A rung that exposed a `crítico` problem (control won't reproduce,
+stopping rule can't fire) is carried into the confirmatory design's risk list
+at that severity: the design is not frozen until it is resolved.
 
 ### 1. Determine tier and analysis plan
 
@@ -310,6 +414,11 @@ hypothesis id + this experiment id. It moves that hypothesis
 `propuesta → preregistrada`, appends `E-XXXX` to its `linked_experiment`, appends
 the `history` entry, and regenerates `_digest.md`.
 
+**Exploratory rung (`role: exploratory`, step 0): no trigger.** Skip this
+handoff entirely — create the rung's `Claims/` node instead (step 0, item 2)
+and regenerate the ledger (`build_graph.py --write`). The hypothesis status and
+`linked_experiment` are untouched.
+
 **Secondary hypotheses do not transition.** For each id in
 `secondary_hypotheses`, this skill appends `E-XXXX` to that note's
 `collateral_evidence:` list directly (it is not a status-linked field, so
@@ -365,7 +474,10 @@ Once `status: preregistered` (and absolutely once code has run), the original
 sections — `## Predicción`, `## Plan de análisis` (including the stopping rule),
 `## Variables` (including the primary/secondary split), `## Diseño`,
 `## Umbral de invalidez`, `## Manifiesto de entorno`, and the `environment` /
-`frozen_*` / `tier` / `analysis_plan` / `method_provenance` frontmatter — are **immutable**.
+`frozen_*` / `tier` / `analysis_plan` / `method_provenance` / `role` / `rung` /
+`informed_by_rungs` frontmatter — are **immutable**. (`evidence_gate.py`
+enforces `role` / `rung`: it compares them with the note as first committed and
+refuses a rung relabelled `confirmatory` afterwards.)
 
 Every later change goes in a `## Enmiendas` section, append-only:
 
@@ -392,6 +504,12 @@ disclosed as such when results are reported.
   `.dataset_hash`, `.hardware`, `.tools` (`[]` or `{path, validation_hash}`
   entries, step 3f)
 - `method_provenance: <n/a | validated_tool | reimplemented_from_text>` (step 3f)
+- `role: <confirmatory | exploratory>` and `rung: <0 | 1 | 2 | 3>` (contract
+  §1d; step 0) — every preregistration sets both: a normal/confirmatory one is
+  `role: confirmatory`, `rung: 3`; a ladder rung is `role: exploratory`, `rung:
+  0–2`. Frozen like the rest — a role can never be changed after the run to
+  promote an exploratory result.
+- `informed_by_rungs: [E-…]` — confirmatory only, `[]` when no ladder ran
 - `experiment_validity`, `sanity_checks.*`, `cost_actual`, `result.*` — left as
   placeholders for the run/analysis skill
 - `cost_estimated` — a rough figure if the sketch supports one, else placeholder
@@ -406,6 +524,20 @@ disclosed as such when results are reported.
   replication gate (flagged, not solved — step 1e).
 
 ## Common mistakes
+
+- **Counting a ladder rung as evidence, or re-labelling it afterwards.** A rung
+  is `role: exploratory` from its freeze on; it informs the confirmatory
+  design and never enters `update-confidence` (which refuses it anyway via
+  `evidence_gate.py`). A striking rung result is a reason to preregister a
+  confirmatory test, not a result.
+- **Hiding a failed rung, or freezing the confirmatory design before the rungs
+  finished.** Every rung's `Claims/` node is settled (`fallido` / `refutado`
+  included) and cited in the confirmatory `## Escalera de simplificación`.
+- **A rung that changes more than the relaxation.** If rung 0 also swaps the
+  model or the stopping rule, it tests a different design; relax only the
+  stated axes.
+- **Forcing the ladder.** It is offered with the trigger and an estimate; the
+  researcher may decline.
 
 - **Freezing before the protocol is exact.** "Improves accuracy" is not a
   prediction; give direction + magnitude + units.

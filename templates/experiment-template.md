@@ -11,6 +11,23 @@ hypothesis: <H-XXXX>
 # update-confidence. Use for rival-pair designs where one sweep informs both sides.
 secondary_hypotheses: []   # e.g. [H-0001]
 project: <PROJ-XXX>
+# role / rung — docs/v3-interfaces.md §1d. Set by preregister-experiment and
+# frozen with the rest of the preregistration.
+#   role: confirmatory — adjudicates `hypothesis:`; the only kind update-confidence counts
+#   role: exploratory  — a simplification-ladder rung (B1): informs the confirmatory
+#                        design, NEVER counts as evidence; update-confidence refuses
+#                        every status transition on it (scripts/analysis/evidence_gate.py)
+#   rung: 0 toy/smoke (minutes, CPU: does the instrument / control work at all?)
+#         1 reduced scale (smaller n / modulus / model, shorter training: direction of effect)
+#         2 near-full pilot at reduced power
+#         3 the claim's own conditions — every confirmatory experiment is rung 3
+# Absent role (v2 notes) is read as confirmatory; absent rung = unknown.
+role: <confirmatory | exploratory>
+rung: <0 | 1 | 2 | 3>
+# informed_by_rungs — confirmatory only: the exploratory rung experiments whose
+# results informed this design (each mapped to the decision it informed in
+# ## Escalera de simplificación). [] when no ladder ran. Exploratory: omit.
+informed_by_rungs: []   # e.g. [E-0003, E-0004]
 tier: <ligero | completo>
 # analysis_plan — chosen at preregistration time, independent of tier.
 # frequentist -> scripts/analysis/two_proportion_test.py (run-experiment step 5)
@@ -80,6 +97,18 @@ toca, qué sugeriría, y **por qué no puede adjudicarla** (sin umbral, sin
 veredicto, sin réplica dedicada). run-experiment añade el resultado colateral
 observado a `## Resultado`; no dispara update-confidence para estas hipótesis.
 Omitir la sección si `secondary_hypotheses` está vacío.>
+
+## Escalera de simplificación
+
+<Solo si corrió una escalera (preregister-experiment paso 0). En el
+preregistro **confirmatorio**: una fila por rung — `E-XXXX` (rung N, claim
+`C-XXXX`, estado `probado | refutado | fallido`) → qué decisión de este diseño
+informó (p. ej. "rung 0 mostró que el control con LayerNorm no grokea a P = 31 →
+modelo sin LayerNorm"). Los rungs fallidos se listan igual. Frase obligatoria:
+"Los rungs son exploratorios: informaron el diseño y no cuentan como evidencia
+para <H-XXXX>." En un preregistro **exploratorio** (un rung): qué versión relajada
+del diseño objetivo es (qué se relajó y cuánto) y qué pregunta de diseño responde.
+Omitir si no hubo escalera.>
 
 ## Plan de análisis
 

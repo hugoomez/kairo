@@ -22,6 +22,9 @@ Encoded rules:
 - **Never average two disagreeing experiments into a forced clean verdict.**
   Disagreement → `evidencia_mixta`.
 - Evidence is **combined by a versioned script**, never by eyeballing.
+- **No transition to `apoyada` without a fresh verification** that found no
+  errors — see "Fresh-verification gate before `apoyada`". The verifier can
+  only block; it never moves `status` anywhere.
 
 ## When to use
 
@@ -67,14 +70,47 @@ table.
   `experiment_validity` and, from `## Resultado`, each verdict + effect estimate +
   CI (or SE).
 
+## Exploratory experiments never move status — enforced by script
+
+Contract `docs/v3-interfaces.md` §1d: an experiment is `role: confirmatory` or
+`role: exploratory` (simplification-ladder rungs, `rung: 0–2`; program
+evolution). **This skill never moves a hypothesis's status on an exploratory
+experiment** — and that is checked mechanically, not by reading prose:
+
+1. **Every trigger that carries an experiment id** (`prereg frozen`,
+   `preregistrada → en_experimento`, `evidence result`) starts with
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py check --experiment <E-XXXX.md>
+   ```
+   **Any exit other than `0` → refuse the trigger** (`3` = refused, `1` = the
+   note could not be read — never "continue anyway"): no status change, no
+   `linked_experiment` append, no `history`, no digest. Tell the caller the
+   printed reason (`exploratory (rung N) …`; a `crítico` malformed `role` /
+   `rung`; a rung 0–2 with no `role`; a `confirmatory` note with `rung` ≠ 3;
+   `role` / `rung` differing from the version first committed at freeze; a
+   preregistration never committed to git). A rung's outcome belongs to its
+   `Claims/` node (`claim_status.py`), not here. Exit `0` → continue. An absent
+   `role` with no ladder `rung` (every v2 note) reads as confirmatory and passes.
+2. **The evidence set for an evidence edge comes only from**
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py gather --hypothesis <H-XXXX.md> --json
+   ```
+   Its `eligible` list is exactly: in `linked_experiment`, primary `hypothesis:`
+   is this one, `experiment_validity: valid`, and not exploratory. Only those
+   ids enter step 1 below and `combine_effects.py`. Its `excluded` list (with
+   reasons — exploratory rungs appear there even when nobody linked them) goes
+   into the output so the researcher sees what did **not** count. Never add an
+   experiment to the evidence set by hand.
+
 ## Deciding an evidence transition
 
-1. Confirm the hypothesis is `en_experimento`. Gather **only
-   `experiment_validity: valid`** experiments that **adjudicate** it — the ones
-   in its `linked_experiment` list, i.e. where this hypothesis is the experiment's
-   primary `hypothesis:`. An experiment that lists this hypothesis only under
-   `secondary_hypotheses:` (tracked in the hypothesis's `collateral_evidence:`)
-   is **never** gathered here and never enters `combine_effects.py`. Take each
+1. Confirm the hypothesis is `en_experimento`. The adjudicating experiments are
+   **exactly** `evidence_gate.py gather`'s `eligible` list (previous section):
+   `experiment_validity: valid`, confirmatory, in its `linked_experiment` list
+   with this hypothesis as the experiment's primary `hypothesis:`. An
+   experiment that lists this hypothesis only under `secondary_hypotheses:`
+   (tracked in `collateral_evidence:`) or that is `role: exploratory` is
+   **never** gathered here and never enters `combine_effects.py`. Take each
    adjudicating experiment's mechanical verdict (`apoyada` / `refutada` /
    `inconclusa`) and effect + CI/SE from `run-experiment`.
 2. **"Independent" replication** = a distinct `E-XXXX`, a **different seed**, and
@@ -96,7 +132,7 @@ Run the combination script (next section), then:
 
 | First + second verdicts | Combination | Result |
 |---|---|---|
-| `apoyada` + `apoyada` | `consistent` | `apoyada` |
+| `apoyada` + `apoyada` | `consistent` | `apoyada` — **only after the fresh-verification gate below returns `no_errors_found`**; otherwise stay `en_experimento` |
 | `apoyada` + `apoyada` | `borderline` / `heterogeneous` / `conflicting` | `evidencia_mixta` |
 | `apoyada` + `refutada` (either order) | any | `evidencia_mixta` |
 | `refutada` + `refutada` (only reachable under `linea_publicacion`) | `consistent` | `refutada` |
@@ -109,6 +145,67 @@ experiments come back `borderline`, `evidencia_mixta` is the default; requesting
 **third replication** instead is a legitimate alternative and a human decision.
 
 A third valid experiment is a human decision, not automated here.
+
+## Fresh-verification gate before `apoyada`
+
+Runs **every** time the tables above would move a hypothesis to `apoyada` — the
+second-independent-support edge, the only edge into `apoyada` — **before** any
+write. No other edge is gated.
+
+1. Save the `combine_effects.py` output you just ran to a temp file outside the
+   vault (e.g. `... --json | tee <tmp>/combine.txt`).
+2. **Build the packet** from the hypothesis note, **both** adjudicating
+   experiments, and that output:
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py \
+     --vault <vault root> --note <H-XXXX.md> \
+     --experiment <E-first.md> --experiment <E-second.md> \
+     --analysis-output <tmp>/combine.txt \
+     --out <tmp>/packet.md --manifest <tmp>/manifest.json
+   ```
+   By allow-list it carries the claim, the cited evidence with its source text,
+   each experiment's frozen `## Predicción` / `## Variables` / `## Diseño` /
+   `## Plan de análisis` / `## Umbral de invalidez`, its `## Resultado`, its
+   `## Enmiendas` (labelled), and the combination output — nothing else (no
+   `history`, `confidence`, `status`, `## Revisión del ciclo`, prior
+   verifications, or this session's reasoning).
+3. **Dispatch `fresh-verifier`** with the packet file's text as the entire
+   prompt, verbatim, nothing added.
+4. **Record it** on the hypothesis note, whatever the verdict (agent output
+   saved to `<tmp>/report.txt`):
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
+     --note <H-XXXX.md> --verifier kairo/fresh-verifier@1.0.0 \
+     --model <model id the agent reported> --verdict <verdict> --scope note \
+     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest> \
+     [--flag-human-review]      # whenever verdict != no_errors_found
+   ```
+
+| Verdict | Result |
+|---|---|
+| `no_errors_found` | Proceed: `en_experimento → apoyada`, with the usual bookkeeping. The `history` `evidence` line adds `fresh-verifier: no_errors_found (paquete <first 12 chars of sha256>)`. |
+| `errors_found` | **Do not transition.** The hypothesis stays `en_experimento` — no `history` entry, no `_digest.md` / SOTA refresh (nothing changed state). `needs_human_review: true` and the findings (severity + location) go in `## Verificación independiente` via the command above. Report the findings to the user as the outcome of this invocation. |
+| `cannot_assess` | Same as `errors_found`: no transition, `needs_human_review: true`, the reason recorded and reported. |
+
+**The verifier never refutes.** An error in the analysis or a citation is not
+evidence about the claim: never move the hypothesis to `refutada`,
+`inconclusa`, `evidencia_mixta`, or anything else because of a verification
+finding, and never treat its findings as an experiment verdict. Only the
+experiments decide status, through the tables above.
+
+**After review.** Once a human has looked: if the artifact was wrong, the fix
+goes where the rules put it (a correction to the hypothesis note, an
+`## Enmiendas` entry on the experiment — never an edit to a frozen section),
+then re-invoke this skill with the same trigger; the gate runs again on a fresh
+packet and appends a new entry (the latest `scope: note` entry governs). If the
+human judges the findings are **not** errors, they may authorise the
+transition explicitly — a human decision on the record, never an agent's
+choice: proceed to `apoyada` and write the `history` `evidence` line as
+`override humano de la verificación independiente (<fecha>): <motivo>`. The
+`errors_found` entry stays in `verifications:`; nothing is edited.
+
+If the dispatch fails, say so and do not transition — an unverified `apoyada`
+is exactly what this gate exists to prevent.
 
 ## Combining evidence — versioned script
 
@@ -211,7 +308,18 @@ diverged (different data regime, population, scale, implementation detail…):
    frontmatter to today and refresh the affected section's "as of <date>, N
    papers" line (the fields `create-project` step 7 established).
 
-4. **Commit** — `Update H-XXXX: <new status>`.
+4. **Regenerate the state ledger** —
+   `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/build_graph.py --vault <vault> --write`
+   (all projects: a dependent may live in another project).
+   A new `refutada` propagates as an `importante` "premisa caída" flag to every
+   hypothesis / claim whose `depends_on` chain reaches this one — **flags in
+   `_ledger.md` only**: this skill never changes a dependent's `status` because
+   its premise fell (a dependent moves only on its own experiments). Report any
+   newly flagged dependents to the user by id. (Once the PostToolUse ledger hook
+   is installed it also fires on the note edit; running it here is what makes
+   the ledger current when the edit came from a script.)
+
+5. **Commit** — `Update H-XXXX: <new status>` (with `_ledger.md`).
 
 ## Callers
 
@@ -223,9 +331,15 @@ this skill does all of it.
 |---|---|---|---|---|
 | `preregister-experiment` | after the prereg note is frozen (its old step 3b) | `prereg frozen` | **primary** hypothesis id, experiment id | `propuesta → preregistrada`; append `E-XXXX` to `linked_experiment`; `history`; digest. (Secondary hypotheses don't transition — `preregister-experiment` writes their `collateral_evidence` itself.) |
 | `run-experiment` | after pre-flight passes and the run starts (its step 1) | `preregistrada → en_experimento` | hypothesis id, experiment id | `preregistrada → en_experimento`; `history`; digest |
-| `run-experiment` | after a **valid** mechanical analysis (its step 5) | `evidence result` | hypothesis id, experiment id, mechanical verdict (`apoyada`/`refutada`/`inconclusa`), effect + CI/SE | gather **all** `experiment_validity: valid` linked experiments, check `linea_publicacion`, run `combine_effects.py`, decide `apoyada`/`refutada`/`inconclusa`/`evidencia_mixta` per the tables above; on `evidencia_mixta` spawn the moderator hypothesis; `history`; digest; SOTA |
+| `run-experiment` | after a **valid** mechanical analysis (its step 5) | `evidence result` | hypothesis id, experiment id, mechanical verdict (`apoyada`/`refutada`/`inconclusa`), effect + CI/SE | gather **all** `experiment_validity: valid` linked experiments, check `linea_publicacion`, run `combine_effects.py`, decide `apoyada`/`refutada`/`inconclusa`/`evidencia_mixta` per the tables above; **before `apoyada`, run the fresh-verification gate** (a non-`no_errors_found` verdict leaves it `en_experimento` + `needs_human_review`); on `evidencia_mixta` spawn the moderator hypothesis; `history`; digest; SOTA |
 | `hypothesis-cycle` | budget overflow — more candidates passed than the per-cycle budget | `budget overflow` | ordered list of the overflow candidate `H-XXXX` ids (already created at `propuesta`) | `propuesta → en_cola` for each, in the given order; `history`; digest |
 | `hypothesis-cycle` / human | a queued candidate is picked up | `budget freed` | `H-XXXX` id(s) | `en_cola → propuesta`; `history`; digest |
+
+A caller that fires `prereg frozen`, `preregistrada → en_experimento` or
+`evidence result` for a `role: exploratory` experiment is **refused**
+(`evidence_gate.py check` exit 3) — callers should not fire them for rungs at
+all (`preregister-experiment` step 0 and `run-experiment` skip them for
+rungs), but the refusal here is what makes the rule hold regardless.
 
 `run-experiment`'s invalid / flagged case passes **no** trigger — an invalid
 experiment never moves the state (the hypothesis stays `en_experimento`;
@@ -240,6 +354,10 @@ note).
   with `preregister-experiment` / `run-experiment`.)
 - **Counting an invalid experiment.** Only `experiment_validity: valid` moves the
   state.
+- **Counting an exploratory experiment (a ladder rung, an evolution run), or
+  building the evidence set by hand.** Run `evidence_gate.py check` on every
+  trigger's experiment and take the evidence set only from `gather`'s
+  `eligible` list; exit 3 means refuse, even if the rung "clearly" supports.
 - **Counting a collateral-evidence experiment.** Only experiments where the
   hypothesis is the primary `hypothesis:` (its `linked_experiment`) are gathered;
   `secondary_hypotheses` / `collateral_evidence` links never enter the combine.
@@ -253,12 +371,25 @@ note).
   hypothesis.
 - **Skipping the `_digest.md` / `Estado-del-arte.md` refresh.** The transition
   isn't done until the derived views match.
+- **Reaching `apoyada` without the fresh-verification gate, or through an
+  `errors_found` / `cannot_assess` verdict.** Stay `en_experimento`, set
+  `needs_human_review: true`, record the findings; only a fresh
+  `no_errors_found` or an explicit, logged human override lets it through.
+- **Letting a verification finding move status.** The verifier only blocks
+  `apoyada`; it never makes a hypothesis `refutada` (or anything else) —
+  experiments decide status, not the verifier.
+- **Giving `fresh-verifier` more than the packet.** The packet file's text,
+  verbatim, is its whole prompt — no history, no reasoning, no hints.
 
 ## Related
 
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/combine_effects.py` — replication combiner (random-effects
   DerSimonian–Laird; `--help` documents the `consistency` band cut-points).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — single-experiment mechanical test.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py` — exploratory experiments never count (`check`, `gather`).
+- `${CLAUDE_PLUGIN_ROOT}/agents/fresh-verifier.md`,
+  `${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py`,
+  `${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py` — the `apoyada` gate.
 - **Callers** (above): `preregister-experiment`, `run-experiment`,
   `hypothesis-cycle` — the trigger vocabulary is the contract; keep both sides in
   sync.
