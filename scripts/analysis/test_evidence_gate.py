@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -32,14 +33,38 @@ class Gate(unittest.TestCase):
         self.proj = self.tmp / "vault" / "Projects" / "p"
         (self.proj / "Hipotesis").mkdir(parents=True)
         (self.proj / "Experimentos").mkdir()
+        # a preregistration only counts once frozen in git (evidence_gate fails closed)
+        self.git("init", "-q")
+        self.git("config", "user.email", "t@t")
+        self.git("config", "user.name", "t")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def exp(self, eid, role="", validity="valid", hyp="H-0001"):
+    def git(self, *a):
+        subprocess.run(["git", *a], cwd=self.tmp / "vault", check=True, capture_output=True)
+
+    def exp(self, eid, role="", validity="valid", hyp="H-0001", commit=True):
         p = self.proj / "Experimentos" / f"{eid}.md"
         p.write_text(EXP.format(id=eid, hyp=hyp, role=role, validity=validity), encoding="utf-8")
+        if commit:
+            self.git("add", "-A")
+            self.git("commit", "-qm", f"Preregister {eid}")
         return p
+
+    def test_no_git_fails_closed(self):
+        loose = Path(tempfile.mkdtemp(prefix="kairo-nogit-"))
+        try:
+            if subprocess.run(["git", "rev-parse"], cwd=loose, capture_output=True).returncode == 0:
+                self.skipTest("temp dir is inside a git repo")
+            p = loose / "E-0900.md"
+            p.write_text(EXP.format(id="E-0900", hyp="H-0001", role="role: confirmatory\nrung: 3",
+                                    validity="valid"), encoding="utf-8")
+            code, res = self.run_cli(["check", "--experiment", str(p)])
+            self.assertEqual(code, 3, res)
+            self.assertIn("git", res["reason"])
+        finally:
+            shutil.rmtree(loose, ignore_errors=True)
 
     def run_cli(self, argv):
         out = io.StringIO()
@@ -82,7 +107,7 @@ class Gate(unittest.TestCase):
         git("init", "-q")
         git("config", "user.email", "t@t")
         git("config", "user.name", "t")
-        p = self.exp("E-0300", "role: exploratory\nrung: 0")
+        p = self.exp("E-0300", "role: exploratory\nrung: 0", commit=False)
         git("add", "-A")
         git("commit", "-qm", "Preregister E-0300")
         code, _ = self.run_cli(["check", "--experiment", str(p)])
@@ -94,7 +119,7 @@ class Gate(unittest.TestCase):
         self.assertIn("freeze", res["reason"])
         git("commit", "-qam", "relabel")                                     # committed relabel
         self.assertEqual(self.run_cli(["check", "--experiment", str(p)])[0], 3)
-        q = self.exp("E-0301", "role: confirmatory\nrung: 3")               # never committed
+        q = self.exp("E-0301", "role: confirmatory\nrung: 3", commit=False)  # never committed
         self.assertEqual(self.run_cli(["check", "--experiment", str(q)])[0], 3)
         git("add", "-A")
         git("commit", "-qm", "Preregister E-0301")
@@ -108,7 +133,8 @@ class Gate(unittest.TestCase):
         git("init", "-q")
         git("config", "user.email", "t@t")
         git("config", "user.name", "t")
-        p = self.exp("E-0310", "role: <confirmatory | exploratory>\nrung: <0 | 1 | 2 | 3>")
+        p = self.exp("E-0310", "role: <confirmatory | exploratory>\nrung: <0 | 1 | 2 | 3>",
+                     commit=False)
         git("add", "-A")
         git("commit", "-qm", "draft")                                        # placeholders
         p.write_text(EXP.format(id="E-0310", hyp="H-0001", role="role: exploratory\nrung: 1",
@@ -120,7 +146,7 @@ class Gate(unittest.TestCase):
         code, res = self.run_cli(["check", "--experiment", str(p)])
         self.assertEqual(code, 3, res)
         # a draft that said confirmatory before an exploratory freeze doesn't help either
-        q = self.exp("E-0311", "role: confirmatory\nrung: 3")
+        q = self.exp("E-0311", "role: confirmatory\nrung: 3", commit=False)
         git("add", "-A")
         git("commit", "-qm", "draft")
         q.write_text(EXP.format(id="E-0311", hyp="H-0001", role="role: exploratory\nrung: 0",

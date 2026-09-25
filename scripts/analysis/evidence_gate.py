@@ -92,7 +92,9 @@ def frozen_check(path: Path, fm: dict) -> tuple[bool, str]:
     path = path.resolve()
     top = _git(["rev-parse", "--show-toplevel"], path.parent)
     if top.returncode != 0:
-        return True, "sin repositorio git: la inmutabilidad de role/rung no se pudo verificar"
+        # fail closed: a preregistration is only frozen once it is in git
+        return False, ("crítico: sin repositorio git — el preregistro no está congelado, así que "
+                       "role/rung no se pueden verificar; no puede contar como evidencia")
     root = Path(top.stdout.strip())
     rel = path.relative_to(root.resolve()).as_posix()
     log = _git(["log", "--format=%H", "--", rel], root)
