@@ -222,6 +222,64 @@ class TestPacket(unittest.TestCase):
         self.assertFalse(vp.unit_matches(prose, ("sec", "3.2")))
         self.assertFalse(vp.unit_matches(prose, ("sec", "0.0001")))
 
+    def verbatim_vault(self):
+        """A paper in the verbatim layout: numbered headings, run-in bold titles,
+        appendix, enumerated list, and a model-written ## Notas de lectura."""
+        paper = next((self.f["vault"] / "Papers").glob("P-0901*.md"))
+        paper.write_text("\n".join([
+            "---", "id: P-0901", "title: A synthetic paper", "fulltext: full", "---", "",
+            "## Resumen", "", "We study toy dynamics.", "",
+            "## Texto completo", "",
+            "> Fuente: https://arxiv.org/html/0000.00000v1, obtenido 2030-01-01, sha256 00", "",
+            "### 3 Experiments", "",
+            "#### 3.1 Lead time", "",
+            "**Setup.**", "",
+            "The precursor rises 1,200 steps before the transition.", "",
+            "- 1. first enumerated point of section 3.1", "",
+            "#### 3.2 Interventions", "",
+            "Boosting the precursor speeds up the transition by about 30%.", "",
+            "### Appendix A: Extra", "",
+            "#### A.5 Sharpness", "",
+            "Sharpness anti-correlates with accuracy.", "",
+            "## Notas de lectura", "",
+            "> Escritas por un modelo; no son texto del paper y no se pueden citar.", "",
+            "- §3.1: NOTASONLY the precursor also predicts double descent.", ""]),
+            encoding="utf-8")
+
+    def test_claim_supported_only_by_notas_de_lectura_fails(self):
+        self.verbatim_vault()
+        r = vp.resolve_citation(str(self.f["vault"]), "P-0901", "§3.1")
+        text = "\n".join(r["units"])
+        self.assertIn("1,200 steps", text)                   # the real §3.1 text is sent
+        self.assertNotIn("NOTASONLY", text)                  # the notes never are
+        packet, m = self.build()
+        self.assertNotIn("NOTASONLY", packet)
+        self.assertNotIn("Notas de lectura", packet)
+        # a locator whose only support is in the notes finds no source text at all
+        r2 = vp.resolve_citation(str(self.f["vault"]), "P-0901", "§Notas de lectura")
+        self.assertEqual(r2["units"], [])
+
+    def test_named_locator_ignores_trailing_punctuation(self):
+        for span in ("§Resumen.", "§Resumen)", "§Resumen"):
+            self.assertEqual(vp.locator_tokens(span), [("named", "Resumen")], span)
+        self.verbatim_vault()
+        r = vp.resolve_citation(str(self.f["vault"]), "P-0901", "§Resumen.")
+        self.assertEqual(len(r["units"]), 1)
+
+    def test_verbatim_layout_structure(self):
+        self.verbatim_vault()
+        vault = str(self.f["vault"])
+        r = vp.resolve_citation(vault, "P-0901", "§3.1")
+        self.assertTrue(any("first enumerated point" in u for u in r["units"]))   # "- 1." keeps §3.1
+        self.assertFalse(any("Boosting" in u for u in r["units"]))              # §3.2 not pulled in
+        self.assertTrue(any("1,200 steps" in u for u in r["units"]))            # run-in **Setup.** kept context
+        a = vp.resolve_citation(vault, "P-0901", "App A.5")
+        self.assertEqual(len(a["units"]), 1)
+        self.assertIn("Sharpness", a["units"][0])
+        self.assertEqual(vp.heading_num("Appendix B: Proofs"), "B")
+        self.assertEqual(vp.heading_num("C.2 Proof of Lemma 2"), "C.2")
+        self.assertIsNone(vp.heading_num("Setup."))
+
     def test_real_source_text_is_not_flagged(self):
         packet, m = self.build()
         self.assertNotIn("ATENCIÓN — procedencia", packet)

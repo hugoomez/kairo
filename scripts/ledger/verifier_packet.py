@@ -272,7 +272,8 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
         else:
             toks.append(("sec", m.group(1)))
     # bare continuation numbers after a § list: "§5.4, 9.2" is rare; skip.
-    for m in re.finditer(r"§\s*([^\W\d][\w\s]*?)(?=[,;]|$)", s_noapp):
+    for m in re.finditer(r"§\s*([^\W\d][\w\s]*?)(?=[,;.)]|$)", s_noapp):
+        # "§Resumen." / "§Resumen)" / "§Setup." name the section without the punctuation
         toks.append(("named", m.group(1).strip()))
     seen, out = set(), []
     for t in toks:
@@ -289,6 +290,18 @@ def token_label(tok: tuple[str, str]) -> str:
 
 
 HEADING_NUM_RE = re.compile(r"^(?:§\s*)?(\d+(?:\.\d+)*)\.?(?:\s|$)")
+APPENDIX_HEAD_RE = re.compile(r"^(?:Appendix|Apéndice)\s+([A-Z])\b")
+APPENDIX_SUB_RE = re.compile(r"^([A-Z](?:\.\d+)+)\.?\s")
+
+
+def heading_num(title: str) -> str | None:
+    """Section number a heading sets: "3.2" for "3.2 Title", "A" for
+    "Appendix A: Title", "A.5" for "A.5 Title"; None when unnumbered."""
+    for rx in (HEADING_NUM_RE, APPENDIX_HEAD_RE, APPENDIX_SUB_RE):
+        m = rx.match(title)
+        if m:
+            return m.group(1)
+    return None
 
 
 def source_units(texto: str) -> list[dict]:
@@ -319,15 +332,18 @@ def source_units(texto: str) -> list[dict]:
         stripped = line.strip()
         hm = re.match(r"^(#{3,6})\s+(.*)$", stripped)
         bm = re.match(r"^\*\*(.+?)\*\*\s*$", stripped)
+        # a whole-line **bold** is a heading only when numbered ("**3. Title**");
+        # an unnumbered one is a run-in paragraph title and keeps the context
+        if bm and not hm and not heading_num(bm.group(1).strip()):
+            bm = None
         if hm or bm:
             close()
             level = len(hm.group(1)) if hm else 3
             title = (hm.group(2) if hm else bm.group(1)).strip()
-            nm = HEADING_NUM_RE.match(title)
             for lvl in list(heading_nums):
                 if lvl >= level:
                     del heading_nums[lvl]
-            heading_nums[level] = nm.group(1) if nm else None
+            heading_nums[level] = heading_num(title)
             continue
         if not stripped:
             close()
@@ -335,7 +351,9 @@ def source_units(texto: str) -> list[dict]:
         if re.match(r"^\s*[-*]\s+", line):
             close()
             item = re.sub(r"^\s*[-*]\s+", "", line)
-            nm = HEADING_NUM_RE.match(item)
+            # a bullet names its own subsection only as a dotted number ("- 3.2 …");
+            # "- 1. first point" is an enumeration inside the current section
+            nm = re.match(r"^(\d+\.\d+(?:\.\d+)*)\.?\s", item)
             current = {"lines": [line.rstrip()],
                        "num": nm.group(1) if nm else ctx_num()}
             continue
@@ -363,7 +381,9 @@ def unit_matches(unit: dict, tok: tuple[str, str]) -> bool:
             rf"(?:^|[.;:]\s+|\(\s*|[-*]\s+){ev}(?:\.\d+)*\s+(?=[A-ZÁÉÍÓÚÑ(\[⟂\"'])", text))
         return bool(inline) or structural or packed
     if kind == "app":
-        return bool(re.search(
+        num = unit.get("num") or ""
+        structural = bool(re.match(r"[A-Z]", num)) and (num == v or num.startswith(v + "."))
+        return structural or bool(re.search(
             rf"\b(?:App(?:endix)?\.?|Apéndice)\s*{ev}(?:\.\d+)*(?![\d])", text))
     if kind == "fig":
         return bool(re.search(rf"\bFig(?:ura|ure)?s?\.?\s*{ev}(?![\d])", text))

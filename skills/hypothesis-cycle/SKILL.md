@@ -338,8 +338,10 @@ The created note's **`## Justificación (evidencia citada)`** cites specific pap
 as `P-XXXX §Sección / Tabla N / Figura N — qué muestra y cómo sostiene el claim`.
 
 **Before writing any such locator, re-open the source `Papers/P-XXXX.md` note
-and read the exact bullet(s) under that `§Sección` / `Tabla N` / `Figura N`
-heading in its `## Texto completo`.** The citing sentence must paraphrase what
+and read the exact text under that `§Sección` / `Tabla N` / `Figura N`
+heading in its `## Texto completo`** (the paper's verbatim text). Never cite
+from `## Notas de lectura`: it is model-written and not citable, and a claim
+that only it supports has no source. The citing sentence must paraphrase what
 is specifically written there — not the paper as a whole, and not a citation
 for the same paper already used elsewhere for this project (an earlier
 hypothesis's `Justificación`, or `Estado-del-arte.md`). If the claim is

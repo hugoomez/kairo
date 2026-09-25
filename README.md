@@ -106,6 +106,14 @@ claude --plugin-dir /path/to/kairo
   - `combine_effects.py` — combines two independent effect estimates
     (random-effects DerSimonian–Laird by default) and flags heterogeneity /
     disagreement.
+- `scripts/papers/verbatim_fulltext.py` — builds a paper note's
+  `## Texto completo` from the paper's real text (arXiv HTML, then ar5iv,
+  then the PDF via `pdftotext`), verbatim and organised by the paper's own
+  section / figure / table / appendix numbering, with a `> Fuente:` line (URL,
+  version, date, sha256). What can't be extracted is marked
+  `[extracción dañada]`, never reconstructed. Model-written summaries go only
+  in `## Notas de lectura`, which is never citable and never read by the
+  citation checks or `fresh-verifier`.
 - `scripts/code_repo/find_code_repo.py` — backfills `code_repo:` for papers
   ingested before the field existed. Reads public metadata only (arXiv
   comments/abstract, the paper's LaTeX source, one author-stated hop,

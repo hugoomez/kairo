@@ -54,10 +54,11 @@ two `(para el reduce)` headings below.
 Every bullet ends with a specific location: `P-XXXX §Sección`, `P-XXXX Tabla N`,
 or `P-XXXX Figura N`.
 
-**Before writing that locator, re-read the exact bullet(s) under that `§N` /
-`Tabla N` / `Figura N` heading in the note's `## Texto completo` — not the
-paper's `## Resumen`, not the note as a whole, and not a locator you recall
-using for this paper on an earlier facet or an earlier project.** Your
+**Before writing that locator, re-read the exact text under that `§N` /
+`Tabla N` / `Figura N` heading in the note's `## Texto completo` (the paper's
+verbatim text) — not the paper's `## Resumen`, not `## Notas de lectura`
+(model-written, never citable), not the note as a whole, and not a locator you
+recall using for this paper on an earlier facet or an earlier project.** Your
 sentence must paraphrase what is specifically written under that heading. If
 the claim is actually supported by a *different* heading than the one that
 first came to mind, cite that heading instead — never the one that merely

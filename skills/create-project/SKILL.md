@@ -169,11 +169,21 @@ For each confirmed paper, add it to Zotero **first**, then generate the
      API>, obtenido <YYYY-MM-DD>` line. No source returned an abstract (null,
      429, paywall) → write `No disponible — ningún abstract recuperado
      (<sources tried>).` Never a summary, and never "from general knowledge".
-   - `## Texto completo`: **verbatim excerpts** from the downloaded document,
-     each quoted, under the paper's own section / figure / table headings (so
-     locators can point at them), preceded by a `> Fuente:` line. No
-     paraphrase, no restatement of the abstract. No document → `No disponible
+   - `## Texto completo`: the paper's **verbatim** text, organised by its own
+     section / figure / table / appendix numbering, so locators can point at
+     it. Build it with
+     `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/verbatim_fulltext.py" --arxiv <id>`,
+     which tries arXiv HTML, then ar5iv, then the PDF via `pdftotext`. It
+     writes the `> Fuente:` line itself (URL, version, date, sha256 of the
+     fetched file) and marks anything it could not extract as
+     `[extracción dañada]` instead of reconstructing it. For a non-arXiv
+     open-access PDF, run `pdftotext` and pass the output with `--pdf-text`
+     and `--source-url`. Exit 1, or no open full text at all → `No disponible
      — solo abstract.` and nothing else.
+   - `## Notas de lectura` (optional): the only place for model-written
+     summaries, headed by a line saying they are model-written and **never
+     citable**. No locator may point here, and neither the locator
+     re-verification nor `fresh-verifier` reads it.
    A field left empty and marked unavailable is correct. A plausible field
    written by the model is a fabricated source: every citation of it would be
    unverifiable, and the fresh verifier flags it `crítico`.
@@ -492,10 +502,16 @@ id. Open-access status.>
 
 ## Texto completo
 
-> Fuente: <PDF / HTML the excerpts came from>, obtenido <YYYY-MM-DD>
+<Output of scripts/papers/verbatim_fulltext.py: its `> Fuente:` line (URL,
+version, date, sha256), then the paper's verbatim text under its own section /
+figure / table / appendix headings — or exactly "No disponible — solo
+abstract." Never paraphrase.>
 
-<Verbatim, quoted excerpts under the paper's own section / figure / table
-headings — or exactly "No disponible — solo abstract." Never paraphrase.>
+## Notas de lectura
+
+> Escritas por un modelo; no son texto del paper y no se pueden citar.
+
+<Optional reading aid. Never a locator target.>
 ```
 
 When a paper is already ingested for another project, only append this project's
