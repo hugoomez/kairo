@@ -152,3 +152,84 @@ Notes on boundaries (adjusted from the initial split after reading the files):
 - There is no Paper template file; the Paper note format lives inside
   `skills/create-project/SKILL.md`, so A1's fields land there (A).
 - New test files belong to the owner of the directory they sit in.
+
+## 3. Integration amendments (2026-09-25)
+
+`docs/v3-pending/` was applied and deleted at integration; its files remain in
+git history (`git log -- docs/v3-pending`). References to it in §1–§2
+describe the parallel phase.
+
+Applied at integration, after reading `A-contract-issues.md` and
+`B-contract-issues.md`. §1–§2 above are unchanged; where this section adds a
+rule, it wins. Each item names the issue it resolves.
+
+### 3a. §1b verification records
+
+- **Governing entry (B#2, A#4, A#5).** For gating, the last entry *in file
+  order* with a given `scope` governs; entries of different scopes never
+  supersede each other (a later `scope: note` pass does not clear an earlier
+  `section:X` `errors_found`). For reporting, list every entry. Order within a
+  date is list order, which is safe because the list is append-only.
+- **Manuscript gate (A2 × B2).** `assemble-manuscript` excludes a hypothesis
+  when its governing `note` entry is not `no_errors_found` **or** any
+  `section:` scope's governing entry is `errors_found` — the same condition
+  under which A2's disclosure raises `crítico`. The `apoyada` gate in
+  `update-confidence` and the `preregister-experiment` gate keep B2's
+  `note`-scope rule.
+- **Extra keys (B#1): not adopted.** Entries keep exactly the five keys.
+  Findings and the packet sha256 stay in the note's append-only
+  `## Verificación independiente`, linked by (date, verifier, scope) + order.
+  Readers must still tolerate unknown keys (A2 does).
+- **Out-of-enum verdicts (A#7).** Readers quote them verbatim, never interpret
+  them, and treat them as not clean: `verifications.py gate` blocks on any
+  governing `note` verdict other than `no_errors_found` **while
+  `needs_human_review: true`** (a human who reviewed the findings clears the
+  flag, per B2's design). The manuscript gate (above) has no such escape: it
+  needs a `no_errors_found` entry.
+- **Scope drift (A#6).** A `section:` scope whose heading no longer exists is
+  reported (A2: `menor`); re-verify under the new heading.
+- **`send: never` (A#8).** A `send: never` note is never verified:
+  `verifier_packet.py` refuses it (and any `--experiment` that is flagged),
+  gives a flagged cited paper no source text, and `verifications.py append`
+  refuses to write an entry on it. Readers ignore entries found on one.
+
+### 3b. §1c citation resolution (A#1, A#2)
+
+- `resolution_status: resolved | unresolved | mismatch | retracted | withdrawn`
+  (plus A1's `resolution_match`, `resolution_evidence`) is part of the
+  contract. **Any reader deciding whether a paper can be cited uses
+  `resolution_status`, never `resolved` alone** — a retracted paper is
+  `resolved: true`.
+- The invariant `resolved: true ⇒ openalex_id` stays strict. A paper
+  confirmed only by a fallback registrar is `resolved: false`,
+  `resolution_status: unresolved`, with the source in `resolution_evidence`;
+  the manuscript gate refuses it until the researcher decides by hand.
+
+### 3c. §1d experiment roles (B#3)
+
+- `role: confirmatory` ⇒ `rung: 3` or absent. `role: exploratory` ⇒ `rung` ∈
+  {0, 1, 2} or absent (non-ladder exploratory work). Enforced by
+  `scripts/analysis/evidence_gate.py check` (`crítico` on violation).
+
+### 3d. New ids, folders and fields (B#4, A#13, A2 authorship)
+
+- `C-XXXX` claims in `Projects/<slug>/Claims/`; `EVO-XXXX` evolution runs in
+  `Projects/<slug>/Evolucion/` (vault-wide, zero-padded, max + 1).
+  `spawned_from` accepts `EVO-XXXX`. `check_bundle.py` (≥ 1.2.0) treats a
+  `C-`/`EVO-`/`F-` note and `_ledger.md` as a copied vault note (`vault_note`,
+  block).
+- `send: never` (any note, frontmatter): content never reaches a model or an
+  external API. Detection is `scripts/security/send_guard.py` (`is_flagged`);
+  other scripts import it rather than re-implementing it, except
+  `ai_disclosure.py`, which stays standalone with the same regex semantics.
+- Experiment notes gain `generated_by` (set at freeze by
+  `preregister-experiment`) and `code_generated_by` (set by `run-experiment`
+  step 0, not frozen). Both are read by A2's disclosure.
+
+### 3e. Hooks (A#14)
+
+The `send_guard` hook ships as a vault copy (`vault/Scripts/hooks/send_guard.py`,
+byte-identical to the plugin's canonical `scripts/security/send_guard.py`),
+not as a plugin `hooks/hooks.json`: the vault's settings are where every
+other Kairo hook lives, and a plugin hook would also fire in non-vault
+projects. Re-copy it whenever the plugin copy changes (compare sha256).

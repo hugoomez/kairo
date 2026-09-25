@@ -632,6 +632,74 @@ class HistoryModelTests(unittest.TestCase):
         self.assertEqual(ad.models_in_text("Ana Pérez"), [])
 
 
+class IntegrationReviewTests(unittest.TestCase):
+    """Cross-block cases found in the v3 integration review."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kairo-a2i-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_file_order_governs_not_date(self):
+        # contract §3a: the LAST entry in file order governs, as in verifications.py
+        w(self.tmp, "Projects/p/Hipotesis/H-0001 x.md", """
+            ---
+            id: H-0001
+            paper_thread: t
+            verifications:
+              - verifier: kairo/fresh-verifier@1.0.0
+                model: claude-opus-5-5
+                date: 2026-09-20
+                verdict: errors_found
+                scope: note
+              - verifier: kairo/fresh-verifier@1.0.0
+                model: claude-opus-5-5
+                date: 2026-09-10
+                verdict: no_errors_found
+                scope: note
+            ---
+            """)
+        js = json.loads(run(["--vault", str(self.tmp), "--project", "p", "--thread", "t",
+                             "--format", "json"])[1])
+        self.assertFalse([f for f in js["flags"] if f["severity"] == "crítico"])
+
+    def code_author(self, block):
+        w(self.tmp, "Projects/p/Hipotesis/H-0001 x.md", """
+            ---
+            id: H-0001
+            paper_thread: t
+            linked_experiment: [E-0001]
+            ---
+            """)
+        w(self.tmp, "Projects/p/Experimentos/E-0001.md", f"""
+            ---
+            id: E-0001
+            hypothesis: H-0001
+            {block}
+            ---
+            """)
+        return json.loads(run(["--vault", str(self.tmp), "--project", "p", "--thread", "t",
+                               "--format", "json"])[1])
+
+    def codigo(self, js):
+        return [st for st in js["statements"] if st["stage"] == "codigo"]
+
+    def test_code_generated_by_human_without_model_is_recorded(self):
+        js = self.code_author("code_generated_by: {origin: human}")
+        self.assertEqual([st["kind"] for st in self.codigo(js)], ["human"])
+        self.assertFalse([f for f in js["flags"] if "autoría del código" in f["message"]])
+
+    def test_code_generated_by_agent_without_model_is_ai_with_flag(self):
+        js = self.code_author("code_generated_by: {origin: agent}")
+        self.assertEqual([st["kind"] for st in self.codigo(js)], ["ai"])
+        self.assertTrue([f for f in js["flags"] if "sin modelo registrado" in f["message"]])
+
+    def test_code_generated_by_absent_is_still_unknown(self):
+        js = self.code_author("status: preregistered")
+        self.assertEqual([st["kind"] for st in self.codigo(js)], ["none"])
+
+
 class ZeroVerificationTests(unittest.TestCase):
     def test_zero_records_flag(self):
         tmp = Path(tempfile.mkdtemp(prefix="kairo-a2z-"))

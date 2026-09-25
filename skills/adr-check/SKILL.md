@@ -37,6 +37,9 @@ For each ADR in scope:
    - else reconstruct from the hypothesis note's append-only `history`: the
      `status` of the latest `history` entry with `date <= ADR.date`;
    - else (no history entry that old) — treat as **unknown**.
+   - if the hypothesis note has `send: never`, don't open it: report
+     `cannot verify H-YYYY (send: never)` as an unknown-status warning — the
+     researcher checks it by hand.
 3. Read the hypothesis's **current** `status`.
 4. Compare:
 

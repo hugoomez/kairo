@@ -613,6 +613,14 @@ class TestReviewFindingsPure(unittest.TestCase):
         self.assertEqual(rr.author_level("Thomas", [{"name": "Thomas Kipf"}]), "differs")
         self.assertFalse(rr.surname_matches("Thomas", "Thomas Kipf"))
 
+    def test_two_letter_surname_is_not_initials(self):
+        # found at integration: "Yongzhong Xu" parsed as surname "Yongzhong" -> false mismatch
+        for full, fam in (("Yongzhong Xu", "Xu"), ("Wei Li", "Li"), ("Andrew Ng", "Ng")):
+            self.assertEqual(rr.surname_of(full), fam)
+            self.assertEqual(rr.author_level(fam, [{"name": full}]), "exact")
+        self.assertEqual(rr.surname_of("Kipf T. N."), "Kipf")
+        self.assertEqual(rr.surname_of("Vaswani AB"), "Vaswani")
+
     def test_m4_family_name_parsing(self):
         self.assertEqual(rr.surname_of("Laurens van der Maaten"), "van der Maaten")
         self.assertEqual(rr.surname_of("van der Maaten, Laurens"), "van der Maaten")

@@ -11,6 +11,10 @@ cites: []  # e.g. [H-0001, P-0002]
 # cites_status — optional as-of snapshot of each cited hypothesis's status on `date`.
 # Fill when authoring so adr-check compares exactly instead of reconstructing from history.
 cites_status: {}  # e.g. {H-0001: apoyada}
+# send — optional. `send: never` keeps this note's content from ever reaching
+# the model or an external API: skills skip it and the vault's send_guard
+# PreToolUse hook blocks reading it. Omit the field for normal notes.
+# send: never
 ---
 
 > Al mostrar, revisar o reutilizar este ADR, correr la skill `adr-check`: compara

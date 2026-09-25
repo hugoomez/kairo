@@ -100,6 +100,43 @@ class Gate(unittest.TestCase):
         git("commit", "-qm", "Preregister E-0301")
         self.assertEqual(self.run_cli(["check", "--experiment", str(q)])[0], 0)
 
+    def test_relabel_after_draft_commit_is_refused(self):
+        # found at integration review: a pre-freeze draft commit hid the freeze
+        import subprocess
+        git = lambda *a: subprocess.run(["git", *a], cwd=self.tmp / "vault", check=True,
+                                        capture_output=True)
+        git("init", "-q")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        p = self.exp("E-0310", "role: <confirmatory | exploratory>\nrung: <0 | 1 | 2 | 3>")
+        git("add", "-A")
+        git("commit", "-qm", "draft")                                        # placeholders
+        p.write_text(EXP.format(id="E-0310", hyp="H-0001", role="role: exploratory\nrung: 1",
+                                validity="valid"), encoding="utf-8")
+        git("commit", "-qam", "Preregister E-0310")                          # the real freeze
+        p.write_text(EXP.format(id="E-0310", hyp="H-0001", role="role: confirmatory\nrung: 3",
+                                validity="valid"), encoding="utf-8")
+        git("commit", "-qam", "relabel")
+        code, res = self.run_cli(["check", "--experiment", str(p)])
+        self.assertEqual(code, 3, res)
+        # a draft that said confirmatory before an exploratory freeze doesn't help either
+        q = self.exp("E-0311", "role: confirmatory\nrung: 3")
+        git("add", "-A")
+        git("commit", "-qm", "draft")
+        q.write_text(EXP.format(id="E-0311", hyp="H-0001", role="role: exploratory\nrung: 0",
+                                validity="valid"), encoding="utf-8")
+        git("commit", "-qam", "Preregister E-0311")
+        q.write_text(EXP.format(id="E-0311", hyp="H-0001", role="role: confirmatory\nrung: 3",
+                                validity="valid"), encoding="utf-8")
+        git("commit", "-qam", "relabel")
+        self.assertEqual(self.run_cli(["check", "--experiment", str(q)])[0], 3)
+
+    def test_exploratory_rung_3_is_critico(self):
+        p = self.exp("E-0320", "role: exploratory\nrung: 3")
+        code, res = self.run_cli(["check", "--experiment", str(p)])
+        self.assertEqual(code, 3)
+        self.assertIn("crítico", res["reason"])
+
     def test_gather_excludes_exploratory_even_when_linked(self):
         self.exp("E-0001", "role: exploratory\nrung: 0")               # rung, wrongly linked
         self.exp("E-0002", "role: confirmatory\nrung: 3")

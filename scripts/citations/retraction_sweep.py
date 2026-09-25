@@ -109,7 +109,7 @@ def _note_meta(path: Path) -> tuple[str, list[str], str, bool]:
     text = path.read_text(encoding="utf-8")
     split = vn.split_frontmatter(text)
     fm, body = (split if split else ([], text))
-    return vn.note_id(path, fm), fm, body, vn.is_send_never(fm)
+    return vn.note_id(path, fm), fm, body, vn.is_send_never(fm) or vn.text_is_send_never(text)
 
 
 def citers_of(vault: Path, pid: str) -> list[tuple[str, str, str, bool, Path]]:

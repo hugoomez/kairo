@@ -70,6 +70,10 @@ table.
   `experiment_validity` and, from `## Resultado`, each verdict + effect estimate +
   CI (or SE).
 
+If the target note has `send: never`, stop and tell the researcher: this skill
+must read the note to act on it, and the note is marked not-to-send. Don't work
+around the `send_guard` hook.
+
 ## Exploratory experiments never move status — enforced by script
 
 Contract `docs/v3-interfaces.md` §1d: an experiment is `role: confirmatory` or
@@ -152,6 +156,14 @@ Runs **every** time the tables above would move a hypothesis to `apoyada` — th
 second-independent-support edge, the only edge into `apoyada` — **before** any
 write. No other edge is gated.
 
+0. **Cited papers still citable (contract §3b).** For every `P-XXXX` in the
+   hypothesis's `linked_papers` and `## Justificación`, read the paper note's
+   `resolution_status` (never `resolved` alone). `retracted`, `withdrawn` or
+   `mismatch` → **stop, no transition**: name the paper and status, and tell the
+   researcher the claim must be re-argued without it (or the note fixed, for a
+   `mismatch`). `unresolved` or absent → proceed, but list it as `importante`
+   (the manuscript's live citation gate will refuse it later).
+
 1. Save the `combine_effects.py` output you just ran to a temp file outside the
    vault (e.g. `... --json | tee <tmp>/combine.txt`).
 2. **Build the packet** from the hypothesis note, **both** adjudicating
@@ -169,6 +181,11 @@ write. No other edge is gated.
    `## Enmiendas` (labelled), and the combination output — nothing else (no
    `history`, `confidence`, `status`, `## Revisión del ciclo`, prior
    verifications, or this session's reasoning).
+   If it exits `2` because the hypothesis or an adjudicating experiment is
+   `send: never`, **stop — no transition to `apoyada`**. The artifact cannot be
+   verified without sending it to a model; tell the researcher, who either unmarks
+   the note or records a human override in `history` by hand. Never drop the
+   flagged experiment from the packet to make it build.
 3. **Dispatch `fresh-verifier`** with the packet file's text as the entire
    prompt, verbatim, nothing added.
 4. **Record it** on the hypothesis note, whatever the verdict (agent output

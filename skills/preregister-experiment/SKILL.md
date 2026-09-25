@@ -60,6 +60,10 @@ analyze a run (separate skills).
 2. Its **test sketch** — the manipulation/comparison, what gets measured, what
    result counts against the claim.
 
+If the target note has `send: never`, stop and tell the researcher: this skill
+must read the note to act on it, and the note is marked not-to-send. Don't work
+around the `send_guard` hook.
+
 ## Scope — `ligero` and `completo` tiers
 
 **Both tiers:** exact prediction, one (or few) pre-committed primary metric(s)
@@ -401,6 +405,11 @@ blocks the freeze — resolve it with the researcher first.
    **experiment-code** repo's HEAD if code lives in its own repo; otherwise the
    vault HEAD, and say which in `## Manifiesto de entorno`.
 4. Set `status: preregistered`.
+4a. Set `generated_by` — who drafted the design text: `origin: agent` with
+    `model: <this session's model id>` and
+    `skill_version: preregister-experiment@<plugin version>` when you drafted
+    it; `origin: human` (no `model`) when the researcher wrote it and you only
+    froze it. Frozen with the rest; the AI-use disclosure reads it.
 5. Commit the note: `Preregister E-XXXX (<H-XXXX>)`. The preregistration is not
    frozen until it is in git.
 
@@ -510,6 +519,8 @@ disclosed as such when results are reported.
   0–2`. Frozen like the rest — a role can never be changed after the run to
   promote an exploratory result.
 - `informed_by_rungs: [E-…]` — confirmatory only, `[]` when no ladder ran
+- `generated_by: {origin, model, skill_version}` (step 4, item 4a)
+- `code_generated_by` — left as a placeholder; `run-experiment` step 0 sets it
 - `experiment_validity`, `sanity_checks.*`, `cost_actual`, `result.*` — left as
   placeholders for the run/analysis skill
 - `cost_estimated` — a rough figure if the sketch supports one, else placeholder

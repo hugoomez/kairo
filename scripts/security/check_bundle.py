@@ -94,9 +94,9 @@ exist so the researcher can see what to remove.
                         `vault/Papers` / `vault/Projects`). Leaks the local
                         layout and is a hard dependency on this machine.
     vault_note          a copied vault note: a markdown frontmatter `id:` of
-                        the form `P-`/`H-`/`E-`/`PROJ-`/`ADR-`/`T-<digits>`
+                        the form `P-`/`H-`/`E-`/`C-`/`EVO-`/`F-`/`PROJ-`/`ADR-`/`T-<digits>`
                         together with a `project:`/`projects:`/`hypothesis:`/
-                        `linked_*` key; or a file named `_digest.md`,
+                        `linked_*` key; or a file named `_digest.md`, `_ledger.md`,
                         `_hub.md`, `Estado-del-arte.md`.
     symlink_escape      a symlink / junction (or an archive link member)
                         whose target resolves outside the bundle. Links are
@@ -180,7 +180,7 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 EXIT_CLEAN, EXIT_ERROR, EXIT_CONTAMINATED = 0, 1, 2
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024       # scan window (bytes held in memory per file)
@@ -369,9 +369,9 @@ _VAULT_ABS_SEG = re.compile(r"(?i)(?:^|[\\/])kairo(?:[\\/]|$)|[\\/]vault[\\/](?:
 VAULT_REL_RE = re.compile(r"(?<![A-Za-z0-9_\-.])(?:Papers|Projects)[\\/][^\s\"'`<>|]+")
 
 _FM_RE = re.compile(r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
-_FM_ID_RE = re.compile(r"(?m)^id:\s*[\"']?(?:P|H|E|PROJ|ADR|T|TASK)-\d{3,}\b")
+_FM_ID_RE = re.compile(r"(?m)^id:\s*[\"']?(?:P|H|E|C|EVO|F|PROJ|ADR|T|TASK)-\d{3,}\b")
 _FM_LINK_RE = re.compile(r"(?m)^(?:projects?|hypothesis|linked_[a-z_]+):")
-_VAULT_NOTE_NAMES = {"_digest.md", "_hub.md", "estado-del-arte.md"}
+_VAULT_NOTE_NAMES = {"_digest.md", "_ledger.md", "_hub.md", "estado-del-arte.md"}
 
 
 def _line_of(text, pos: int) -> int:

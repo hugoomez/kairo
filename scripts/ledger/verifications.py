@@ -30,8 +30,11 @@ Subcommands:
     latest  --note N [--scope note]    governing entry as JSON, or null
     list    --note N                   all entries as a JSON list
     gate    --note N                   exit 0 = clear; exit 3 = blocked (latest
-            `scope: note` verdict is errors_found / cannot_assess AND the note
+            `scope: note` verdict is anything but no_errors_found AND the note
             still has needs_human_review: true). Prints a JSON explanation.
+
+`append` refuses a note marked `send: never` (A3): such a note is never sent
+to a verifier, so it can carry no verification record.
 
 Standard library only. Exit codes: 0 ok, 2 invalid input, 3 gate blocked.
 """
@@ -43,8 +46,12 @@ import datetime as _dt
 import json
 import re
 import sys
+from pathlib import Path
 
-__version__ = "1.0.0"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
+from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
+
+__version__ = "1.1.0"
 
 VERDICTS = ("no_errors_found", "errors_found", "cannot_assess")
 KEYS = ("verifier", "model", "date", "verdict", "scope")
@@ -261,6 +268,9 @@ def append(path: str, verifier: str, model: str, verdict: str, scope: str,
     date = date or _dt.date.today().isoformat()
     if not DATE_RE.match(date):
         raise InputError("date must be YYYY-MM-DD")
+    if is_flagged(Path(path)):
+        raise InputError("note is marked send: never; it is never verified, so no "
+                         "verifications entry is written")
     text, lines, nl, lo, hi, _ = load(path)
     if scope != "note":
         if not scope.startswith("section:") or not scope[len("section:"):]:
@@ -430,7 +440,7 @@ def main(argv=None) -> int:
         # gate
         gov = latest(entries, "note")
         nhr = (fm_value(lines, lo + 1, hi, "needs_human_review") or "").lower() == "true"
-        blocked = bool(gov and gov.get("verdict") in ("errors_found", "cannot_assess")
+        blocked = bool(gov and gov.get("verdict") != "no_errors_found"
                        and nhr)
         print(json.dumps({"blocked": blocked, "governing": gov,
                           "needs_human_review": nhr}, ensure_ascii=False))

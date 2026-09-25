@@ -14,6 +14,14 @@ compute_budget: <value>
 # addition to the linea_publicacion trigger. Unset, or a unit mismatch with
 # cost_estimated, means cost alone cannot trigger completo.
 completo_cost_threshold: <value>
+# ladder_cost_threshold — optional, same unit as compute_budget. When a
+# confirmatory design's cost_estimated exceeds it, preregister-experiment step 0
+# OFFERS a simplification ladder (2-3 cheap exploratory rungs, role:
+# exploratory, rung 0-2) before the confirmatory freeze. Never forced. Unset:
+# offered whenever the design needs a GPU or its cost is >= 1 GPU-h or unknown.
+# Also offered regardless of cost when method_provenance would be
+# reimplemented_from_text.
+ladder_cost_threshold: <value>
 autonomy_defaults:
   paper_ingestion: <manual | autonomo>
   experiments: <manual | autonomo>

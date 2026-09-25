@@ -38,7 +38,9 @@ no note.
 ### 1. Read the task
 
 Locate the `F-XXX` note (under the project's task area, e.g. `Producto/`). Read
-its `project:`, `status`, and `## Descripción` for context.
+its `project:`, `status`, and `## Descripción` for context. If the task note has
+`send: never`, stop and tell the researcher: this skill must read the note to act
+on it, and the note is marked not-to-send. Don't work around the `send_guard` hook.
 
 ### 2. Frame the candidate
 

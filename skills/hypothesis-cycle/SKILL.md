@@ -204,6 +204,11 @@ calls, so a second critic adds little there. Checks 3 and 4 change as follows.
 3. **Independently run the check yourself**, exactly as v1 describes it.
 4. **Compare.** Both verdicts are one of `pass` / `refinable` / `clear_fail`.
 
+Never send a package that includes content from a `send: never` note (the
+candidate itself, or a cited paper) to `second-critic` — it leaves the machine.
+Run that check single-critic (v1 behaviour) and flag it `importante`:
+`v2 omitido para <id>: contiene material send: never`.
+
 ### On agreement vs. disagreement
 
 | Outcome | Action |
@@ -338,6 +343,21 @@ near-duplicate of something already cited elsewhere in this project (same
 paper, same or adjacent claim), look up and reuse that earlier citation's
 exact locator rather than re-deriving your own — never let the same fact
 carry two different section numbers across the project.
+
+**`send: never` papers are not citable evidence.** If the paper note's
+frontmatter has `send: never` (check with
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <note>` —
+exit 3 — or a `Read` refused by the `send_guard` hook), do not open it and do
+not cite a locator in it: the claim must stand on other papers, or the
+researcher adds that citation by hand. Flag it `importante` in the cycle output
+(`P-XXXX omitida: send: never`).
+
+**Retracted, withdrawn or mismatched papers are not citable evidence either**
+(contract §3b). Before citing, read the paper note's `resolution_status` — never
+`resolved` alone, since a retracted paper is `resolved: true`. `retracted` /
+`withdrawn` → do not cite it; `mismatch` → do not cite it until the note is fixed
+by hand (it may mix two papers). Flag either `importante` in the cycle output.
+`unresolved` or absent (never checked) may be cited, flagged `menor`.
 
 **Exception — `generated_by.origin: human`:** missing *direct* literature support
 does **not** block the hypothesis. Search for supporting context anyway; cite what

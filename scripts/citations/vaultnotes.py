@@ -18,11 +18,14 @@ This module is imported, not run. Standard library only.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
-__version__ = "1.0.0"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
+from send_guard import frontmatter_says_never  # noqa: E402  (A3's single definition, §3d)
 
-_SEND_NEVER = re.compile(r"""^send\s*:\s*(["']?)never\1\s*(#.*)?$""", re.IGNORECASE)
+__version__ = "1.1.0"
+
 PAPER_ID = re.compile(r"\bP-\d{4}\b")
 
 
@@ -92,12 +95,18 @@ def parse_flow_list(raw: str | None) -> list[str]:
 
 
 def is_send_never(fm_lines: list[str]) -> bool:
-    return any(_SEND_NEVER.match(ln.strip()) for ln in fm_lines)
+    """Same answer as scripts/security/send_guard.py for these frontmatter lines."""
+    return frontmatter_says_never("---\n" + "\n".join(fm_lines) + "\n---\n")
+
+
+def text_is_send_never(text: str) -> bool:
+    """send_guard's answer for the raw note text -- also true for a frontmatter
+    that never closes, which split_frontmatter() cannot parse."""
+    return frontmatter_says_never(text[:16 * 1024])
 
 
 def note_is_send_never(path: Path) -> bool:
-    split = split_frontmatter(path.read_text(encoding="utf-8"))
-    return bool(split and is_send_never(split[0]))
+    return text_is_send_never(path.read_text(encoding="utf-8"))
 
 
 def note_id(path: Path, fm_lines: list[str] | None) -> str:

@@ -107,6 +107,16 @@ class TestVaultNotes(unittest.TestCase):
         for ln in ("send: always", "send:", "send: never-ever", "resend: never", "# send: never"):
             self.assertFalse(vn.is_send_never([ln]), ln)
 
+    def test_send_never_agrees_with_send_guard(self):
+        # found at integration review: the two detectors diverged, so a note send_guard
+        # blocks could still have its title / DOI sent to OpenAlex
+        import send_guard  # on sys.path via vaultnotes
+        texts = ["---\nsend: \"never'\n---\n", "---\nid: P-0001\nsend: never\n",
+                 "---\nsend: never\n---\n", "---\nsend: always\n---\n", "no frontmatter\n"]
+        for t in texts:
+            self.assertEqual(vn.text_is_send_never(t), send_guard.frontmatter_says_never(t), t)
+        self.assertTrue(vn.text_is_send_never("---\nid: P-0001\nsend: never\n"))   # unterminated
+
     def test_set_fields_replaces_and_appends(self):
         text = vn.set_fields(self.NOTE, {"resolved": True, "openalex_id": "W1", "doi": ""})
         fm, body = vn.split_frontmatter(text)

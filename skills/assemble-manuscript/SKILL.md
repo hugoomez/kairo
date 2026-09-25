@@ -69,13 +69,16 @@ for the whole thread:
 | `linea_publicacion: false` (or unset) | **Out of scope for this thread's rigor bar.** If the researcher wants it included, they need to set `linea_publicacion: true` and take it through the `completo`-tier path first — this skill does not draft a publication section around a hypothesis nobody flagged as publication-track. |
 | The hypothesis note, or any of its `linked_experiment` notes, has `send: never` | **Excluded — `send: never`** (`importante`). Don't open it; the researcher drafts that part by hand or unmarks the note. |
 | Any `linked_experiment` entry `experiment_validity: invalid` | **Excluded — invalid evidence.** Name the invalid experiment; `apoyada` should not have been reachable on invalid evidence, so also flag this as a possible upstream data-integrity gap worth a human look (not this skill's job to fix `update-confidence`'s state, just to refuse to build on it). |
+| Latest `scope: note` entry in the hypothesis's `verifications:` is not `no_errors_found` (`errors_found`, `cannot_assess`, or no entry at all), **or** the latest entry of any `section:<heading>` scope is `errors_found` — read them with `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py list --note <H-XXXX.md>` (the last entry per scope, in file order, governs) | **Excluded — fresh verification not clean.** Name the governing entry (verdict, date, `verifier`, `model`) and copy its findings, with their `crítico` / `importante` / `menor` tags and locations, from the note's `## Verificación independiente`. With no entry, say "never verified". A human override logged in `history` at the `apoyada` gate does **not** clear this: a manuscript needs a re-verification (a new appended entry) that returns `no_errors_found`. Never re-run the verifier here to "fix" the gate, and never edit an entry. (The section-scope clause matches the AI-use disclosure, which flags that same case `crítico`.) |
 
 `status: apoyada` already guarantees ≥ 2 independent replicating experiments
 (Kairo principle 2, enforced by `update-confidence` — never re-derive or
-re-check replication count yourself; the status *is* the guarantee). The only
-thing this gate adds on top of `apoyada` is the `completo`-tier check, because
-that is the one rigor requirement `update-confidence`'s state machine doesn't
-already enforce structurally.
+re-check replication count yourself; the status *is* the guarantee). This gate
+adds two things on top of `apoyada`: the `completo`-tier check, which
+`update-confidence`'s state machine doesn't enforce structurally, and a clean
+latest fresh verification (`scope: note` → `no_errors_found`). `apoyada` can be
+reached through a logged human override of the verifier, and a publication
+must not rest on that.
 
 **Report the full classification table to the researcher before drafting**,
 even for hypotheses that will end up excluded — that's the "say exactly what's
@@ -182,6 +185,64 @@ amendments as such, per `preregister-experiment`'s own rule).
   appendix mapping each in-text citation back to its `P-XXXX` id is fine to
   include, kept clearly separate from the manuscript body.)
 
+### Fresh verification of each drafted section
+
+Once the manuscript note is written (see Output), run `fresh-verifier` once
+per drafted `##` section. It is a fresh Claude instance that receives only a
+mechanically built packet, never this session's drafting reasoning.
+
+1. Build the packet for the section. For `Resultados` and `Método`, add the
+   qualifying hypotheses' adjudicating experiments and the saved
+   `combine_effects.py` output, so the numbers can be checked against their
+   source:
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py \
+     --vault <vault root> --note <Manuscritos/manuscript-<thread>.md> \
+     --section "<exact heading text>" \
+     [--experiment <E-XXXX.md> ...] [--analysis-output <combine.txt> ...] \
+     --out <tmp>/packet-<heading>.md --manifest <tmp>/manifest-<heading>.json
+   ```
+2. Dispatch `fresh-verifier` with the packet file's text as the entire prompt,
+   verbatim, with nothing added.
+3. Record the result on the **manuscript note**, whatever the verdict:
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
+     --note <manuscript note> --verifier kairo/fresh-verifier@1.0.0 \
+     --model <model id the agent reported> --verdict <verdict> \
+     --scope "section:<exact heading text>" \
+     --report <tmp>/report-<heading>.txt --packet-sha256 <sha256>
+   ```
+   `--scope` must name a heading that exists verbatim in the note; the script
+   refuses otherwise. Findings go to the note's `## Verificación independiente`.
+
+`errors_found` / `cannot_assess` on a section: report the findings to the
+researcher with their severity tags and leave the section as drafted. Never
+silently rewrite it to make the finding go away. If the researcher fixes the
+section, re-verify, which appends a new entry. The latest entry per scope
+governs, and old entries are never edited.
+
+Known limit (packet builder v1.x): the manuscript body uses APA in-text
+citations, not `P-XXXX §locator`, so a section packet does not carry the
+cited papers' source text. Claims resting on a citation in `Introducción` /
+`Trabajo relacionado` can come back `cannot_assess` for that reason. That is an
+honest verdict, not a failure.
+
+Run these verifications **before** Step 4: the disclosure reads the
+manuscript note's `verifications:`, so it can only report runs that already
+happened. If a section is re-verified later, re-run Step 4.
+
+### How the AI-use disclosure reads these entries (contract §1b)
+
+The disclosure (Step 4) reports **every** entry in `verifications:` on the
+manuscript note and on each included hypothesis, never a curated subset. Each
+entry is one factual line: "A fresh-verifier instance (`<verifier>`, model
+`<model>`, `<date>`) found no errors in `<scope>`" / "found errors in
+`<scope>`" / "could not assess `<scope>`". Never write "verified", "correct",
+or "validated": `no_errors_found` means only that a verifier found no errors in
+that scope. When an `errors_found` entry was later followed by a
+`no_errors_found` re-verification of the same scope, report both, in date
+order.
+
 ## Step 4 — Declaración de uso de IA (generated from records, never written by hand)
 
 Every manuscript this skill drafts carries an AI-use disclosure, built mechanically from what Kairo
@@ -190,7 +251,8 @@ dedicated section listing, task by task, what AI did, what it didn't, and how it
 Science wants the tool, its version and the prompt. Nature and Science want Methods placement and ban
 AI-generated images. Do not write or paraphrase the disclosure yourself.
 
-1. Write the manuscript note first (Output below), including `generated_by`. Then run:
+1. Write the manuscript note first (Output below), including `generated_by`, and finish Step 3's
+   fresh verification of each drafted section. Then run:
 
    ```
    python "${CLAUDE_PLUGIN_ROOT}/skills/assemble-manuscript/scripts/ai_disclosure.py" \
@@ -255,11 +317,15 @@ ai_disclosure:
 # set ONLY by the researcher, by hand, after reading the disclosure — never by this skill:
 # ai_disclosure_confirmed_by: <name>
 # ai_disclosure_confirmed: <YYYY-MM-DD>
+# verifications — appended only by scripts/ledger/verifications.py
+# (contract §1b), one entry per fresh-verifier run on a section. Never hand-edited.
+verifications: []
 ```
 
 This skill **never** edits hypothesis `status`, `linea_publicacion`,
-Estado-del-arte.md, or `_digest.md` — it only reads them and writes the new
-manuscript note. If the researcher wants an excluded hypothesis included, the
+Estado-del-arte.md, or `_digest.md`. It only reads them and writes the new
+manuscript note, including that note's own `verifications:` entries and
+`## Verificación independiente`. If the researcher wants an excluded hypothesis included, the
 fix is upstream (`preregister-experiment` completo tier, `run-experiment`,
 `update-confidence`), not a flag on this skill.
 
@@ -297,3 +363,11 @@ fix is upstream (`preregister-experiment` completo tier, `run-experiment`,
   Filling in `[PENDIENTE]` lines or `ai_disclosure_confirmed_by` is the researcher's job, never this skill's.
 - **Quoting a `send: never` note's content into the disclosure.** The script outputs only its id and a
   flag. The researcher declares that contribution by hand.
+- **Drafting around a hypothesis whose latest fresh verification isn't
+  `no_errors_found`.** The gate refuses it and names the finding. Re-verify
+  upstream, and don't treat a logged human override as clean.
+- **Calling a `no_errors_found` section "verified" or "correct"**, in the
+  manuscript or its disclosure. It means only that a verifier found no errors
+  in that scope.
+- **Giving `fresh-verifier` more than the packet**, such as drafting notes,
+  the gate table, or hints about where to look.

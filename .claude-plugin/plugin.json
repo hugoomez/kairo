@@ -1,7 +1,7 @@
 {
   "name": "kairo",
   "displayName": "Kairo",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Citation-grounded research automation for Claude Code: hypotheses that must cite specific papers, preregistration frozen before any experiment runs, and independent replication before a claim is promoted. Runs on a Claude subscription — no API keys.",
   "author": {
     "name": "Hugo Gómez",

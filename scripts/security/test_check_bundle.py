@@ -291,6 +291,26 @@ class TestCleanBundle(unittest.TestCase):
             self.assertEqual((rc, json.loads(out)), (0, {"status": "clean", "findings": []}))
 
 
+class TestV3NoteTypes(unittest.TestCase):
+    """Block B's v3 note types (Claims/ C-XXXX, Evolucion/ EVO-XXXX, _ledger.md)."""
+
+    def test_claim_evo_and_ledger_notes_block(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "b"
+            make_clean_bundle(root)
+            (root / ".env.example").unlink()
+            write(root, "notes/claim.md", "---\nid: C-0004\nproject: PROJ-001\nstatus: pendiente\n---\n")
+            write(root, "notes/evo.md", "---\nid: EVO-0001\nproject: PROJ-001\n---\n")
+            write(root, "notes/_ledger.md", "# ledger\n")
+            write(root, "notes/F-012 tarea.md", "---\nid: F-012\nproject: PROJ-001\nstatus: backlog\n---\n")
+            rc, out, _ = run_cli(root)
+            doc = json.loads(out.decode("utf-8"))
+            self.assertEqual(rc, 2)
+            self.assertEqual({(f["path"], f["kind"]) for f in doc["findings"]},
+                             {("notes/claim.md", "vault_note"), ("notes/evo.md", "vault_note"),
+                              ("notes/_ledger.md", "vault_note"), ("notes/F-012 tarea.md", "vault_note")})
+
+
 class _Out:
     """Stand-in for sys.stdout that exposes a bytes `.buffer`, as check_bundle writes to it."""
 

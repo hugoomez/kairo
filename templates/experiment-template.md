@@ -65,6 +65,24 @@ result:
   p_value: <value>       # frequentist plan
   bayes_factor: <value>  # bayesian plan
   verdict: <apoyada | refutada | inconclusa | evidencia_mixta>
+# generated_by — who drafted the preregistration design text. Written by
+# preregister-experiment at freeze and frozen with the rest of the prereg.
+# Read by assemble-manuscript's AI-use disclosure (preregistro stage).
+generated_by:
+  origin: <agent | human>
+  model: <model id — omit if origin is human or the id is unknown>
+  skill_version: <e.g. preregister-experiment@<plugin version>>
+# code_generated_by — who wrote the experiment code. Set by run-experiment
+# step 0 when the code commit is recorded. NOT part of the frozen prereg: it
+# describes the implementation, which happens after the freeze. Read by the
+# AI-use disclosure (código stage).
+code_generated_by:
+  origin: <agent | human | mixed>
+  model: <model id — omit if unknown or origin is human>
+# send — optional. `send: never` keeps this note's content from ever reaching
+# the model or an external API: skills skip it and the vault's send_guard
+# PreToolUse hook blocks reading it. Omit the field for normal notes.
+# send: never
 ---
 
 ## Predicción

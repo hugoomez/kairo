@@ -1320,10 +1320,24 @@ def analyze(ctx: Ctx) -> dict:
             ctx.flag("importante", f"{e.id}: método reimplementado desde el texto, no validado contra el código "
                      f"original", e.id, "method_provenance")
         code_gb = fm.get("code_generated_by") if isinstance(fm.get("code_generated_by"), dict) else None
-        if code_gb and not is_unknown_model(code_gb.get("model")):
-            add_model(code_gb.get("model"), "implementación del código", f"{e.id} code_generated_by")
-            ctx.say("codigo", "ai", f"{e.id}: código implementado por IA ({s(code_gb.get('model'))}).",
-                    f"{e.id}: code implemented by AI ({s(code_gb.get('model'))}).", [f"{e.id} code_generated_by"])
+        code_origin = s(code_gb.get("origin")).strip().lower() if code_gb else ""
+        code_model = None if (not code_gb or is_unknown_model(code_gb.get("model"))) else s(code_gb.get("model"))
+        if code_origin == "human":
+            ctx.say("codigo", "human", f"{e.id}: código escrito por el investigador (code_generated_by.origin: human).",
+                    f"{e.id}: code written by the researcher (code_generated_by.origin: human).",
+                    [f"{e.id} code_generated_by"])
+        elif code_origin in ("agent", "mixed") or code_model:
+            if code_model:
+                add_model(code_model, "implementación del código", f"{e.id} code_generated_by")
+            who_es = ("por IA" if code_origin != "mixed" else "entre IA y el investigador (mixto)")
+            who_en = ("by AI" if code_origin != "mixed" else "jointly by AI and the researcher (mixed)")
+            ctx.say("codigo", "ai",
+                    f"{e.id}: código implementado {who_es} ({code_model or 'modelo no registrado'}).",
+                    f"{e.id}: code implemented {who_en} ({code_model or 'model not recorded'}).",
+                    [f"{e.id} code_generated_by"])
+            if not code_model:
+                ctx.flag("importante", f"{e.id}: code_generated_by.origin {code_origin} sin modelo registrado",
+                         e.id, "code_generated_by.model")
         else:
             code_amend = [hd for hd, _ in entries if re.search(r"c[oó]digo|code", hd, re.IGNORECASE)]
             extra_es = (f" La enmienda «{code_amend[0]}» registra el commit del código, no su autor."
@@ -1467,7 +1481,7 @@ def analyze(ctx: Ctx) -> dict:
         for rec in [r for r in ver_records if r["note"] == n.id]:
             by_scope.setdefault(rec["scope"], []).append(rec)
         for sc, recs in by_scope.items():
-            recs.sort(key=lambda r: (r["date"], r["index"]))
+            recs.sort(key=lambda r: r["index"])   # file order governs (contract §3a), not date
             last = recs[-1]
             had_errors = any(r["verdict"] == "errors_found" for r in recs)
             if last["verdict"] == "errors_found":

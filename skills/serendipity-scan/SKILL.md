@@ -68,6 +68,10 @@ optionally one resolved hypothesis (`H-XXXX`).
 
 ### 1. Extract and abstract
 
+If the hypothesis note has `send: never`, stop: its `## Lección` is not query
+material (it would be abstracted into an external search). Say so; the
+researcher can write the abstract pattern by hand.
+
 Read the hypothesis's `## Lección`. Rewrite it as an abstract pattern with the
 domain-specific nouns replaced by role slots — keep the *relation*, drop the
 *field*. Example:
@@ -115,7 +119,11 @@ here, before the combined cap in **Output** below.
 
 ### 1. Build the project's field-A neighborhood
 
-Take every `Papers/` note with this `PROJ-XXX` in `projects:` as seeds. For
+Take every `Papers/` note with this `PROJ-XXX` in `projects:` as seeds.
+Exclude every note with `send: never` in its frontmatter (list them with
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" list Papers --json`):
+its ids and metadata are not sent to Semantic Scholar. Say how many were
+excluded (`menor`). For
 each (or the 3-5 most-cited, if the corpus is large), pull one-hop
 `references` and `citations` via Semantic Scholar — same call shape as
 `literature-search` step 3.

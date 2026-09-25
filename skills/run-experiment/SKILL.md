@@ -84,9 +84,14 @@ is a `crítico` ambiguity (above), not a licence to patch it.
 **Record the code commit.** The frozen prereg predates the code, so
 `frozen_commit` (often the vault HEAD at freeze) does not by itself pin the
 implementation. Once the code is written and committed, add a dated `## Enmiendas`
-entry — `implementación de E-XXXX, code sha <sha>` — plus any `importante` /
+entry — `implementación de E-XXXX, code sha <sha>, escrito por <agent <model id> | researcher | mixto>` — plus any `importante` /
 `menor` choices made while coding. Pre-flight (step 1) checks the code against
 *this* sha.
+
+Also set `code_generated_by: {origin: agent | human | mixed, model: <id, omit if unknown>}`
+in the experiment note's frontmatter. It is not part of the frozen preregistration: it
+describes the implementation, which happens after the freeze. The AI-use disclosure
+reads it.
 
 ### 1. Pre-flight — environment matches the frozen manifest
 
@@ -119,6 +124,14 @@ timestamp, then **invoke `update-confidence`** — trigger
 `preregistrada → en_experimento`, payload = the hypothesis id + this experiment
 id. `update-confidence` moves the hypothesis and writes its `history`; this skill
 never edits hypothesis `status`.
+
+**Exploratory rung (`role: exploratory`):** skip the `update-confidence`
+trigger — a rung never moves hypothesis status (contract §1d; enforced by
+`update-confidence` via `scripts/analysis/evidence_gate.py`). The hypothesis can
+be `propuesta`, `preregistrada` or `en_experimento` while its rungs run; leave it
+where it is. Everything else in this skill — literal implementation, pre-flight,
+sanity checks, validity, the frozen mechanical analysis, the log — applies to a
+rung exactly as to a confirmatory run. A rung is cheap, not sloppy.
 
 ### 2. Execution
 
@@ -312,9 +325,30 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
   do **not** fire `update-confidence`, do **not** add this experiment to that
   hypothesis's `linked_experiment` (it belongs in `collateral_evidence:` at most).
   Non-confirmatory by construction.
+- **Exploratory rung (`role: exploratory`):** fire **no** `update-confidence`
+  trigger, valid or not. Instead settle the rung's `Claims/` node (created by
+  `preregister-experiment` at `pendiente`; its `source:` is this experiment) with
+  the single claim writer, then refresh the ledger:
+  ```
+  python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/claim_status.py set \
+      --note <Projects/<slug>/Claims/C-XXXX.md> --status <probado|refutado|fallido> \
+      --by run-experiment --evidence "<E-XXXX: validity, verdict, effect — one line>"
+  python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/build_graph.py --vault <vault> --project <slug> --write
+  ```
+  Mapping: valid run, relaxed prediction held → `probado`; valid run, relaxed
+  prediction contradicted → `refutado`; invalid run / did not complete /
+  instrument failed → `fallido`. A failed or refuted rung is recorded exactly
+  like a passing one — it is often the most useful rung — never skipped, never
+  re-run silently until it passes. Write the `## Resultado` of the claim note
+  (`## Resultado` / `## Qué informa` body sections) with the exact analysis
+  output, as for the experiment note.
 
 ## Common mistakes
 
+- **Firing `update-confidence` for an exploratory rung, or hiding a failed
+  one.** Rungs never move hypothesis status and never enter `combine_effects.py`;
+  their outcome goes to their `Claims/` node via `claim_status.py`, failed ones
+  included.
 - **Running despite a hash mismatch.** Pre-flight mismatch = stop, no execution.
 - **Reasoning about significance in prose.** Call the script; copy its numbers and
   verdict.

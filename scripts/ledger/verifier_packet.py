@@ -43,7 +43,13 @@ Usage:
         [--section "<heading>"] [--out packet.md] [--manifest manifest.json]
         [--json]
 
-Exit codes: 0 ok, 2 invalid input (missing file, unknown section).
+`send: never` (A3, scripts/security/send_guard.py): a flagged --note or
+--experiment is refused (exit 2) -- its content must never reach a model, so
+it is never verified. A cited paper flagged `send: never` contributes no
+source text and no abstract; its citation is marked as not sent.
+
+Exit codes: 0 ok, 2 invalid input (missing file, unknown section, a
+`send: never` note).
 """
 
 from __future__ import annotations
@@ -55,8 +61,12 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
-__version__ = "1.0.0"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
+from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
+
+__version__ = "1.1.0"
 TOOL_ID = f"kairo/verifier_packet@{__version__}"
 
 # --------------------------------------------------------------------------
@@ -356,6 +366,10 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
     if not path:
         res["note"] = f"nota {pid} no encontrada en Papers/"
         return res
+    if is_flagged(Path(path)):
+        res["note"] = (f"{pid} está marcada send: never — su texto no se envía; "
+                       "esta cita no se puede comprobar aquí")
+        return res
     res["source"] = os.path.relpath(path, vault).replace("\\", "/")
     fm, body = split_frontmatter(read_text(path))
     res["title"] = fm_scalar(fm, "title")
@@ -404,6 +418,10 @@ def build(vault: str, note: str, experiments: list[str],
     manifest: dict = {"tool": TOOL_ID, "scope": f"section:{section}" if section else "note",
                       "sources": [], "citations": [], "analysis_outputs": []}
     out: list[str] = []
+    for f in [note, *experiments]:
+        if is_flagged(Path(f)):
+            raise ValueError(f"{os.path.basename(f)} is marked send: never; it is never "
+                             "sent to the verifier (record no verification for it)")
     fm, body = split_frontmatter(read_text(note))
     label = note_label(fm, note)
     scope = manifest["scope"]

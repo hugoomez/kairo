@@ -123,6 +123,11 @@ risk difference +0.02, p = 0.4; verdict apoyada.
 """
 
 
+def send_never(text: str) -> str:
+    """The same note with `send: never` as its first frontmatter line (A3)."""
+    return text.replace("---\n", "---\nsend: never\n", 1)
+
+
 def build_fixture(root: Path) -> dict:
     vault = root / "vault"
     (vault / "Papers").mkdir(parents=True)
@@ -164,6 +169,24 @@ class TestPacket(unittest.TestCase):
             self.assertIn(h, src["excluded_sections"])
         self.assertIn("history", src["excluded_frontmatter"])
         self.assertEqual(src["included_frontmatter"], ["id"])
+
+    def test_send_never_note_or_experiment_refused(self):
+        for key in ("hyp", "exp"):
+            t = self.f[key].read_text(encoding="utf-8")
+            self.f[key].write_text(send_never(t), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "send: never"):
+                self.build(experiments=[str(self.f["exp"])])
+            self.f[key].write_text(t, encoding="utf-8")
+
+    def test_send_never_paper_sends_no_source_text(self):
+        paper = next((self.f["vault"] / "Papers").glob("P-0901*.md"))
+        paper.write_text(send_never(PAPER), encoding="utf-8")
+        packet, m = self.build()
+        for leaked in ("power law", "interventional speedup", "Appendix paragraph"):
+            self.assertNotIn(leaked, packet, leaked)
+        self.assertTrue(all("send: never" in (c["note"] or "") for c in m["citations"]
+                            if c["paper"] == "P-0901"))
+        self.assertNotIn("paper_abstracts", m)
 
     def test_citation_source_text_is_included_per_locator(self):
         packet, m = self.build()
@@ -400,6 +423,24 @@ class TestVerifications(unittest.TestCase):
         self.do_append(n, "no_errors_found", date="2030-03-09")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(vf.main(["gate", "--note", str(n)]), 0)
+
+    def test_gate_blocks_out_of_enum_verdict(self):
+        # append refuses it, so it only arises from a hand edit; never read as clean
+        n = self.d / "n.md"
+        write(n, NOTE_NO_KEY.replace("needs_human_review: false", "needs_human_review: true"))
+        self.do_append(n, "no_errors_found")
+        n.write_text(n.read_text(encoding="utf-8").replace(
+            "verdict: no_errors_found", "verdict: looks_fine"), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(vf.main(["gate", "--note", str(n)]), 3)
+
+    def test_send_never_note_gets_no_entry(self):
+        n = self.d / "n.md"
+        write(n, send_never(NOTE_NO_KEY))
+        before = n.read_bytes()
+        with self.assertRaisesRegex(vf.InputError, "send: never"):
+            self.do_append(n)
+        self.assertEqual(n.read_bytes(), before)
 
     def test_latest_cli_idempotent_read_back(self):
         n = self.d / "n.md"

@@ -284,5 +284,24 @@ class ClaimWriter(LedgerFixture):
         self.assertEqual(self.claim("x").name, "C-0008.md")
 
 
+class SendNever(LedgerFixture):
+    """A `send: never` note keeps its node and edges but no text reaches _ledger.md."""
+
+    def test_flagged_note_text_never_in_ledger(self):
+        h = self.hyp("H-0001", deps="[C-0001]")
+        h.write_text(h.read_text(encoding="utf-8").replace("---\n", "---\nsend: never\n", 1)
+                     .replace("Claim of H-0001.", "SECRET CLAIM TEXT"), encoding="utf-8")
+        c = self.claim("SECRET LEMMA")                                     # C-0001
+        c.write_text(c.read_text(encoding="utf-8").replace("---\n", "---\nsend: never\n", 1),
+                     encoding="utf-8")
+        code, _, _ = _run(build_graph.main, ["--vault", str(self.vault), "--write"])
+        self.assertEqual(code, 0)
+        ledger = (self.proj / "_ledger.md").read_text(encoding="utf-8")
+        self.assertNotIn("SECRET", ledger)
+        self.assertIn("H-0001", ledger)
+        self.assertIn("C-0001", ledger)
+        self.assertEqual(ledger.count(build_graph.SEND_NEVER_TITLE), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -207,7 +207,11 @@ _INITIAL = re.compile(r"^(?:[^\W\d_]\.?-?)+$")      # "A." / "A" / "A.B." / "J.-
 
 
 def _is_initials(tok: str) -> bool:
-    return bool(_INITIAL.match(tok)) and len(tok.replace(".", "").replace("-", "")) <= 2
+    """'A.' / 'A' / 'AB' / 'J.-P.' -- but not a two-letter surname: 'Xu', 'Li',
+    'Wu', 'Ng' are mixed-case with no period, so they are names, not initials."""
+    letters = tok.replace(".", "").replace("-", "")
+    return (bool(_INITIAL.match(tok)) and len(letters) <= 2
+            and ("." in tok or letters.isupper()))
 
 
 def surname_of(author: str) -> str:
@@ -471,7 +475,7 @@ def read_note(path: Path) -> dict:
     return {
         "id": vn.note_id(path, fm),
         "path": path,
-        "send_never": vn.is_send_never(fm),
+        "send_never": vn.is_send_never(fm) or vn.text_is_send_never(text),
         "title": vn.fm_get(fm, "title") or "",
         "authors": vn.parse_flow_list(vn.fm_raw(fm, "authors")),
         "year": int(y) if y and re.fullmatch(r"\d{4}", y) else None,

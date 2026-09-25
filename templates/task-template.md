@@ -6,6 +6,10 @@ status: <backlog | en_progreso | hecho>
 motivada_por: <H-XXXX | ADR-XXX>
 # motiva_hipotesis — optional: filled if this task later spawns a hypothesis
 motiva_hipotesis: <H-XXXX>
+# send — optional. `send: never` keeps this note's content from ever reaching
+# the model or an external API: skills skip it and the vault's send_guard
+# PreToolUse hook blocks reading it. Omit the field for normal notes.
+# send: never
 ---
 
 ## Descripción

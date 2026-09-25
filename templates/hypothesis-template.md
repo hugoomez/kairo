@@ -45,7 +45,7 @@ paper_thread: <slug-or-id>
 # crítico. [] when it stands on its own.
 depends_on: []
 # spawned_from — optional: the note that generated this one
-spawned_from: <H-XXXX | E-XXXX | F-XXX>
+spawned_from: <H-XXXX | E-XXXX | F-XXX | EVO-XXXX>
 # verifications — append-only, docs/v3-interfaces.md §1b. Written only by
 # scripts/ledger/verifications.py after a fresh-verifier run (hypothesis-cycle
 # before creation; update-confidence before apoyada). Never edit or remove an
@@ -71,6 +71,10 @@ history:
     experiments: []              # e.g. [E-0007, E-0011]
     combination: n/a             # e.g. combine_effects.py@2.0.0 (random-effects DerSimonian-Laird)
     evidence: <short note or link>
+# send — optional. `send: never` keeps this note's content from ever reaching
+# the model or an external API: skills skip it and the vault's send_guard
+# PreToolUse hook blocks reading it. Omit the field for normal notes.
+# send: never
 ---
 
 ## Claim
@@ -108,6 +112,13 @@ Omitir esta sección solo si pasó en la primera pasada sin ninguna ronda.>
 fresh-verifier (veredicto, alcance, sha256 del paquete, hallazgos con severidad
 y ubicación). Omitir hasta la primera verificación. El paquete del verificador
 nunca incluye esta sección.>
+
+## Revisión de vigencia
+
+<Opcional, append-only. La crea `scripts/citations/retraction_sweep.py --write`
+cuando un paper citado aparece retractado o retirado: una línea fechada por
+aviso. Nunca cambia `status`; el investigador decide qué hacer. Omitir si no hay
+avisos.>
 
 ## Lección
 

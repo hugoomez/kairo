@@ -26,7 +26,11 @@ it contains only:
   Under each, for every `P-XXXX <locator>` in it, the **verbatim text of that
   paper's ingested `## Texto completo` that matches the locator** (every unit
   that names that section / figure / table / appendix, or sits under that
-  numbered heading). If nothing matched, the packet says so. After the
+  numbered heading). If nothing matched, the packet says so. A paper marked
+  `send: never` contributes no text at all: the packet says so under that
+  citation, which is a `cannot_assess` for that assertion, never a reason to
+  look the paper up. (A note that is itself `send: never` never reaches you:
+  the packet builder refuses it.) After the
   assertions, each cited paper's `## Resumen` (abstract), labelled as
   paper-level context — it is **not** the text of any locator.
 - A test-sketch section, if the note has one.

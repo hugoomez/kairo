@@ -5,7 +5,7 @@ A vault note whose frontmatter carries `send: never` is private to the
 researcher: Claude must not read it, quote it, or send its metadata to an
 external API. Skills and agents skip such notes explicitly; this script is the
 mechanical backstop, run as a Claude Code **PreToolUse command hook** (see
-`docs/v3-pending/A-hook.md` for the settings.json snippet), plus two read-only
+the vault's `.claude/settings.json`; `docs/v3-interfaces.md` §3e), plus two read-only
 helper modes the skills use to find flagged notes without opening them.
 
 Hook mode (default; reads the PreToolUse JSON from stdin):

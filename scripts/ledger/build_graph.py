@@ -38,6 +38,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from notes import as_list, first_line, read_note, section  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
+from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
+
+SEND_NEVER_TITLE = "(send: never — contenido omitido)"
+
 __version__ = "1.0.0"
 TOOL = f"kairo/build_graph@{__version__}"
 
@@ -103,7 +108,9 @@ def load_nodes(vault: Path) -> tuple[dict[str, Node], list[Finding]]:
                 role=str(fm.get("role", "")) if kind == "C" else "",
                 source=" ".join(re.findall(r"\b(?:EVO|E)-\d{4}\b", str(fm.get("source", ""))))
                 if kind == "C" else "",
-                title=first_line(title_src),
+                # a send: never note keeps its id / status / edges (the graph needs
+                # them) but none of its text reaches _ledger.md, which models read
+                title=SEND_NEVER_TITLE if is_flagged(path) else first_line(title_src),
             )
             if nid in nodes:
                 findings.append(Finding("crítico", "duplicate_id", nid, proj,

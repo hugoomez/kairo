@@ -2,10 +2,9 @@
 
 Run: python -m unittest skills/evolve-program/scripts/test_evolve.py -v
 
-The bundle tests use a TEST DOUBLE for scripts/security/check_bundle.py (Block A
-owns the real one — docs/v3-interfaces.md §1a). The double is written into a
-temp dir by the test, honours the same CLI and exit codes, and is never a
-substitute for the real check.
+The bundle tests run the REAL isolation check, scripts/security/check_bundle.py
+(Block A, docs/v3-interfaces.md §1a): a clean bundle, a contaminated one, the
+real script's own error exit, and a missing script. No test double.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -43,16 +43,9 @@ def solve(x):
     return 1e300
 """
 SLEEPER = "import time\ndef solve(x):\n    time.sleep(60)\n    return 0.0\n"
-STUB_CHECK = """# TEST DOUBLE of scripts/security/check_bundle.py (contract §1a) — NOT the real check.
-import json, sys
-mode = {mode!r}
-if mode == "clean":
-    print(json.dumps({{"status": "clean", "findings": []}})); sys.exit(0)
-if mode == "contaminated":
-    print(json.dumps({{"status": "contaminated", "findings": [
-        {{"path": "program.py", "kind": "stub_finding", "severity": "block"}}]}})); sys.exit(2)
-print(json.dumps({{"status": "error", "findings": []}})); sys.exit(1)
-"""
+# a provider-shaped fake key, built at runtime so no key-shaped literal is committed
+FAKE_AWS = "AK" + "IA" + "7QXK2M9PLR4TZ8WB"
+LEAKER = f'AWS_ACCESS_KEY_ID = "{FAKE_AWS}"\n' + PERFECT
 
 
 def _cli(argv):
@@ -180,34 +173,43 @@ def solve(x):
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn("approval token", json.loads(r.stdout)["refused"])
 
-    def _bundle(self, mode, name):
-        stub = self.tmp / f"stub_{mode}.py"
-        stub.write_text(STUB_CHECK.format(mode=mode), encoding="utf-8")
-        os.environ["KAIRO_ALLOW_STUB_CHECK"] = "1"
-        try:
-            return _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
-                         str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / name),
-                         "--heldout", str(self.tmp / "data" / "heldout"),
-                         "--check-script", str(stub)])
-        finally:
-            os.environ.pop("KAIRO_ALLOW_STUB_CHECK", None)
+    def _bundle(self, name, src=PERFECT):
+        return _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
+                     str(self.prog(f"{name}.py", src)), "--out", str(self.tmp / name),
+                     "--heldout", str(self.tmp / "data" / "heldout")])
 
-    def test_bundle_exit_codes_follow_contract(self):
-        code, out = self._bundle("clean", "b0")
-        self.assertEqual(code, 0)
+    def test_bundle_clean_with_real_check(self):
+        code, out = self._bundle("b0")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out["check_script"].endswith("scripts/security/check_bundle.py"))
+        self.assertEqual((out["check_exit"], out["check"]["status"]), (0, "clean"))
         self.assertTrue((self.tmp / "b0" / "MANIFEST.sha256").exists())
-        self.assertEqual(self._bundle("contaminated", "b2")[0], 2)
-        self.assertEqual(self._bundle("error", "b1")[0], 3)   # error = not clean
 
-    def test_stub_check_refused_outside_tests(self):
-        stub = self.tmp / "stub.py"
-        stub.write_text(STUB_CHECK.format(mode="clean"), encoding="utf-8")
-        code, out = _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
-                          str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / "bs"),
-                          "--heldout", str(self.tmp / "data" / "heldout"),
-                          "--check-script", str(stub)])
+    def test_bundle_contaminated_with_real_check(self):
+        code, out = self._bundle("b2", LEAKER)
+        self.assertEqual(code, 2, out)
+        self.assertIn("bundle contaminated", out["critico"])
+        self.assertNotIn(FAKE_AWS, json.dumps(out))   # the check never echoes a secret
+
+    def test_bundle_real_check_error_is_not_clean(self):
+        # make the REAL script exit 1 (its own "error"): hand it a path that doesn't exist
+        real_run = subprocess.run
+
+        def missing_path(argv, *a, **kw):
+            if str(argv[1]).endswith("check_bundle.py"):
+                argv = [argv[0], argv[1], str(self.tmp / "no-such-bundle")]
+            return real_run(argv, *a, **kw)
+
+        with mock.patch.object(evolve_run.subprocess, "run", side_effect=missing_path):
+            code, out = self._bundle("b1")
+        self.assertEqual(code, 3, out)   # error = not clean
+        self.assertIn("could not run (exit 1)", out["refused"])
+
+    def test_bundle_refused_without_check_script(self):
+        with mock.patch.object(evolve_run, "PLUGIN_ROOT", self.tmp / "empty-plugin"):
+            code, out = self._bundle("bx")
         self.assertEqual(code, 3)
-        self.assertIn("test-only", out["refused"])
+        self.assertIn("never handed over unchecked", out["refused"])
 
     def test_timeout_kills_grandchildren(self):
         lock = json.loads((self.run_dir / "evolve.lock.json").read_text())
@@ -220,15 +222,6 @@ def solve(x):
         res = harness.score_split(str(spawner), lock, Path(lock["train_dir"]))
         self.assertIn("timeout", res["reason"])
         self.assertLess(_t.time() - t0, 30)   # did not block on the grandchild's pipes
-
-    def test_bundle_refused_without_real_check(self):
-        code, out = _cli(["bundle", "--run-dir", str(self.run_dir), "--program",
-                          str(self.prog("perfect.py", PERFECT)), "--out", str(self.tmp / "bx"),
-                          "--heldout", str(self.tmp / "data" / "heldout")])
-        if (evolve_run.PLUGIN_ROOT / "scripts" / "security" / "check_bundle.py").exists():
-            self.skipTest("real check_bundle.py present (post-integration)")
-        self.assertEqual(code, 3)
-        self.assertIn("never handed over unchecked", out["refused"])
 
 
 if __name__ == "__main__":

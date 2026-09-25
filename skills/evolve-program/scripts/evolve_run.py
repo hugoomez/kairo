@@ -379,13 +379,8 @@ def cmd_bundle(a) -> dict:
     lines = [f"{sha(p)}  {p.relative_to(out).as_posix()}"
              for p in sorted(out.rglob("*")) if p.is_file()]
     (out / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    # Block A's isolation check (docs/v3-interfaces.md §1a) — always the real script
     script = PLUGIN_ROOT / "scripts" / "security" / "check_bundle.py"
-    if a.check_script:
-        # a stand-in for the real isolation check is for tests only
-        if os.environ.get("KAIRO_ALLOW_STUB_CHECK") != "1":
-            raise Refused("--check-script is test-only (set KAIRO_ALLOW_STUB_CHECK=1 in a test); "
-                          "real bundles are checked by scripts/security/check_bundle.py")
-        script = a.check_script
     if not Path(script).exists():
         raise Refused(f"bundle isolation check not found at {script} — a bundle is never "
                       "handed over unchecked")
@@ -508,8 +503,6 @@ def main(argv=None) -> int:
     bu.add_argument("--out", type=Path, required=True)
     bu.add_argument("--split", choices=("train", "heldout"), default="heldout")
     bu.add_argument("--heldout", type=Path, help="required with --split heldout")
-    bu.add_argument("--check-script", type=Path,
-                    help="TEST ONLY: a stub honoring the check_bundle.py CLI (contract §1a)")
     lc = sub.add_parser("lineage-claims")
     lc.add_argument("--run-dir", type=Path, required=True)
     lc.add_argument("--project-dir", type=Path, required=True)

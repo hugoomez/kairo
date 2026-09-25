@@ -54,6 +54,10 @@ def classify(fm: dict) -> tuple[bool, str]:
         return False, f"crítico: role '{role}' fuera del contrato (confirmatory | exploratory)"
     if rung and rung not in ("0", "1", "2", "3"):
         return False, f"crítico: rung '{rung}' fuera del contrato (0 | 1 | 2 | 3)"
+    if role == "exploratory" and rung == "3":
+        return False, ("crítico: exploratory con rung 3; los rungs exploratorios son 0-2 "
+                       "(rung 3 = las condiciones del claim, siempre confirmatorio) — nota mal "
+                       "formada; nunca cuenta como evidencia")
     if role == "exploratory":
         return False, (f"exploratory (rung {rung or '?'}): informa el diseño, nunca cuenta "
                        "como evidencia — ninguna transición de status")
@@ -73,37 +77,58 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
                           encoding="utf-8", errors="replace")
 
 
-def frozen_check(path: Path) -> tuple[bool, str]:
-    """role / rung are frozen with the preregistration: the version of the note in
-    the commit that first added it (preregister-experiment's freeze commit) must
-    classify the same way. A rung relabelled `confirmatory` after it ran is refused."""
+def _role_rung(fm: dict) -> tuple[str, str]:
+    """(role, rung) with unfilled template placeholders read as absent."""
+    role, rung = str(fm.get("role", "")).strip(), str(fm.get("rung", "")).strip()
+    return ("" if role.startswith("<") else role), ("" if rung.startswith("<") else rung)
+
+
+def frozen_check(path: Path, fm: dict) -> tuple[bool, str]:
+    """role / rung are frozen with the preregistration. The freeze version is the
+    FIRST committed version of the note that sets `role` (earlier commits may be
+    drafts holding template placeholders); failing that, the first commit. That
+    version must itself count as evidence, and the current role / rung must equal
+    it. A rung relabelled `confirmatory` after the freeze is refused."""
     path = path.resolve()
     top = _git(["rev-parse", "--show-toplevel"], path.parent)
     if top.returncode != 0:
         return True, "sin repositorio git: la inmutabilidad de role/rung no se pudo verificar"
     root = Path(top.stdout.strip())
     rel = path.relative_to(root.resolve()).as_posix()
-    log = _git(["log", "--diff-filter=A", "--format=%H", "--", rel], root)
-    shas = log.stdout.split()
+    log = _git(["log", "--format=%H", "--", rel], root)
+    shas = list(reversed(log.stdout.split()))            # oldest first
     if log.returncode != 0 or not shas:
         return False, ("crítico: el preregistro no está congelado en git (ningún commit lo "
                        "añade) — no puede contar como evidencia")
-    shown = _git(["show", f"{shas[-1]}:{rel}"], root)
-    parts = split_note(shown.stdout) if shown.returncode == 0 else None
-    if parts is None:
-        return False, f"crítico: no se pudo leer la versión congelada ({shas[-1][:10]})"
-    ok, reason = classify(parse_frontmatter(parts[0]))
+    versions = []
+    for sha in shas:
+        shown = _git(["show", f"{sha}:{rel}"], root)
+        parts = split_note(shown.stdout) if shown.returncode == 0 else None
+        if parts is not None:
+            versions.append((sha, parse_frontmatter(parts[0])))
+    if not versions:
+        return False, f"crítico: no se pudo leer ninguna versión congelada ({shas[0][:10]})"
+    ever_exploratory = [s for s, v in versions if _role_rung(v)[0] == "exploratory"]
+    if ever_exploratory:
+        return False, (f"crítico: la nota fue `role: exploratory` en el commit "
+                       f"{ever_exploratory[0][:10]} — role/rung no se reetiquetan después del freeze: un rung nunca pasa a contar como evidencia")
+    sha, frozen = next(((s, v) for s, v in versions if _role_rung(v)[0]), versions[0])
+    ok, reason = classify(frozen)
     if not ok:
-        return False, (f"crítico: en su commit de freeze {shas[-1][:10]} la nota era: {reason} — "
+        return False, (f"crítico: en su commit de freeze {sha[:10]} la nota era: {reason} — "
                        "role/rung no se reetiquetan después del freeze")
-    return True, f"role/rung coinciden con el freeze {shas[-1][:10]}"
+    if _role_rung(fm) != _role_rung(frozen):
+        return False, (f"crítico: role/rung actuales {_role_rung(fm)} difieren de los del freeze "
+                       f"{sha[:10]} {_role_rung(frozen)} — role/rung no se reetiquetan después "
+                       "del freeze")
+    return True, f"role/rung coinciden con el freeze {sha[:10]}"
 
 
 def counts(path: Path, fm: dict) -> tuple[bool, str]:
     ok, reason = classify(fm)
     if not ok:
         return ok, reason
-    fok, freason = frozen_check(path)
+    fok, freason = frozen_check(path, fm)
     return fok, (f"{reason}; {freason}" if fok else freason)
 
 
