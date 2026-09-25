@@ -260,7 +260,8 @@ class TestPacket(unittest.TestCase):
         self.assertEqual(r2["units"], [])
 
     def test_named_locator_ignores_trailing_punctuation(self):
-        for span in ("§Resumen.", "§Resumen)", "§Resumen"):
+        for span in ("§Resumen.", "§Resumen)", "§Resumen", "§Resumen **vs** other claim",
+                     "§Resumen vs other claim", "§Resumen — note"):
             self.assertEqual(vp.locator_tokens(span), [("named", "Resumen")], span)
         self.verbatim_vault()
         r = vp.resolve_citation(str(self.f["vault"]), "P-0901", "§Resumen.")

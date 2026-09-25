@@ -272,7 +272,7 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
         else:
             toks.append(("sec", m.group(1)))
     # bare continuation numbers after a § list: "§5.4, 9.2" is rare; skip.
-    for m in re.finditer(r"§\s*([^\W\d][\w\s]*?)(?=[,;.)]|$)", s_noapp):
+    for m in re.finditer(r"§\s*([^\W\d][\w\s]*?)(?=[,;.)]|\s+(?:\*\*|vs\b|—|–)|$)", s_noapp):
         # "§Resumen." / "§Resumen)" / "§Setup." name the section without the punctuation
         toks.append(("named", m.group(1).strip()))
     seen, out = set(), []
