@@ -14,9 +14,14 @@ note, in exactly this shape and with exactly these five keys:
 Entries are never edited or removed; a re-verification appends a new entry and
 the LATEST entry for a given scope governs. The frontmatter edit is line-based
 (no YAML library): only the `verifications:` block changes -- every other
-frontmatter line stays byte-for-byte identical (line endings preserved) unless
-`--flag-human-review` is passed, which additionally sets `needs_human_review:
-true` (the one other line it may touch; hypothesis `status` is never touched).
+frontmatter line stays byte-for-byte identical (line endings preserved), with
+two exceptions (hypothesis `status` is never touched):
+  - a verdict other than no_errors_found sets `verification_reviewed: false`.
+    Verifier findings are reviewed through this field alone, so clearing
+    `needs_human_review` for another reason never clears them. A human sets it
+    to true after reviewing the findings; a new bad entry resets it to false.
+  - `--flag-human-review` sets `needs_human_review: true`, for other causes
+    only (the skills no longer use it for verifier findings).
 
 The contract has no findings field, so the findings (location + why + severity)
 and the sha256 of the exact packet the verifier received go in an append-only
@@ -29,9 +34,11 @@ Subcommands:
             [--flag-human-review]
     latest  --note N [--scope note]    governing entry as JSON, or null
     list    --note N                   all entries as a JSON list
-    gate    --note N                   exit 0 = clear; exit 3 = blocked (latest
-            `scope: note` verdict is anything but no_errors_found AND the note
-            still has needs_human_review: true). Prints a JSON explanation.
+    gate    --note N                   exit 0 = clear; exit 3 = blocked, if
+            EITHER the latest `scope: note` verdict is anything but
+            no_errors_found and `verification_reviewed` is not true (absent =
+            not reviewed), OR `needs_human_review: true`. Prints the reasons as
+            JSON. preregister-experiment requires this gate to be clear.
 
 `append` refuses a note marked `send: never` (A3): such a note is never sent
 to a verifier, so it can carry no verification record.
@@ -51,7 +58,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 VERDICTS = ("no_errors_found", "errors_found", "cannot_assess")
 KEYS = ("verifier", "model", "date", "verdict", "scope")
@@ -311,17 +318,25 @@ def append(path: str, verifier: str, model: str, verdict: str, scope: str,
         if head.strip() in ("[]", "~", "null"):
             lines[i] = _replace_value(lines[i], "", nl)
         lines[end:end] = _entry_lines(entry, indent, nl)
+    if verdict != "no_errors_found":
+        # new findings are unreviewed, whatever an earlier review cleared
+        _set_scalar(lines, "verification_reviewed", "false", nl)
     if flag_review:
-        _, hi2 = frontmatter_bounds(lines)
-        k = find_key(lines, 1, hi2, "needs_human_review")
-        if k is None:
-            lines.insert(hi2, f"needs_human_review: true{nl}")
-        else:
-            lines[k] = _replace_value(lines[k], "true", nl)
+        _set_scalar(lines, "needs_human_review", "true", nl)
     if rep is not None:
         lines = _append_body_entry(lines, nl, entry, rep, packet_sha)
     write_raw(path, "".join(lines))
     return entry
+
+
+def _set_scalar(lines: list[str], key: str, value: str, nl: str) -> None:
+    """Set a top-level frontmatter scalar in place, or add it before the closing ---."""
+    _, hi = frontmatter_bounds(lines)
+    k = find_key(lines, 1, hi, key)
+    if k is None:
+        lines.insert(hi, f"{key}: {value}{nl}")
+    else:
+        lines[k] = _replace_value(lines[k], value, nl)
 
 
 def _replace_value(line: str, value: str, nl: str) -> str:
@@ -437,14 +452,20 @@ def main(argv=None) -> int:
         if args.cmd == "latest":
             print(json.dumps(latest(entries, args.scope), ensure_ascii=False))
             return 0
-        # gate
+        # gate: both the verifier's findings and any other human-review cause
         gov = latest(entries, "note")
         nhr = (fm_value(lines, lo + 1, hi, "needs_human_review") or "").lower() == "true"
-        blocked = bool(gov and gov.get("verdict") != "no_errors_found"
-                       and nhr)
-        print(json.dumps({"blocked": blocked, "governing": gov,
-                          "needs_human_review": nhr}, ensure_ascii=False))
-        return 3 if blocked else 0
+        reviewed = (fm_value(lines, lo + 1, hi, "verification_reviewed") or "").lower() == "true"
+        reasons = []
+        if gov and gov.get("verdict") != "no_errors_found" and not reviewed:
+            reasons.append("verification: governing `note` verdict is "
+                           f"{gov.get('verdict')} and verification_reviewed is not true")
+        if nhr:
+            reasons.append("needs_human_review: true (a non-verification review is pending)")
+        print(json.dumps({"blocked": bool(reasons), "reasons": reasons, "governing": gov,
+                          "verification_reviewed": reviewed, "needs_human_review": nhr},
+                         ensure_ascii=False))
+        return 3 if reasons else 0
     except (InputError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

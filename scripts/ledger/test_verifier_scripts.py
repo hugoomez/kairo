@@ -188,6 +188,45 @@ class TestPacket(unittest.TestCase):
                             if c["paper"] == "P-0901"))
         self.assertNotIn("paper_abstracts", m)
 
+    def test_model_written_source_text_is_flagged(self):
+        # the P-0011 case: a "summary from general knowledge" standing in for the abstract
+        paper = next((self.f["vault"] / "Papers").glob("P-0901*.md"))
+        paper.write_text(PAPER.replace(
+            "We study toy dynamics",
+            "No abstract was returned. Summary from general knowledge: we study toy dynamics"),
+            encoding="utf-8")
+        packet, m = self.build()
+        self.assertIn("ATENCIÓN — procedencia", packet)
+        self.assertEqual(m["abstract_provenance"]["P-0901"],
+                         ["summary from", "general knowledge"])
+
+    def test_abstract_only_note_with_texto_completo_is_flagged(self):
+        # bullets under ## Texto completo of an abstract-only note can't be paper text
+        paper = next((self.f["vault"] / "Papers").glob("P-0901*.md"))
+        paper.write_text(PAPER.replace("title: A synthetic", "fulltext: abstract-only\ntitle: A synthetic"),
+                         encoding="utf-8")
+        packet, m = self.build()
+        flagged = [c for c in m["citations"] if c["provenance"]]
+        self.assertTrue(flagged)
+        self.assertIn("abstract-only", flagged[0]["provenance"][0])
+
+    def test_subsection_packed_mid_bullet_is_matched(self):
+        # found on the real vault: P-0010 packs "3.1 … 3.2 … 3.3 …" into one bullet
+        unit = {"text": "- 3.1 SC = absorption errors. 3.2 Across train splits generalization "
+                        "stalls when SC begins. 3.3 Preventing SC yields grokking.", "num": "3.1"}
+        for v in ("3.1", "3.2", "3.3"):
+            self.assertTrue(vp.unit_matches(unit, ("sec", v)), v)
+        self.assertFalse(vp.unit_matches(unit, ("sec", "3.4")))
+        # plain numbers inside prose are not section markers
+        prose = {"text": "- learning rate 0.0001. 4 layers; loss 3.2 at step 10.", "num": None}
+        self.assertFalse(vp.unit_matches(prose, ("sec", "3.2")))
+        self.assertFalse(vp.unit_matches(prose, ("sec", "0.0001")))
+
+    def test_real_source_text_is_not_flagged(self):
+        packet, m = self.build()
+        self.assertNotIn("ATENCIÓN — procedencia", packet)
+        self.assertFalse(any(c["provenance"] for c in m["citations"]))
+
     def test_citation_source_text_is_included_per_locator(self):
         packet, m = self.build()
         self.assertIn("lead time follows a power law (Fig 2)", packet)
@@ -341,7 +380,7 @@ class TestVerifications(unittest.TestCase):
         first = n.read_text(encoding="utf-8")
         self.do_append(n, "no_errors_found", date="2030-03-02")
         second = n.read_text(encoding="utf-8")
-        block1 = first.split("verifications:\n")[1].split("---")[0]
+        block1 = first.split("verifications:\n")[1].split("---")[0].split("verification_reviewed")[0]
         self.assertIn(block1, second)  # old entry byte-identical
         entries = vf.load(str(n))[5]
         self.assertEqual([e["verdict"] for e in entries],
@@ -401,10 +440,39 @@ class TestVerifications(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             self.assertEqual(vf.main(["gate", "--note", str(n)]), 3)
+        # clearing needs_human_review does NOT clear the verifier's findings
         text2 = text2.replace("needs_human_review: true", "needs_human_review: false")
         n.write_text(text2, encoding="utf-8")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(vf.main(["gate", "--note", str(n)]), 3)
+        self.assertIn("verification_reviewed", json.loads(buf.getvalue())["reasons"][0])
+        # only reviewing the findings themselves does
+        n.write_text(text2.replace("verification_reviewed: false", "verification_reviewed: true"),
+                     encoding="utf-8")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(vf.main(["gate", "--note", str(n)]), 0)
+
+    def test_new_bad_entry_resets_a_previous_review(self):
+        n = self.d / "n.md"
+        write(n, NOTE_NO_KEY)
+        self.do_append(n, "errors_found")
+        n.write_text(n.read_text(encoding="utf-8").replace(
+            "verification_reviewed: false", "verification_reviewed: true"), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(vf.main(["gate", "--note", str(n)]), 0)
+        self.do_append(n, "errors_found", date="2030-03-07")           # new findings
+        self.assertIn("verification_reviewed: false", n.read_text(encoding="utf-8"))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(vf.main(["gate", "--note", str(n)]), 3)
+
+    def test_clean_append_does_not_touch_review_fields(self):
+        n = self.d / "n.md"
+        write(n, NOTE_NO_KEY)
+        self.do_append(n, "no_errors_found")
+        text = n.read_text(encoding="utf-8")
+        self.assertNotIn("verification_reviewed", text)
+        self.assertIn("needs_human_review: false", text)
 
     def test_report_verdict_mismatch_rejected(self):
         n = self.d / "n.md"
@@ -416,13 +484,23 @@ class TestVerifications(unittest.TestCase):
 
     def test_reverification_clears_gate(self):
         n = self.d / "n.md"
-        write(n, NOTE_NO_KEY.replace("needs_human_review: false", "needs_human_review: true"))
+        write(n, NOTE_NO_KEY)
         self.do_append(n, "cannot_assess")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(vf.main(["gate", "--note", str(n)]), 3)
         self.do_append(n, "no_errors_found", date="2030-03-09")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(vf.main(["gate", "--note", str(n)]), 0)
+
+    def test_pending_human_review_blocks_even_after_clean_reverification(self):
+        # preregistration requires BOTH: verifier findings and other review causes
+        n = self.d / "n.md"
+        write(n, NOTE_NO_KEY.replace("needs_human_review: false", "needs_human_review: true"))
+        self.do_append(n, "no_errors_found")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(vf.main(["gate", "--note", str(n)]), 3)
+        self.assertIn("needs_human_review", json.loads(buf.getvalue())["reasons"][0])
 
     def test_gate_blocks_out_of_enum_verdict(self):
         # append refuses it, so it only arises from a hand edit; never read as clean

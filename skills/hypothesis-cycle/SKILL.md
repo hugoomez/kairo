@@ -284,28 +284,34 @@ not a fifth check and not part of the refinement loop.
    `<tmp>/report.txt`):
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
-     --note <created H-XXXX.md> --verifier kairo/fresh-verifier@1.0.0 \
+     --note <created H-XXXX.md> --verifier kairo/fresh-verifier@1.1.0 \
      --model <model id the agent reported> --verdict <verdict> --scope note \
-     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest> \
-     [--flag-human-review]      # whenever verdict != no_errors_found
+     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest>
    ```
    This appends the contract entry to `verifications:` and a dated entry
    (findings with severity + location, packet hash) to
-   `## Verificación independiente`.
+   `## Verificación independiente`. For any verdict other than
+   `no_errors_found` it also sets `verification_reviewed: false` by itself.
+   Verifier findings live in that field, never in `needs_human_review`, so
+   clearing a review for another reason can't clear them.
 
 | Verdict | Action |
 |---|---|
 | `no_errors_found` | Proceed. Means "found no errors", never "correct". |
-| `errors_found` | Note still created at `propuesta` (never a discard), `needs_human_review: true`, findings recorded. Flag it to the user as a **verification finding**, with each finding's severity tag (`crítico` / `importante` / `menor`) and location — not as a generic "rounds exhausted" or critic disagreement. |
-| `cannot_assess` | Same as `errors_found`: `needs_human_review: true`, the stated reason recorded and flagged. |
+| `errors_found` | Note still created at `propuesta` (never a discard), `verification_reviewed: false` (set by the script), findings recorded. Flag it to the user as a **verification finding**, with each finding's severity tag (`crítico` / `importante` / `menor`) and location — not as a generic "rounds exhausted" or critic disagreement. |
+| `cannot_assess` | Same as `errors_found`: `verification_reviewed: false`, the stated reason recorded and flagged. |
 
 **Not a replacement for Checks 1–4, and it does not feed the refinement loop
 automatically.** A human may choose to fix the note (e.g. correct a locator)
 and re-verify: build a fresh packet from the corrected note and dispatch again;
 the new run **appends** a new entry — never edit an old one. The latest entry
-per scope governs (`verifications.py latest --note <H-XXXX.md>`), and
-`preregister-experiment` refuses a note whose governing verification is
-`errors_found` / `cannot_assess` while `needs_human_review: true` is still set.
+per scope governs (`verifications.py latest --note <H-XXXX.md>`).
+`preregister-experiment` refuses the note while `verifications.py gate` is
+blocked: its governing verification isn't `no_errors_found` and
+`verification_reviewed` isn't `true` (a human sets it after reviewing the
+findings, with a dated line in `## Revisión del ciclo`), **or** any other
+review is pending (`needs_human_review: true`). A new bad entry resets
+`verification_reviewed` to `false`. Never set it yourself.
 
 If the dispatch fails (no subagent available, the agent errors), say so
 plainly and write **no** `verifications:` entry — absent means "never

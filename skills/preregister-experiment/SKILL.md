@@ -52,11 +52,19 @@ analyze a run (separate skills).
    diagnose a design whose earlier runs came back invalid). **Also refuse** while its governing
    fresh verification is unresolved — i.e. while
    `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py gate --note <H-XXXX.md>`
-   exits `3` (latest `scope: note` entry `errors_found` or `cannot_assess` AND
-   `needs_human_review: true` still set). Name the findings from its
-   `## Verificación independiente`; it clears once a human has reviewed them
-   (and cleared `needs_human_review`) or a re-verification appended a
-   `no_errors_found` entry. No entry at all (a v2 note) does not block.
+   exits `3`. It checks two separate things, and **both** must be clear:
+   - **Verifier findings:** blocked while the latest `scope: note` entry isn't
+     `no_errors_found` and `verification_reviewed` isn't `true` (absent counts
+     as not reviewed). It clears when a re-verification appends a
+     `no_errors_found` entry, or when the researcher reviews the findings and
+     sets `verification_reviewed: true` with a dated line in
+     `## Revisión del ciclo`. Clearing `needs_human_review` never clears it.
+   - **Any other pending review:** blocked while `needs_human_review: true`
+     (rounds exhausted, critic disagreement, …).
+
+   Report the gate's `reasons`, and name the findings from
+   `## Verificación independiente`. A note with no verification entry at all
+   (a v2 note) is not blocked on the first point.
 2. Its **test sketch** — the manipulation/comparison, what gets measured, what
    result counts against the claim.
 

@@ -192,17 +192,19 @@ write. No other edge is gated.
    saved to `<tmp>/report.txt`):
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
-     --note <H-XXXX.md> --verifier kairo/fresh-verifier@1.0.0 \
+     --note <H-XXXX.md> --verifier kairo/fresh-verifier@1.1.0 \
      --model <model id the agent reported> --verdict <verdict> --scope note \
-     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest> \
-     [--flag-human-review]      # whenever verdict != no_errors_found
+     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest>
    ```
+   Any verdict other than `no_errors_found` also sets `verification_reviewed:
+   false`. The script does it, never through `needs_human_review`, which is for
+   other causes.
 
 | Verdict | Result |
 |---|---|
 | `no_errors_found` | Proceed: `en_experimento → apoyada`, with the usual bookkeeping. The `history` `evidence` line adds `fresh-verifier: no_errors_found (paquete <first 12 chars of sha256>)`. |
-| `errors_found` | **Do not transition.** The hypothesis stays `en_experimento` — no `history` entry, no `_digest.md` / SOTA refresh (nothing changed state). `needs_human_review: true` and the findings (severity + location) go in `## Verificación independiente` via the command above. Report the findings to the user as the outcome of this invocation. |
-| `cannot_assess` | Same as `errors_found`: no transition, `needs_human_review: true`, the reason recorded and reported. |
+| `errors_found` | **Do not transition.** The hypothesis stays `en_experimento` — no `history` entry, no `_digest.md` / SOTA refresh (nothing changed state). `verification_reviewed: false` and the findings (severity + location) go in the note via the command above. Report the findings to the user as the outcome of this invocation. |
+| `cannot_assess` | Same as `errors_found`: no transition, `verification_reviewed: false`, the reason recorded and reported. |
 
 **The verifier never refutes.** An error in the analysis or a citation is not
 evidence about the claim: never move the hypothesis to `refutada`,
@@ -389,9 +391,11 @@ note).
 - **Skipping the `_digest.md` / `Estado-del-arte.md` refresh.** The transition
   isn't done until the derived views match.
 - **Reaching `apoyada` without the fresh-verification gate, or through an
-  `errors_found` / `cannot_assess` verdict.** Stay `en_experimento`, set
-  `needs_human_review: true`, record the findings; only a fresh
-  `no_errors_found` or an explicit, logged human override lets it through.
+  `errors_found` / `cannot_assess` verdict.** Stay `en_experimento`; the
+  script records the findings and sets `verification_reviewed: false`. Only a
+  fresh `no_errors_found`, or an explicit human override (the researcher sets
+  `verification_reviewed: true` and it is logged in `history`), lets it
+  through.
 - **Letting a verification finding move status.** The verifier only blocks
   `apoyada`; it never makes a hypothesis `refutada` (or anything else) —
   experiments decide status, not the verifier.

@@ -66,7 +66,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 TOOL_ID = f"kairo/verifier_packet@{__version__}"
 
 # --------------------------------------------------------------------------
@@ -86,6 +86,24 @@ TEST_SKETCH_RE = re.compile(
 # on their own and never sent in any mode — `--section` cannot reach them.
 NEVER_SECTIONS = ("Revisión del ciclo", "Hipótesis rival descartada", "Lección",
                   "Verificación independiente")
+
+# Source fields must hold only text fetched from the paper (create-project step
+# 5). These markers betray model-written text standing in for the source; a
+# citation resting on it is flagged in the packet and fresh-verifier reports
+# it as `crítico`.
+MODEL_TEXT_RE = re.compile(
+    r"general knowledge|conocimiento general|from memory|de memoria|"
+    r"known bibliographic facts|según resumen|summary from|resumen de memoria",
+    re.IGNORECASE)
+
+
+def provenance_problems(text: str) -> list[str]:
+    """The model-text markers found in `text` (deduplicated, in order)."""
+    seen: list[str] = []
+    for m in MODEL_TEXT_RE.finditer(text):
+        if m.group(0).lower() not in seen:
+            seen.append(m.group(0).lower())
+    return seen
 
 
 def never_sent(heading: str) -> bool:
@@ -339,7 +357,11 @@ def unit_matches(unit: dict, tok: tuple[str, str]) -> bool:
             text)
         num = unit.get("num")
         structural = bool(num) and (num == v or num.startswith(v + "."))
-        return bool(inline) or structural
+        # a subsection packed mid-bullet ("- 3.1 SC = ... 3.2 Across splits ...");
+        # dotted numbers only, at an item boundary, before a capital or bracket
+        packed = "." in v and bool(re.search(
+            rf"(?:^|[.;:]\s+|\(\s*|[-*]\s+){ev}(?:\.\d+)*\s+(?=[A-ZÁÉÍÓÚÑ(\[⟂\"'])", text))
+        return bool(inline) or structural or packed
     if kind == "app":
         return bool(re.search(
             rf"\b(?:App(?:endix)?\.?|Apéndice)\s*{ev}(?:\.\d+)*(?![\d])", text))
@@ -359,7 +381,7 @@ def find_paper(vault: str, pid: str) -> str | None:
 
 def resolve_citation(vault: str, pid: str, span: str) -> dict:
     res = {"paper": pid, "locator": span, "tokens": [], "source": None,
-           "title": None, "units": [], "note": None}
+           "title": None, "units": [], "note": None, "provenance": []}
     toks = locator_tokens(span)
     res["tokens"] = [token_label(t) for t in toks]
     path = find_paper(vault, pid)
@@ -398,6 +420,13 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
     if not chosen:
         res["note"] = ("ningún fragmento de ## Texto completo coincide con "
                        "este localizador")
+    # provenance: the text sent must be the paper's own
+    problems = [f"marcador «{m}»" for m in provenance_problems("\n".join(chosen))]
+    if (fm_scalar(fm, "fulltext") or "").strip() == "abstract-only" and any(
+            not u.startswith("[## Resumen]") for u in chosen):
+        problems.append("la nota es fulltext: abstract-only, así que su ## Texto "
+                        "completo no puede ser texto del paper")
+    res["provenance"] = problems
     return res
 
 
@@ -554,7 +583,8 @@ def render_justification(vault: str, text: str, manifest: dict) -> list[str]:
             manifest["citations"].append({
                 "assertion": i, "paper": pid, "locator": span,
                 "tokens": r["tokens"], "source": r["source"],
-                "matched_units": len(r["units"]), "note": r["note"]})
+                "matched_units": len(r["units"]), "note": r["note"],
+                "provenance": r["provenance"]})
             title = f" — {r['title']}" if r["title"] else ""
             out.append(f"Fuente citada: {pid}{title}; localizador "
                        f"\"{span}\" → {', '.join(r['tokens']) or '(ninguno)'}")
@@ -568,6 +598,12 @@ def render_justification(vault: str, text: str, manifest: dict) -> list[str]:
                     out.append("")
             if r["note"]:
                 out.append(f"({r['note']})")
+                out.append("")
+            if r["provenance"]:
+                out.append(f"**ATENCIÓN — procedencia:** el texto de {pid} mostrado "
+                           "arriba no parece ser texto del paper ("
+                           + "; ".join(r["provenance"]) + "). Una afirmación "
+                           "apoyada en él es `crítico`.")
                 out.append("")
     # Paper-level context: an assertion may also characterise the paper as a
     # whole ("its own experiments are on X"), which no locator snippet can
@@ -594,6 +630,14 @@ def render_justification(vault: str, text: str, manifest: dict) -> list[str]:
             out.append("")
             out.append(quote(resumen))
             out.append("")
+            marks = provenance_problems(resumen)
+            if marks:
+                out.append(f"**ATENCIÓN — procedencia:** el ## Resumen de {pid} no "
+                           "parece ser el abstract del paper ("
+                           + "; ".join(f"marcador «{m}»" for m in marks) + "). "
+                           "No es fuente válida para ninguna afirmación.")
+                out.append("")
+                manifest.setdefault("abstract_provenance", {})[pid] = marks
         manifest["paper_abstracts"] = [pid for pid, _ in abstracts]
     return out
 

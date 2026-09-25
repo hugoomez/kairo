@@ -279,6 +279,12 @@ and returns **only a compact candidate list** — title, authors, year, ids
 term/synonym matched. **The calling session never receives raw Atom XML or raw
 Semantic Scholar JSON** — parsing lives entirely inside each subagent.
 
+The one-line summary is for ranking and for showing the researcher only. It is
+model-written, so it **never** goes into a `Papers/` note's `## Referencia`,
+`## Resumen` or `## Texto completo`: those hold only verbatim text fetched at
+ingestion (`create-project` step 5). If ingestion finds no abstract, the field
+stays empty and marked unavailable. It is never back-filled from this summary.
+
 When **no seed papers** are supplied for a facet, the subagent also runs a
 second Semantic Scholar pass on the **`/paper/search/bulk`** endpoint with
 server-side `sort=citationCount:desc` over the whole matching pool, and tags the

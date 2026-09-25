@@ -159,6 +159,24 @@ For each confirmed paper, add it to Zotero **first**, then generate the
 5. **Full text:** extract from the downloaded PDF when you have it (same
    process as before, independent of Zotero); otherwise fall back to the
    Zotero/CSL-JSON abstract and mark the note `fulltext: abstract-only`.
+
+   **Source fields are never model-written.** `## Referencia`, `## Resumen` and
+   `## Texto completo` hold only text taken from a fetched document or record:
+   - `## Referencia`: built only from the fetched metadata (CSL-JSON, Crossref,
+     arXiv, OpenAlex). A field that no source returned is left out, never
+     filled in from memory.
+   - `## Resumen`: the abstract **verbatim**, preceded by a `> Fuente: <URL or
+     API>, obtenido <YYYY-MM-DD>` line. No source returned an abstract (null,
+     429, paywall) → write `No disponible — ningún abstract recuperado
+     (<sources tried>).` Never a summary, and never "from general knowledge".
+   - `## Texto completo`: **verbatim excerpts** from the downloaded document,
+     each quoted, under the paper's own section / figure / table headings (so
+     locators can point at them), preceded by a `> Fuente:` line. No
+     paraphrase, no restatement of the abstract. No document → `No disponible
+     — solo abstract.` and nothing else.
+   A field left empty and marked unavailable is correct. A plausible field
+   written by the model is a fabricated source: every citation of it would be
+   unverifiable, and the fresh verifier flags it `crítico`.
 6. **Note:** dedup against existing `Papers/` notes by `zotero_key` first (a
    paper already ingested for another project has one), then DOI → arXiv id →
    title similarity, same as before.
@@ -462,15 +480,22 @@ send: <never — or omit>
 
 ## Referencia
 
-<One-line bibliographic citation. DOI/arXiv id. Open-access status.>
+<One-line bibliographic citation built only from fetched metadata. DOI/arXiv
+id. Open-access status.>
 
 ## Resumen
 
-<Abstract verbatim or a 2–4 sentence summary.>
+> Fuente: <URL or API the abstract came from>, obtenido <YYYY-MM-DD>
+
+<Abstract VERBATIM — or exactly "No disponible — ningún abstract recuperado
+(<sources tried>)." Never a model-written summary (step 5).>
 
 ## Texto completo
 
-<Extracted full text, or "No disponible — solo abstract." >
+> Fuente: <PDF / HTML the excerpts came from>, obtenido <YYYY-MM-DD>
+
+<Verbatim, quoted excerpts under the paper's own section / figure / table
+headings — or exactly "No disponible — solo abstract." Never paraphrase.>
 ```
 
 When a paper is already ingested for another project, only append this project's
@@ -515,6 +540,11 @@ When a paper is already ingested for another project, only append this project's
 - **Blocking ingestion because Zotero is down.** Degrade and flag it (see step
   6) — a missing optional companion doesn't stop the pipeline.
 - **Paywall-scraping a closed-access PDF.** Open-access only; else abstract-only.
+- **Filling a source field the sources left empty.** No abstract returned → the
+  `## Resumen` says so and stays empty. A "summary from general knowledge", a
+  restatement of the abstract as `## Texto completo` bullets, or a paraphrase
+  of the PDF is model-written text dressed as a source. Every claim that cites
+  it is unverifiable. Verbatim or nothing (step 5).
 - **Recording a dependency as `code_repo`.** A repo the paper *uses*
   ("adapted from", "we use X from") is not the paper's code. And an automatic
   Hugging Face match alone is not confident — leave the field empty.

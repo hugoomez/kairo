@@ -32,9 +32,15 @@ generated_by:
   skill_version: <e.g. kairo/hypothesis-cycle@1.0.0>
   pipeline_config: <path or identifier of the pipeline config used>
 linea_publicacion: false
-# needs_human_review — optional: set true by hypothesis-cycle (rounds exhausted)
-# or run-experiment (invalid run). Cleared once a human has looked.
+# needs_human_review — optional: set true by hypothesis-cycle (rounds exhausted,
+# v2 critic disagreement, verification not run). Cleared once a human has looked.
+# NOT used for fresh-verifier findings: those use verification_reviewed.
 needs_human_review: false
+# verification_reviewed — set false by scripts/ledger/verifications.py whenever
+# a fresh-verifier verdict isn't no_errors_found (a new bad entry resets it).
+# Only the researcher sets it true, after reviewing the findings, with a dated
+# line in ## Revisión del ciclo. Absent = no findings to review.
+# verification_reviewed: false
 # paper_thread — optional: the publication thread this hypothesis feeds
 paper_thread: <slug-or-id>
 # depends_on — H-XXXX / C-XXXX ids (any project) this claim logically RELIES ON:

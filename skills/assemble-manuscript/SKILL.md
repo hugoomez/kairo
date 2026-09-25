@@ -207,7 +207,7 @@ mechanically built packet, never this session's drafting reasoning.
 3. Record the result on the **manuscript note**, whatever the verdict:
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
-     --note <manuscript note> --verifier kairo/fresh-verifier@1.0.0 \
+     --note <manuscript note> --verifier kairo/fresh-verifier@1.1.0 \
      --model <model id the agent reported> --verdict <verdict> \
      --scope "section:<exact heading text>" \
      --report <tmp>/report-<heading>.txt --packet-sha256 <sha256>

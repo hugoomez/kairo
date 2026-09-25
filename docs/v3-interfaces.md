@@ -182,10 +182,20 @@ rule, it wins. Each item names the issue it resolves.
   Readers must still tolerate unknown keys (A2 does).
 - **Out-of-enum verdicts (A#7).** Readers quote them verbatim, never interpret
   them, and treat them as not clean: `verifications.py gate` blocks on any
-  governing `note` verdict other than `no_errors_found` **while
-  `needs_human_review: true`** (a human who reviewed the findings clears the
-  flag, per B2's design). The manuscript gate (above) has no such escape: it
-  needs a `no_errors_found` entry.
+  governing `note` verdict other than `no_errors_found` while
+  `verification_reviewed` is not `true`. The manuscript gate (above) has no
+  such escape: it needs a `no_errors_found` entry.
+- **Review of verifier findings (amended 2026-09-25).** Verifier findings are
+  tracked in a dedicated frontmatter field, `verification_reviewed: true |
+  false`, never in `needs_human_review`:
+  - `verifications.py append` sets it to `false` on any verdict other than
+    `no_errors_found`, and a new bad entry resets it.
+  - Only the researcher sets it to `true`, after reviewing the findings.
+  - `needs_human_review` keeps its other causes (rounds exhausted, critic
+    disagreement, an invalid run), so clearing it never clears verifier
+    findings.
+  - `verifications.py gate`, which preregistration requires to be clear,
+    blocks on either field.
 - **Scope drift (A#6).** A `section:` scope whose heading no longer exists is
   reported (A2: `menor`); re-verify under the new heading.
 - **`send: never` (A#8).** A `send: never` note is never verified:
