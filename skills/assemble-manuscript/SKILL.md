@@ -42,6 +42,12 @@ manuscript built on `ligero`-tier thresholds or a hypothesis that's only
 3. `Projects/<slug>/Estado-del-arte.md`.
 4. Every `Papers/P-XXXX.md` cited by a qualifying hypothesis or by the
    Estado-del-arte sections used (for `## Referencia` and `authors`/`year`).
+   A note with `send: never` in its frontmatter is **not** read (the vault's
+   `send_guard` hook blocks it anyway): a hypothesis, experiment or paper marked
+   that way can't be drafted from. A flagged hypothesis or experiment is
+   excluded in Step 2 with reason `send: never` (`importante` — the researcher
+   drafts that part by hand). A flagged paper fails the Step 2b citation gate by
+   name.
 5. Every experiment linked from a qualifying hypothesis's `linked_experiment`.
 
 ## Step 1 — Collect the thread
@@ -61,6 +67,7 @@ for the whole thread:
 | `linea_publicacion: true`, `status: apoyada`, but at least one `linked_experiment` entry is `tier: ligero` | **Excluded — missing `completo` tier.** Name the exact experiment id(s) and say `completo` tier is required before this can go into a `linea_publicacion` manuscript. As of this writing `preregister-experiment` has not yet implemented `completo` — if so, say that plainly too, rather than implying the researcher just forgot a step. |
 | `linea_publicacion: true`, status anything other than `apoyada` (`propuesta`, `en_cola`, `preregistrada`, `en_experimento`) | **Not yet resolved.** Not an error — just not ready. State the current status plainly. |
 | `linea_publicacion: false` (or unset) | **Out of scope for this thread's rigor bar.** If the researcher wants it included, they need to set `linea_publicacion: true` and take it through the `completo`-tier path first — this skill does not draft a publication section around a hypothesis nobody flagged as publication-track. |
+| The hypothesis note, or any of its `linked_experiment` notes, has `send: never` | **Excluded — `send: never`** (`importante`). Don't open it; the researcher drafts that part by hand or unmarks the note. |
 | Any `linked_experiment` entry `experiment_validity: invalid` | **Excluded — invalid evidence.** Name the invalid experiment; `apoyada` should not have been reachable on invalid evidence, so also flag this as a possible upstream data-integrity gap worth a human look (not this skill's job to fix `update-confidence`'s state, just to refuse to build on it). |
 
 `status: apoyada` already guarantees ≥ 2 independent replicating experiments
@@ -74,6 +81,44 @@ already enforce structurally.
 even for hypotheses that will end up excluded — that's the "say exactly what's
 missing" requirement. If **zero** hypotheses qualify, stop here: no draft, just
 the table.
+
+## Step 2b — Citation gate (before any drafting)
+
+Every reference the manuscript will rely on must be proven to exist, match its
+note's metadata, and not be retracted or withdrawn. This complements the
+locator re-verification in Step 3 (which checks a cited section says what we
+claim); it does not replace it.
+
+1. **Build the bibliography set:** every `P-XXXX` cited by a qualifying
+   hypothesis (`linked_papers:` and its `## Justificación`) plus every paper
+   cited in the Estado-del-arte sections Step 3 will use.
+2. **Run the gate live** — stored `resolved:` fields are never trusted here:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/citations/resolve_refs.py" --papers <vault>/Papers \
+     --only <P-id> <P-id> ... --gate --json
+   ```
+
+3. **Exit `0`** → every entry is `resolved` with an `exact` / `close` match and
+   is not retracted / withdrawn; continue. A `close` match's diff (e.g. year off
+   by one, preprint vs proceedings) is listed to the researcher as `menor`.
+4. **Exit `2`** → **`crítico` — refuse to draft.** In its own callout at the
+   top, name **each** failing entry with its status and the script's reason:
+   `mismatch` (possible chimeric citation — the note mixes two papers; fix it
+   by hand), `retracted` / `withdrawn` (it can never be support — drop it from
+   the argument, and flag the hypotheses that lean on it), `unresolved` (not in
+   OpenAlex, or only a fallback source confirmed it), `skipped_send_never` (the
+   note is marked not-to-send, so it can't be cited from here — the researcher
+   adds that reference by hand or unmarks it). No partial draft "around" the
+   failing references.
+5. **Exit `1`** → the gate could not run or could not prove the result (e.g.
+   OpenAlex unreachable or its keyless budget spent). Treat it as **not
+   passed**: no draft. Say so, and point to `OPENALEX_API_KEY`
+   (`https://openalex.org/settings/api`) if the script says it's missing.
+
+After drafting, if Step 3 ended up citing a paper that was not in the set,
+re-run the gate on the final references list before writing the note — the
+gate covers what the manuscript actually cites.
 
 ## Step 3 — Draft (only if ≥ 1 hypothesis qualifies)
 
@@ -137,6 +182,52 @@ amendments as such, per `preregister-experiment`'s own rule).
   appendix mapping each in-text citation back to its `P-XXXX` id is fine to
   include, kept clearly separate from the manuscript body.)
 
+## Step 4 — Declaración de uso de IA (generated from records, never written by hand)
+
+Every manuscript this skill drafts carries an AI-use disclosure, built mechanically from what Kairo
+recorded. The disclosure is required by all target venues. The strictest combination: ICLR 2027 wants a
+dedicated section listing, task by task, what AI did, what it didn't, and how its output was reviewed.
+Science wants the tool, its version and the prompt. Nature and Science want Methods placement and ban
+AI-generated images. Do not write or paraphrase the disclosure yourself.
+
+1. Write the manuscript note first (Output below), including `generated_by`. Then run:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/skills/assemble-manuscript/scripts/ai_disclosure.py" \
+     --vault <vault> --project <slug> --thread <paper_thread> \
+     --hypotheses <qualifying ids from Step 2, comma-separated> \
+     --manuscript Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md \
+     --researcher "<name as it appears in history by:>"   # repeatable flag
+   ```
+
+   `--researcher`: a history `by:` counts as a person only when it matches a
+   name passed here. **Ask the researcher for the name(s) — never guess.**
+   Without it, a `by:` that is neither a model nor a Kairo component is
+   reported as "no consta si fue una persona o un agente" and never credited to
+   the researcher.
+
+   Exit `2` = wrong project/thread/id/path (fix the input). Exit `1` = the script failed: say so and do not
+   write a disclosure by hand. Pass `--format json` to read the flags programmatically.
+2. Insert its stdout **verbatim** into the manuscript as the section `## Declaración de uso de IA`, placed
+   after `## Discusión` and before the references list. Keep its two internal subsections
+   (`### Trazabilidad …` and `### Avisos de cumplimiento …`). They are marked "eliminar antes de enviar"
+   and are the researcher's checklist.
+3. Add one pointer sentence at the end of `## Método`: "El uso de herramientas de IA en cada etapa de este
+   trabajo se detalla en la sección *Declaración de uso de IA*." Add the same sentence in an
+   `## Agradecimientos` section (create it if absent). Science asks for the disclosure in Methods or
+   Acknowledgments **and** in the cover letter, so tell the researcher to copy the English version into
+   the cover letter.
+4. Show the researcher the flags, most severe first:
+   - **`crítico`** (a verification whose latest verdict for that scope is `errors_found`): in its own
+     callout at the top. The manuscript must not describe that note or section as verified, and the
+     affected content should be fixed and re-verified before submission.
+   - `importante` / `menor`: list them. Each is a gap that would fail the strictest venue: an unrecorded
+     model, unrecorded code authorship, `send: never` notes the researcher has to declare by hand,
+     unrecorded prompts, and the unconfirmed responsibility statement.
+5. Lines marked `[PENDIENTE — …]` are for the researcher to confirm or correct: human responsibility,
+   no AI authorship, no AI-generated figures. Never fill them in yourself, and never set
+   `ai_disclosure_confirmed_by`. Only the researcher does that.
+
 ## Output
 
 Write `Projects/<slug>/Manuscritos/manuscript-<paper_thread>.md` (create the
@@ -153,6 +244,17 @@ hypotheses_included: [H-XXXX, ...]
 hypotheses_excluded:
   - id: H-YYYY
     reason: <exact missing-rigor reason from the Step 2 table>
+generated_by:
+  origin: agent
+  model: <model id of the session drafting the manuscript, e.g. claude-opus-5-5>
+  skill_version: kairo/assemble-manuscript@<plugin version>
+ai_disclosure:
+  script: kairo/ai_disclosure.py@<version printed by --version>
+  generated: <YYYY-MM-DD>
+  flags: {critico: <n>, importante: <n>, menor: <n>}
+# set ONLY by the researcher, by hand, after reading the disclosure — never by this skill:
+# ai_disclosure_confirmed_by: <name>
+# ai_disclosure_confirmed: <YYYY-MM-DD>
 ```
 
 This skill **never** edits hypothesis `status`, `linea_publicacion`,
@@ -182,3 +284,16 @@ fix is upstream (`preregister-experiment` completo tier, `run-experiment`,
   "here's what's not done yet," not a quiet omission.
 - **Editing hypothesis status or Estado-del-arte.md from this skill.** It's
   read-only over everything except the new manuscript note.
+- **Trusting stored `resolved: true` instead of running the gate.** Step 2b
+  re-checks live with `--gate`; a paper can be retracted after ingestion.
+  Exit 1 is not a pass.
+- **Writing or "improving" the AI-use disclosure by hand.** It is generated from the records by
+  `ai_disclosure.py`, and every sentence traces to a note field. Paraphrasing it can invent a contribution
+  or drop a gap. Re-run the script instead.
+- **Presenting a `no_errors_found` verification as "verified correct".** It only means a verifier found no
+  errors in that scope. A scope whose latest verdict is `errors_found` (a `crítico` flag) must not be
+  called verified anywhere in the manuscript.
+- **Claiming human involvement the records don't show.** No record means the disclosure says "no consta".
+  Filling in `[PENDIENTE]` lines or `ai_disclosure_confirmed_by` is the researcher's job, never this skill's.
+- **Quoting a `send: never` note's content into the disclosure.** The script outputs only its id and a
+  flag. The researcher declares that contribution by hand.

@@ -165,7 +165,11 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    - **New:** create `Papers/<P-id> <short-title>.md` (next `P-XXXX`, scan
      `Papers/` frontmatter for the max), `projects: [<PROJ-XXX>]`.
    - **Exists (from another project):** append `<PROJ-XXX>` to its `projects:`
-     list; refresh full text only if the note had none.
+     list; refresh full text only if the note had none. If the existing note has
+     `send: never`, don't open it (dedup by file name / `send_guard.py check`
+     only): tell the researcher the paper is already in the vault but marked
+     not-to-send, and ask whether to add `<PROJ-XXX>` by hand — never edit or
+     re-derive it yourself.
 7. Include a short **bibliographic section** (see Paper note format below).
 8. **Code repository (`code_repo:`)** — record the paper's own public code
    repository when it is **confidently** identifiable; otherwise leave the
@@ -193,6 +197,43 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    the researcher at the end of the run (step 10). **Never guess a URL** (e.g. from
    the authors' GitHub handles or the title) — an empty field is the correct
    value when nothing is confidently identified.
+9. **Resolve the reference** — prove the paper exists, matches the note's
+   metadata, and is not retracted or withdrawn. Once the note is written, run:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/citations/resolve_refs.py" --papers <vault>/Papers --only <P-id> --write
+   ```
+
+   It looks the paper up in OpenAlex (by DOI, else the arXiv DOI, else a title
+   search whose hit must pass the metadata match), cross-checks Crossref /
+   arXiv (and Semantic Scholar if OpenAlex has nothing), fuzzy-compares title,
+   first-author surname and year, and runs the shared retraction/withdrawal
+   check. It writes `resolved`, `openalex_id`, `resolution_checked`,
+   `resolution_status`, `resolution_match`, `resolution_evidence` into the
+   note's frontmatter (see Paper note format) and nothing else. The note is
+   **ingested regardless of the outcome** — don't delete or block on it — but
+   any `resolution_status` other than `resolved` (`unresolved`, `mismatch`,
+   `retracted`, `withdrawn`) is listed at the end of the run (step 10) with the
+   severity the script printed (at least `importante`; `mismatch` / `retracted`
+   / `withdrawn` / not-found-anywhere are `crítico`). A `mismatch` means the
+   note mixes metadata of two papers (a "chimeric" citation) — fix it by hand
+   from the sources the script names; never "fix" it by trusting one source
+   blindly (a `mismatch` also covers a DOI and arXiv id that point to two
+   different works). A note missing its first author or year stays
+   `unresolved` ("note lacks author/year — cannot prove match", `importante`)
+   until they are added. A `send: never` note is skipped entirely (nothing is sent).
+   **OpenAlex API key:** `OPENALEX_API_KEY` is optional — keyless OpenAlex
+   singleton lookups are free (checked 2026-09-24) — but the keyless daily
+   budget is small ($0.10). If OpenAlex is unreachable or the budget is spent,
+   the lookup is LOST: the script does **not** write `resolved` /
+   `openalex_id` / `resolution_checked` / `resolution_status` (they keep their
+   previous values, or stay absent on a new note) and only appends
+   `last check LOST <date>: …` to `resolution_evidence` — so go by the
+   script's output (it reports the paper as `unresolved`, `importante`), not
+   by the fields. Flag that paper `importante` in step 10 and tell the researcher to get a free key at
+   `https://openalex.org/settings/api`, export `OPENALEX_API_KEY` in the
+   environment that runs Claude Code (never commit it), and re-run the command
+   above.
 
 **Zotero unreachable (not running, or "allow other applications" disabled):**
 don't silently skip it and don't block ingestion either — tell the researcher
@@ -210,7 +251,11 @@ facet — **reuse the per-candidate `matched:` record from the ranked list; do n
 re-derive facet membership.** Then **dispatch one `facet-summarizer` subagent per
 facet, all launched together in the same turn**, each given its facet + the
 explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
-`type`. Each subagent reads **only its assigned notes** and returns a compact,
+`type`. **Never assign a `send: never` note** (check the candidate list with
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <paths…>`;
+exit 3 names the flagged ones): it stays in `Papers/` but contributes nothing to
+the map, and the end-of-run message lists it as `menor` (`P-XXXX omitida del
+Estado del arte: send: never`). Each subagent reads **only its assigned notes** and returns a compact,
 fully-cited contribution to whichever canonical sections its papers support (it
 never touches §4 or §8). Collect every contribution.
 
@@ -250,7 +295,12 @@ appended Búsqueda ejecutada block at the bottom. The reader must see, before th
 synthesis, that part of the literature was not covered. Also mention it in the
 one-paragraph summary you give the user when the skill finishes.
 
-**Frontmatter:** set `last_updated: <YYYY-MM-DD>` (today). `update-confidence`
+**Frontmatter:** set `last_updated: <YYYY-MM-DD>` (today), and `generated_by:` —
+`origin: agent`, `model: <this session's model id>`, `skill_version:
+create-project@<plugin version>`, `summarizer_model: <facet-summarizer's
+model>` — so `assemble-manuscript`'s AI-use disclosure can state who wrote the
+synthesis instead of "no consta". Never fill it with a guess; if a model id is
+not known to the session, omit that key (absent reads as "no consta"). `update-confidence`
 bumps this whenever it edits the map; a stale `last_updated` is the at-a-glance
 signal that the map has drifted from the evidence.
 
@@ -343,6 +393,15 @@ with candidates still on the table (step 6.8: a conflict, or only an automatic
 match), so the researcher can confirm one by hand with `find_code_repo.py
 --confirm` or leave it empty.
 
+Also list every paper whose `resolution_status` is not `resolved` (step 6.9),
+one line each with its severity, status and the script's reason — e.g.
+`[crítico] P-0017 mismatch — first_author differs (openalex, crossref); posible
+cita quimérica, corregir a mano` or `[importante] P-0018 unresolved — OpenAlex
+unreachable; configure OPENALEX_API_KEY (https://openalex.org/settings/api) and
+re-run resolve_refs.py --only P-0018 --write`. These papers are ingested, but
+must not be cited as support until resolved (a `retracted` / `withdrawn` paper
+never is).
+
 ## Naming & ids
 
 | Thing | Rule |
@@ -379,6 +438,26 @@ code_repo: <https://github.com/<owner>/<repo> — the paper's OWN public code
   (step 6.8), or empty if not confidently identified. Never guessed.>
 code_repo_evidence: <"where it was found", e.g. "arXiv comments: 'Code
   available at …'" — empty when code_repo is empty>
+# Citation resolution (step 6.9, written only by scripts/citations/resolve_refs.py
+# --write or retraction_sweep.py --write — never by hand). All absent = never checked.
+resolved: <true | false — true only with a matching OpenAlex record (the paper
+  exists); false = checked and not found, ambiguous (mismatch, incl. a DOI and
+  arXiv id that point to different works), confirmed only by a fallback source,
+  or the note lacks author/year. A lookup LOST to errors/budget never writes
+  these fields (the previous values stay; the loss goes in resolution_evidence).
+  A retracted paper that exists is still `true` — see resolution_status>
+openalex_id: <W followed by digits, e.g. W2741809807 — empty when resolved is false>
+resolution_checked: <YYYY-MM-DD of the last check, updated on every re-check>
+resolution_status: <resolved | unresolved | mismatch | retracted | withdrawn —
+  the full outcome; anything but `resolved` is flagged at the end of the run>
+resolution_match: <exact | close | mismatch — title / first author / year vs
+  the sources; empty when no source record matched>
+resolution_evidence: <"one line: which sources, what differed or was flagged">
+# send — optional, set only by the researcher. `send: never` = this note's
+# content and metadata must never reach the model or an external API: no
+# skill reads, summarizes, cites or resolves it, and the vault's send_guard
+# PreToolUse hook blocks reading it. Omit the field for normal notes.
+send: <never — or omit>
 ---
 
 ## Referencia
@@ -441,6 +520,16 @@ When a paper is already ingested for another project, only append this project's
   Hugging Face match alone is not confident — leave the field empty.
 - **Cloning or running a paper's `code_repo` during ingestion.** Ingestion
   records the URL only; extraction is `paper-to-tool`, on explicit request.
+- **Skipping reference resolution, or hiding its result.** Every ingested paper
+  gets `resolve_refs.py --only <P-id> --write` (step 6.9). An unresolved /
+  mismatched / retracted paper is still ingested but always surfaces in the
+  end-of-run message — never silently.
+- **Reading, assigning or citing a `send: never` note.** It is skipped
+  explicitly (steps 6–7) — never worked around through another tool when the
+  `send_guard` hook refuses a read.
+- **Hand-writing the resolution fields.** `resolved` / `openalex_id` /
+  `resolution_*` come only from the script; `resolved: true` without an OpenAlex
+  id breaks the contract other skills rely on.
 
 ## Not in v1
 

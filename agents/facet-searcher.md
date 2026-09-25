@@ -31,7 +31,17 @@ you need, so the raw XML/JSON is parsed by WebFetch and never enters your
 reasoning context. Use the `mcp__smart-connections__*` tools for the vault. Use
 **Bash** *only* for the one case WebFetch cannot cover — a Semantic Scholar
 request that must carry the `x-api-key` header (see the key note below); parse its
-JSON yourself and drop the blob. No other Bash use.
+JSON yourself and drop the blob — and the one `send: never` check below. No other
+Bash use.
+
+**`send: never` vault notes — skip, explicitly.** A vault note whose frontmatter
+has `send: never` must not enter your output. Smart Connections search results
+carry only path, title and heading, never note text — but before listing any
+`vault` hit, run
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check "<hit path>"`
+(path relative to the vault root, which is the working directory). Exit `3` means
+flagged: drop the hit, don't call `get_note` / `search_similar` on it, and count it
+only in `notes` as `vault: N hits omitted (send: never)` — no title, no path.
 
 | Source | Call | Rate discipline |
 |---|---|---|

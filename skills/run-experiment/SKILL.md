@@ -154,12 +154,30 @@ this machine doesn't have — Kaggle, Colab, a rented box:
   `MANIFEST.sha256`) into the bundle, and in the runtime also run
   `sha256sum -c MANIFEST.sha256` inside each tool folder — the same file
   `tool_hash.py` hashed, so a byte-identical tool is proven on the runtime too.
+- **Isolation check — `crítico`, before any transfer.** Once the bundle and its
+  `MANIFEST.sha256` are built, run
+  `python "${CLAUDE_PLUGIN_ROOT}/scripts/security/check_bundle.py" <bundle_dir>`.
+  It prints one JSON object (`status` + `findings`, each finding a `path`,
+  `kind`, `severity`) and never prints a secret's value.
+  - **exit 0** (`clean`) → transfer may proceed. `warn` findings (e.g.
+    `vault_path_reference` from provenance prose or a guarded local-first
+    fallback) don't stop it, but list them for the researcher.
+  - **exit 2** (`contaminated`) → **`crítico`: do not transfer.** Report every
+    `block` finding (path + kind), fix the bundle — delete the file (`.env`,
+    key, `.git/`, a copied `Papers/`/`Projects/` note), or move the secret to
+    the runtime's own secret store (Kaggle Secrets, Colab `userdata`) and read
+    it from the environment — rebuild `MANIFEST.sha256`, and re-run the check
+    until it exits 0.
+  - **exit 1** (`error`) → the check did not complete; treat it as **not
+    clean** and do not transfer. Fix the cause (bad path, unreadable file) and
+    re-run.
 - Transfer the bundle by whatever the runtime supports — dataset upload, file
   copy, or a throwaway scratch repo that is **not** the vault. In the runtime,
   run `sha256sum -c MANIFEST.sha256` and re-check the `dependencies_hash` before
   any training starts.
-- Record in `## Resultado` which files were transferred and the bundle's
-  manifest hash. If the bundle layout had to differ from anything stated in the
+- Record in `## Resultado` which files were transferred, the bundle's
+  manifest hash, and that `check_bundle.py` ran on that exact bundle with its
+  final `status` (plus any `warn` findings, path + kind). If the bundle layout had to differ from anything stated in the
   frozen `## Manifiesto de entorno`, that difference is a `## Enmiendas` entry,
   not a silent adjustment.
 
@@ -340,6 +358,9 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - **Shipping a script that hard-codes a vault path.** Bundled scripts resolve
   inputs from `Path(__file__).parent`; a vault-tree dependency breaks the run on
   any external runtime.
+- **Transferring a bundle without a clean `check_bundle.py` run** — or after
+  exit 1, or after editing the bundle since the last clean run. Exit 2 is
+  `crítico`; exit 1 is not clean either.
 
 ## Related
 
@@ -355,3 +376,6 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/tool_hash.py` — the pre-flight
   check of every `environment.tools` hash (step 1); tools are built by
   `paper-to-tool`.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/security/check_bundle.py` — the isolation
+  check every external-runtime transfer bundle passes before it leaves this
+  machine (step 2). Its docstring documents every finding `kind`.

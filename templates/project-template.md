@@ -20,6 +20,11 @@ autonomy_defaults:
   hypothesis_promotion: <manual | autonomo>
 # related_projects — auto-computed from shared papers / hypotheses; do not edit by hand
 related_projects: []
+# send — optional. `send: never` keeps this note's content from ever reaching
+# the model or an external API: skills skip it and the vault's send_guard
+# PreToolUse hook blocks reading it. Any vault note may carry it (Papers/,
+# hypotheses, experiments). Omit the field for normal notes.
+# send: never
 ---
 
 ## Propósito
