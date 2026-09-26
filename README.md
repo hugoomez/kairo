@@ -111,9 +111,17 @@ claude --plugin-dir /path/to/kairo
   then the PDF via `pdftotext`), verbatim and organised by the paper's own
   section / figure / table / appendix numbering, with a `> Fuente:` line (URL,
   version, date, sha256). What can't be extracted is marked
-  `[extracción dañada]`, never reconstructed. Model-written summaries go only
-  in `## Notas de lectura`, which is never citable and never read by the
-  citation checks or `fresh-verifier`.
+  `[extracción dañada]`, never reconstructed. A paper note holds only source
+  text: model-written reading notes live apart, in `Papers/_notas/<P-id>.md`,
+  which is never citable and never read by any skill or agent (see
+  "Model-written reading notes" below).
+- `scripts/papers/move_reading_notes.py` — moves any `## Notas de lectura`
+  left in a paper note into `Papers/_notas/`; `--check` exits 1 while one is
+  left.
+- `scripts/papers/facet_assignment.py` — reads (and `--add` writes) the
+  per-project `facets:` record in each paper note: which facet of the
+  literature search matched it, and the matched term. `create-project` step 7
+  takes its facet assignment from here instead of re-deriving it.
 - `scripts/code_repo/find_code_repo.py` — backfills `code_repo:` for papers
   ingested before the field existed. Reads public metadata only (arXiv
   comments/abstract, the paper's LaTeX source, one author-stated hop,
@@ -150,8 +158,9 @@ claude --plugin-dir /path/to/kairo
     2 contaminated (keys, tokens, `.env`, `.git/`, copied vault notes, vault
     paths, unreadable archives), 1 error — never a pass. Prints finding kinds
     and paths, never a secret's value.
-  - `send_guard.py` — the `send: never` guard (see "Do-not-send notes" below):
-    `check` / `list` for skills, `hook` for the vault's PreToolUse hook.
+  - `send_guard.py` — the `send: never` guard (see "Do-not-send notes" below),
+    which also keeps `Papers/_notas/` away from every model: `check` / `list`
+    for skills, `hook` for the vault's PreToolUse hook.
 - `skills/assemble-manuscript/scripts/ai_disclosure.py` — builds the
   manuscript's AI-use disclosure (Spanish + English) from recorded
   `generated_by`, `history`, `verifications:` and code-authorship fields, per
@@ -240,6 +249,17 @@ id only, `check_bundle.py` blocks it inside a transfer bundle, and the vault's
 naming it, and Smart Connections `get_note` on it. File names and titles can
 still surface in listings — give a sensitive note a neutral file name. List
 flagged notes with `python scripts/security/send_guard.py list <vault>`.
+
+**Model-written reading notes.** A `Papers/` note contains only verbatim
+source (`## Referencia`, `## Resumen`, `## Texto completo`). Any
+model-written summary of a paper lives in `Papers/_notas/<P-id>.md`, marked
+`escrito_por: modelo` / `citable: false`, as a reading aid for the researcher.
+No model reads it: the same `send_guard` hook refuses a `Read`, a
+content-mode `Grep` whose scope holds one (narrow the path, or pass
+`glob: "!**/_notas/**"`), a shell command naming `_notas`, and `get_note` on
+one — for the main session and every subagent alike (`facet-summarizer`
+included). The fresh-verifier packet builder and its locator resolver skip
+the directory in code.
 
 If you want a running example of the layout, create a project with
 `kairo:create-project` and let it scaffold one.

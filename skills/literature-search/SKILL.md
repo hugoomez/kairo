@@ -276,7 +276,9 @@ The subagent runs the actual queries in its **own isolated context**, enforcing
 arXiv's ~1-request/3s discipline and Semantic Scholar's ~1 rps throttle itself,
 and returns **only a compact candidate list** — title, authors, year, ids
 (doi/arxiv/patent), url, a one-line summary, source, and which facet
-term/synonym matched. **The calling session never receives raw Atom XML or raw
+term/synonym matched (`matched:`). **Keep every `matched:` record** — it is the
+facet assignment `create-project` persists into each paper note (its step 6)
+and reads back in its step 7; it is never re-derived later. **The calling session never receives raw Atom XML or raw
 Semantic Scholar JSON** — parsing lives entirely inside each subagent.
 
 The one-line summary is for ranking and for showing the researcher only. It is
@@ -381,8 +383,13 @@ such, never folded into "checked".
 
 **4b. Dedup key**, in priority order: normalized DOI → arXiv id
 (version-stripped) → normalized title similarity (lowercase, strip punctuation,
-fuzzy match ~0.9). Merge duplicates into one record, keeping the richest metadata
-and all source links.
+fuzzy match ~0.9). Merge duplicates into one record, keeping the richest metadata,
+all source links, and **the union of their facet matches**: the merged record
+carries `facets: {<facet>: "<matched term>", …}`, one entry per facet whose
+`facet-searcher` returned it, with that searcher's `matched:` term verbatim. A
+snowballed item (step 3) gets an entry for each facet whose term or synonym
+appears in its title or abstract, with that term as `matched`. Never add a
+facet without a matched term.
 
 **4c. Rank** surviving records by relevance to the **full original description**
 (all facets weighted together — a paper hitting every facet outranks one that
@@ -423,8 +430,9 @@ relevant was set aside on purpose, and why.
 ### 5. Justify every survivor, then report the counts
 
 For **each** candidate that survives step 4, write **one sentence** stating why
-it's relevant to the original description — which facets it satisfies and what it
-contributes (method / evidence / prior art / contradiction). If you can't write
+it's relevant to the original description — which facets it satisfies (its
+`facets:` record, shown in the ranked list as `A: "<term>", C: "<term>"`) and
+what it contributes (method / evidence / prior art / contradiction). If you can't write
 that sentence honestly, or it fails the frozen exclusion criteria, drop the
 candidate.
 
@@ -537,6 +545,10 @@ limit — see **Configuración opcional**.
 
 - **Dispatching the `facet-searcher` subagents one at a time.** Launch all facets
   in a single turn — serial dispatch throws away the whole point of the split.
+- **Dropping the `matched:` records at dedup or in the ranked list.** They are
+  the only record of which facet each paper belongs to; `create-project`
+  persists them into the paper notes. A facet label with no matched term is
+  not a record.
 - **Letting a raw source payload reach the main session.** Atom XML / Semantic
   Scholar JSON is parsed inside each subagent (step 2) or by WebFetch's
   extraction prompt (step 3). Only compact structured lists cross back.

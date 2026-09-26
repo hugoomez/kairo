@@ -48,8 +48,13 @@ Usage:
 it is never verified. A cited paper flagged `send: never` contributes no
 source text and no abstract; its citation is marked as not sent.
 
+Model-written reading notes (`Papers/_notas/`, send_guard.is_model_notes) are
+never read: a --note, --experiment or --analysis-output inside that directory
+is refused (exit 2), and a citation is only ever resolved against the paper
+note at the top of `Papers/`, never against its reading notes.
+
 Exit codes: 0 ok, 2 invalid input (missing file, unknown section, a
-`send: never` note).
+`send: never` note, a `Papers/_notas/` file).
 """
 
 from __future__ import annotations
@@ -64,9 +69,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
-from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
+from send_guard import is_flagged, is_model_notes  # noqa: E402  (single definitions)
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 TOOL_ID = f"kairo/verifier_packet@{__version__}"
 
 # --------------------------------------------------------------------------
@@ -395,7 +400,8 @@ def unit_matches(unit: dict, tok: tuple[str, str]) -> bool:
 
 
 def find_paper(vault: str, pid: str) -> str | None:
-    hits = sorted(glob.glob(os.path.join(vault, "Papers", f"{pid}*.md")))
+    hits = sorted(h for h in glob.glob(os.path.join(vault, "Papers", f"{pid}*.md"))
+                  if not is_model_notes(Path(h).resolve()))
     return hits[0] if hits else None
 
 
@@ -406,6 +412,9 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
     res["tokens"] = [token_label(t) for t in toks]
     path = find_paper(vault, pid)
     if not path:
+        res["note"] = f"nota {pid} no encontrada en Papers/"
+        return res
+    if is_model_notes(Path(path).resolve()):  # never, whatever find_paper returns
         res["note"] = f"nota {pid} no encontrada en Papers/"
         return res
     if is_flagged(Path(path)):
@@ -467,6 +476,10 @@ def build(vault: str, note: str, experiments: list[str],
     manifest: dict = {"tool": TOOL_ID, "scope": f"section:{section}" if section else "note",
                       "sources": [], "citations": [], "analysis_outputs": []}
     out: list[str] = []
+    for f in [note, *experiments, *analysis_outputs]:
+        if is_model_notes(Path(f).resolve()):
+            raise ValueError(f"{os.path.basename(f)} is a model-written reading note "
+                             "(Papers/_notas/); it is never sent to the verifier")
     for f in [note, *experiments]:
         if is_flagged(Path(f)):
             raise ValueError(f"{os.path.basename(f)} is marked send: never; it is never "

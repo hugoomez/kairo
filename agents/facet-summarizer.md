@@ -16,9 +16,19 @@ observations for the Reduce pass to merge.
 - **Facet** — a term (+ synonyms) and the project `type` (`ciencia` /
   `producto` / `hibrido`).
 - **Assigned papers** — an explicit list of `Papers/P-XXXX ….md` note paths.
-  These are the notes whose `matched:` record tied them to this facet during
-  ranking. **Read only these.** Do not scan the rest of `Papers/`, do not open
+  These are the notes whose `facets:` entry (the `matched:` record from
+  ranking, persisted in the note) ties them to this facet. **Read only these.** Do not scan the rest of `Papers/`, do not open
   other projects, do not pull new sources.
+
+## `Papers/_notas/` — never
+
+`Papers/_notas/` holds model-written reading notes. They are not the paper, not
+citable, and never an input: do not `Read` them, do not `Grep` in content mode
+over a scope that contains them (grep only your assigned paths), and do not
+follow a link to them. The vault's `send_guard` hook refuses all of these; a
+refusal is final — never retry through another tool. If an assigned path is
+inside `Papers/_notas/`, skip it and tell the Reduce pass under
+`(para el reduce) omitidas por send: never` as `P-XXXX (notas de modelo)`.
 
 ## `send: never` notes — skip, explicitly
 
@@ -56,8 +66,8 @@ or `P-XXXX Figura N`.
 
 **Before writing that locator, re-read the exact text under that `§N` /
 `Tabla N` / `Figura N` heading in the note's `## Texto completo` (the paper's
-verbatim text) — not the paper's `## Resumen`, not `## Notas de lectura`
-(model-written, never citable), not the note as a whole, and not a locator you
+verbatim text) — not the paper's `## Resumen`, not its reading notes
+(`Papers/_notas/`, model-written, never citable), not the note as a whole, and not a locator you
 recall using for this paper on an earlier facet or an earlier project.** Your
 sentence must paraphrase what is specifically written under that heading. If
 the claim is actually supported by a *different* heading than the one that

@@ -243,3 +243,7 @@ byte-identical to the plugin's canonical `scripts/security/send_guard.py`),
 not as a plugin `hooks/hooks.json`: the vault's settings are where every
 other Kairo hook lives, and a plugin hook would also fire in non-vault
 projects. Re-copy it whenever the plugin copy changes (compare sha256).
+Since send_guard 1.1.0 the same hook also refuses every model read of
+`Papers/_notas/` (model-written reading notes; `is_model_notes`), for the main
+session and subagents alike; `verifier_packet.py` (≥ 1.3.0) skips that
+directory in code.

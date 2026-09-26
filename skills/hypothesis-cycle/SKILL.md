@@ -340,8 +340,10 @@ as `P-XXXX §Sección / Tabla N / Figura N — qué muestra y cómo sostiene el 
 **Before writing any such locator, re-open the source `Papers/P-XXXX.md` note
 and read the exact text under that `§Sección` / `Tabla N` / `Figura N`
 heading in its `## Texto completo`** (the paper's verbatim text). Never cite
-from `## Notas de lectura`: it is model-written and not citable, and a claim
-that only it supports has no source. The citing sentence must paraphrase what
+from, or open, the paper's reading notes in `Papers/_notas/` (or an old
+`## Notas de lectura` section): they are model-written and not citable, a
+claim that only they support has no source, and the `send_guard` hook blocks
+reading them. The citing sentence must paraphrase what
 is specifically written there — not the paper as a whole, and not a citation
 for the same paper already used elsewhere for this project (an earlier
 hypothesis's `Justificación`, or `Estado-del-arte.md`). If the claim is

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Enforce `send: never` -- notes whose content must never reach the model.
+"""Enforce `send: never` -- notes whose content must never reach the model --
+and keep model-written reading notes (`Papers/_notas/`) away from every model
+that reads the vault.
 
 A vault note whose frontmatter carries `send: never` is private to the
 researcher: Claude must not read it, quote it, or send its metadata to an
@@ -27,6 +29,14 @@ Hook mode (default; reads the PreToolUse JSON from stdin):
     mcp__smart-connections__get_note
                                  `notePath` (relative to the vault) is flagged
 
+  The same four checks also refuse model-written reading notes: any `.md`
+  under a `Papers/_notas/` directory (the `## Notas de lectura` moved out of the
+  paper notes). They are a reading aid for the researcher, never a source, so
+  no skill or agent may read them: a Read of one, a content Grep whose scope
+  holds one (unless its `glob` is a negation naming `_notas`, e.g.
+  `!**/_notas/**`), a shell command naming a `_notas` path segment, or a
+  get_note on one is blocked.
+
   Everything else passes (exit 0, no output). Glob, Write and Edit pass: Glob
   returns names only; Write/Edit need a prior Read, which is blocked.
 
@@ -45,6 +55,7 @@ Hook mode (default; reads the PreToolUse JSON from stdin):
 Helper modes (print paths only, never content):
 
     python send_guard.py check <file> [<file> ...]   # exit 3 if any is flagged
+                                                     # or is a Papers/_notas/ note
     python send_guard.py list <dir> [--json]         # every flagged note under dir
 
 Exit codes: 0 allowed / nothing flagged, 2 blocked (hook mode), 3 at least one
@@ -61,12 +72,14 @@ import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 HEAD_BYTES = 16 * 1024  # frontmatter lives at the top; never read further
 SKIP_DIRS = {".git", ".obsidian", ".smart-env", "node_modules", ".trash", "__pycache__"}
 _SEND_LINE = re.compile(r"""^send\s*:\s*["']?never["']?\s*(#.*)?$""", re.IGNORECASE)
 _NOTE_ID = re.compile(r"^([A-Z]{1,4}-\d{3,})", re.IGNORECASE)  # P-0001, H-0012, E-0003, ADR-004
+MODEL_NOTES_DIR = "_notas"  # Papers/_notas/: model-written reading notes, never a source
+_MODEL_NOTES_TOKEN = re.compile(r"(?<![\w.-])_notas(?![\w.-])", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -99,6 +112,29 @@ def is_flagged(path: Path) -> bool:
     except OSError:
         return False
     return frontmatter_says_never(head)
+
+
+def is_model_notes(path: Path) -> bool:
+    """True when `path` is inside a `Papers/_notas/` directory (or is that
+    directory). Case-insensitive, like Windows paths."""
+    parts = [x.lower() for x in Path(path).parts]
+    return any(a == "papers" and b == MODEL_NOTES_DIR for a, b in zip(parts, parts[1:]))
+
+
+def model_notes_under(root: Path) -> list[Path]:
+    """Every model-written reading note under `root` (or `root` itself)."""
+    if root.is_file():
+        return [root] if is_model_notes(root) and root.suffix.lower() == ".md" else []
+    out: list[Path] = []
+    if not root.is_dir():
+        return out
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in filenames:
+            p = Path(dirpath) / name
+            if name.lower().endswith(".md") and is_model_notes(p):
+                out.append(p)
+    return sorted(out)
 
 
 def flagged_under(root: Path) -> list[Path]:
@@ -149,6 +185,9 @@ def decide(event: dict, vault: Path | None) -> str | None:
 
     if tool == "Read":
         fp = _clean(tin.get("file_path") or "")
+        if fp and is_model_notes(_resolve(fp, cwd)):
+            return (f"{_rel(_resolve(fp, cwd), cwd)} es una nota de lectura escrita por un "
+                    "modelo (Papers/_notas/): no es fuente y no se lee.")
         if fp and is_flagged(_resolve(fp, cwd)):
             return f"{_rel(_resolve(fp, cwd), cwd)} está marcada `send: never`; no se lee."
         return None
@@ -160,13 +199,27 @@ def decide(event: dict, vault: Path | None) -> str | None:
         if isinstance(scopes, str):
             scopes = [scopes]
         glob = tin.get("glob")
+        # a negated glob that names _notas (`!**/_notas/**`) keeps them out of rg
+        excludes_notes = bool(glob) and glob.lstrip().startswith("!") and             MODEL_NOTES_DIR in glob.lower()
+        notes: list[Path] = []
+        for s in scopes if not excludes_notes else []:
+            for p in model_notes_under(_resolve(str(s), cwd)):
+                if (not glob or glob.lstrip().startswith("!") or any(c in glob for c in "{}")
+                        or fnmatch(p.name, glob) or fnmatch(p.as_posix(), f"*{glob}")):
+                    notes.append(p)
+        if notes:
+            names = ", ".join(_rel(p, cwd) for p in notes[:5]) + (" …" if len(notes) > 5 else "")
+            return (f"Grep en modo content incluiría notas de lectura escritas por un modelo "
+                    f"({names}). Acota `path` a las notas de Papers/ o usa "
+                    "glob `!**/_notas/**`.")
         hits: list[Path] = []
         for s in scopes:
             for p in flagged_under(_resolve(str(s), cwd)):
                 # fnmatch has no brace expansion ({md,txt}); any glob it can't
                 # evaluate faithfully counts as matching -- err toward not sending
-                if (not glob or any(c in glob for c in "{}") or fnmatch(p.name, glob)
-                        or fnmatch(p.as_posix(), f"*{glob}")):
+                # a negated glob (`!x`) includes everything else: counts as matching
+                if (not glob or glob.lstrip().startswith("!") or any(c in glob for c in "{}")
+                        or fnmatch(p.name, glob) or fnmatch(p.as_posix(), f"*{glob}")):
                     hits.append(p)
         if hits:
             names = ", ".join(_rel(p, cwd) for p in hits[:5]) + (" …" if len(hits) > 5 else "")
@@ -182,6 +235,9 @@ def decide(event: dict, vault: Path | None) -> str | None:
         # file name, stem, or its Kairo id (a `P-9999*` glob) -- is refused.
         # Case-insensitive, because Windows paths are.
         norm = cmd.replace("\\", "/").lower()
+        if _MODEL_NOTES_TOKEN.search(norm):
+            return ("El comando nombra Papers/_notas/ (notas de lectura escritas por un "
+                    "modelo); no se ejecuta.")
         for p in flagged_under(root):
             rel = _rel(p, root)
             if any(t and t in norm for t in (rel.lower(), p.name.lower(),
@@ -195,6 +251,8 @@ def decide(event: dict, vault: Path | None) -> str | None:
 
     if tool.startswith("mcp__") and tool.endswith("__get_note"):
         np_ = _clean(tin.get("notePath") or "")
+        if np_ and is_model_notes(_resolve(str(np_), root)):
+            return f"{np_} es una nota de lectura escrita por un modelo; get_note bloqueado."
         if np_ and is_flagged(_resolve(str(np_), root)):
             return f"{np_} está marcada `send: never`; get_note bloqueado."
         return None
@@ -240,9 +298,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode in (None, "hook"):
         return run_hook(getattr(args, "vault", None))
     if args.mode == "check":
-        flagged = [f for f in args.files if is_flagged(Path(f))]
-        for f in flagged:
-            print(f"send: never — {Path(f).as_posix()}")
+        flagged = []
+        for f in args.files:
+            if is_model_notes(Path(f).resolve()):
+                print(f"notas de modelo — {Path(f).as_posix()}")
+                flagged.append(f)
+            elif is_flagged(Path(f)):
+                print(f"send: never — {Path(f).as_posix()}")
+                flagged.append(f)
         return 3 if flagged else 0
     root = Path(args.dir)
     if not root.exists():

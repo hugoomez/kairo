@@ -259,6 +259,44 @@ class TestPacket(unittest.TestCase):
         r2 = vp.resolve_citation(str(self.f["vault"]), "P-0901", "§Notas de lectura")
         self.assertEqual(r2["units"], [])
 
+    def notes_vault(self):
+        """The verbatim paper plus its reading notes moved to Papers/_notas/."""
+        self.verbatim_vault()
+        notes = self.f["vault"] / "Papers" / "_notas"
+        notes.mkdir()
+        (notes / "P-0901.md").write_text("\n".join([
+            "---", "notas_de: P-0901", "escrito_por: modelo", "citable: false", "---", "",
+            "## Texto completo", "", "### 3 Experiments", "", "#### 3.1 Lead time", "",
+            "NOTASONLY the precursor also predicts double descent.", "",
+            "## Resumen", "", "NOTASONLY abstract.", ""]), encoding="utf-8")
+        # a paper whose ONLY file is a reading note: it must read as missing
+        (notes / "P-0902.md").write_text("---\nid: P-0902\n---\n\n## Texto completo\n\n"
+                                         "### 1 Intro\n\nNOTASONLY intro.\n", encoding="utf-8")
+        return notes
+
+    def test_reading_notes_dir_is_never_read(self):
+        notes = self.notes_vault()
+        v = str(self.f["vault"])
+        for span in ("§3.1", "§3", "§Resumen", "§Lead time"):
+            r = vp.resolve_citation(v, "P-0901", span)
+            self.assertNotIn("NOTASONLY", "\n".join(r["units"]), span)
+            self.assertNotIn("_notas", r["source"] or "", span)
+        r = vp.resolve_citation(v, "P-0902", "§1")
+        self.assertEqual(r["units"], [])
+        self.assertIsNone(r["source"])
+        self.assertIsNone(vp.find_paper(v, "P-0902"))
+        packet, m = self.build()
+        self.assertNotIn("NOTASONLY", packet)
+        self.assertNotIn("_notas", json.dumps(m, ensure_ascii=False))
+        # a reading note can never be the verified artifact or an analysis output
+        for kw in (dict(note=str(notes / "P-0901.md")),
+                   dict(analysis=[str(notes / "P-0901.md")])):
+            with self.assertRaises(ValueError):
+                vp.build(v, kw.get("note", str(self.f["hyp"])), [],
+                         kw.get("analysis", []), None)
+        rc = vp.main(["--vault", v, "--note", str(notes / "P-0901.md")])
+        self.assertEqual(rc, 2)
+
     def test_named_locator_ignores_trailing_punctuation(self):
         for span in ("§Resumen.", "§Resumen)", "§Resumen", "§Resumen **vs** other claim",
                      "§Resumen vs other claim", "§Resumen — note"):

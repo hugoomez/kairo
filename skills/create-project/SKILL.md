@@ -113,9 +113,11 @@ Include the **PatentsView / patent facet only if `type` is `producto` or
 `hibrido`** — otherwise omit it entirely (matches that skill's own gate).
 
 Keep the facet table and the ranked, justified candidate list it returns — steps
-5 and 7 both consume them. Each ranked candidate carries a **`matched:` record**
-(which facet term/synonym hit, from the `facet-searcher` output); step 7 reuses it
-to assign papers to facets without re-deriving membership.
+5 and 6 consume them. Each ranked candidate carries a **`facets:` record** (for
+each facet that hit it, the facet term/synonym that matched, from the
+`facet-searcher` output). Step 6 persists it into the paper note; step 7 reads it
+back from there and never re-derives membership. Save the facet table itself
+in the Búsqueda ejecutada block (the letters in the notes refer to it).
 
 ### 5. Confirm candidates — respect `autonomy_defaults.paper_ingestion`
 
@@ -180,10 +182,11 @@ For each confirmed paper, add it to Zotero **first**, then generate the
      open-access PDF, run `pdftotext` and pass the output with `--pdf-text`
      and `--source-url`. Exit 1, or no open full text at all → `No disponible
      — solo abstract.` and nothing else.
-   - `## Notas de lectura` (optional): the only place for model-written
-     summaries, headed by a line saying they are model-written and **never
-     citable**. No locator may point here, and neither the locator
-     re-verification nor `fresh-verifier` reads it.
+   - **No model-written text in the paper note at all.** A reading aid, if
+     you write one, goes in a separate file `Papers/_notas/<P-id>.md` (see
+     Paper note format), never in the paper note. No locator may point there;
+     no skill or agent reads it (the `send_guard` hook blocks the directory,
+     and the packet builder skips it in code).
    A field left empty and marked unavailable is correct. A plausible field
    written by the model is a fabricated source: every citation of it would be
    unverifiable, and the fresh verifier flags it `crítico`.
@@ -199,6 +202,13 @@ For each confirmed paper, add it to Zotero **first**, then generate the
      not-to-send, and ask whether to add `<PROJ-XXX>` by hand — never edit or
      re-derive it yourself.
 7. Include a short **bibliographic section** (see Paper note format below).
+   **Persist the facet match:** for each facet in the candidate's `facets:`
+   record, one frontmatter entry `{project: <PROJ-XXX>, facet: <letter>,
+   matched: "<term>"}` — for a new note and for an existing one alike
+   (`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py" --vault
+   <vault> --add <P-id> --project <PROJ-XXX> --facet <letter> --matched
+   "<term>"` writes it without touching anything else). Entries of other
+   projects stay as they are.
 8. **Code repository (`code_repo:`)** — record the paper's own public code
    repository when it is **confidently** identifiable; otherwise leave the
    field empty. This step only records a URL — it never clones, installs, or
@@ -273,10 +283,14 @@ later retrofit pass can find these by the field's absence).
 
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
 
-**Map — `facet-summarizer` subagents, in parallel.** For each facet from step 4,
-assign it the ingested papers that `literature-search` recorded as matching that
-facet — **reuse the per-candidate `matched:` record from the ranked list; do not
-re-derive facet membership.** Then **dispatch one `facet-summarizer` subagent per
+**Map — `facet-summarizer` subagents, in parallel.** Read the assignment from
+the notes: `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py"
+--vault <vault> --project <PROJ-XXX> --json` gives, per facet, the papers whose
+`facets:` entry (step 6) names it. **Do not re-derive facet membership.** A
+paper listed under `sin_facetas` (exit 1) has no record: do not guess one —
+leave it out of the map and list it in the end-of-run message as `importante`
+(`P-XXXX sin faceta registrada — no entra en el Estado del arte`), so the
+researcher can add the entry with `--add`. Then **dispatch one `facet-summarizer` subagent per
 facet, all launched together in the same turn**, each given its facet + the
 explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
 `type`. **Never assign a `send: never` note** (check the candidate list with
@@ -466,6 +480,13 @@ code_repo: <https://github.com/<owner>/<repo> — the paper's OWN public code
   (step 6.8), or empty if not confidently identified. Never guessed.>
 code_repo_evidence: <"where it was found", e.g. "arXiv comments: 'Code
   available at …'" — empty when code_repo is empty>
+# Facet match (step 6.7): one entry per project × facet of literature-search
+# that hit this paper, with the facet term/synonym that matched, verbatim.
+# Read by scripts/papers/facet_assignment.py in step 7.
+facets:
+  - {project: <PROJ-XXX>, facet: <A>, matched: "<term>"}
+# A backfill that knows the facet but not the term writes
+#   {project: …, facet: …, matched: null, unrecovered: "<why>"} — never a guess.
 # Citation resolution (step 6.9, written only by scripts/citations/resolve_refs.py
 # --write or retraction_sweep.py --write — never by hand). All absent = never checked.
 resolved: <true | false — true only with a matching OpenAlex record (the paper
@@ -507,12 +528,30 @@ version, date, sha256), then the paper's verbatim text under its own section /
 figure / table / appendix headings — or exactly "No disponible — solo
 abstract." Never paraphrase.>
 
-## Notas de lectura
-
-> Escritas por un modelo; no son texto del paper y no se pueden citar.
-
-<Optional reading aid. Never a locator target.>
 ```
+
+A paper note ends with `## Texto completo`: it holds no model-written text.
+An optional reading aid goes in its own file, **`Papers/_notas/<P-id>.md`**:
+
+```markdown
+---
+notas_de: P-XXXX
+nota_del_paper: "<file name of the paper note>"
+escrito_por: modelo
+citable: false
+---
+
+# Notas de lectura — P-XXXX (escritas por un modelo)
+
+> Texto escrito por un modelo, no por los autores. No se cita, no es fuente y
+> ningún localizador apunta aquí.
+
+<reading aid>
+```
+
+No skill or agent reads `Papers/_notas/` (send_guard hook + packet builder).
+`scripts/papers/move_reading_notes.py --vault <vault> --check` exits 1 if any
+paper note still carries a `## Notas de lectura` section (`--write` moves it).
 
 When a paper is already ingested for another project, only append this project's
 `PROJ-XXX` to `projects:` — don't duplicate the note.
@@ -522,9 +561,13 @@ When a paper is already ingested for another project, only append this project's
 - **Starting without Propósito + Alcance.** Hard gate — ask first.
 - **Dispatching the `facet-summarizer` subagents sequentially (step 7 Map).**
   Launch all facets in one turn; serial dispatch defeats the map-reduce.
-- **Re-deriving facet membership in step 7.** Reuse `literature-search`'s
-  per-candidate `matched:` record — don't recompute which paper belongs to which
-  facet.
+- **Re-deriving facet membership in step 7.** Read it from the notes with
+  `facet_assignment.py` — don't recompute which paper belongs to which facet,
+  and don't guess one for a paper that has no entry.
+- **Not persisting the facet match in step 6.** Without the `facets:` entries
+  step 7 has nothing to read; the ranked list is gone after the session.
+- **Writing model text into a paper note.** Reading aids go in
+  `Papers/_notas/<P-id>.md`, never in the paper note.
 - **Letting a subagent's raw material back into the main context unfiltered.**
   `facet-searcher` returns a compact list, `facet-summarizer` returns cited
   bullets — never raw payloads or whole paper texts. The Reduce pass merges those
