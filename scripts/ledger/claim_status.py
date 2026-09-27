@@ -6,7 +6,7 @@ Hypothesis ``status`` belongs to ``update-confidence``; claim ``status``
 nothing else — not a skill, not a hand edit. Two subcommands:
 
     claim_status.py new --project-dir <vault>/Projects/<slug> --kind <kind> \
-        --statement "<one sentence>" --by <who> [--about H-XXXX] [--source E-XXXX] \
+        --statement "<one sentence>" --by <who> [--about H-XXXX [H-YYYY ...]] [--source E-XXXX] \
         [--depends-on ID ...] [--role exploratory --rung 0..2] [--how "..."]
         -> creates Claims/C-XXXX.md (next vault-wide id) at `pendiente`
 
@@ -22,6 +22,11 @@ Transitions (anything else is refused, exit 3):
 ``fallido`` and ``refutado`` are terminal: pursue the question with a new claim.
 A rung claim (``kind: rung``) must carry ``role: exploratory`` and a ``rung``
 of 0-2 — rungs never count as evidence (docs/v3-interfaces.md §1d).
+
+``--about`` takes one or more hypothesis/claim ids (a rung shared by two
+hypotheses' designs links to both). One id is written as a scalar
+(``about: H-0001``), several as an inline list (``about: [H-0006, H-0001]``);
+build_graph reads either form.
 
 Exit codes: 0 ok, 1 error (bad path / args), 3 refused transition or invalid
 input. Standard library only.
@@ -40,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from notes import (append_block_entry, join_note, newline_of,  # noqa: E402
                    parse_frontmatter, set_scalar, split_note)
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 TOOL = f"kairo/claim_status@{__version__}"
 
 STATUSES = ("pendiente", "probado", "fallido", "refutado")
@@ -87,7 +92,8 @@ def cmd_new(a) -> Path:
     vault = _vault_root(project_dir)
     if a.kind not in KINDS:
         raise Refused(f"--kind must be one of {KINDS}")
-    for ref in [*(a.depends_on or []), *([a.about] if a.about else [])]:
+    about = list(dict.fromkeys(a.about or []))   # dedup, keep order
+    for ref in [*(a.depends_on or []), *about]:
         if not _ID_RE.match(ref):
             raise Refused(f"not a Kairo id: {ref}")
     if a.source and not _SOURCE_RE.match(a.source):
@@ -97,7 +103,7 @@ def cmd_new(a) -> Path:
             raise Refused("a rung claim must be --role exploratory (rungs never count as evidence)")
         if a.rung not in ("0", "1", "2"):
             raise Refused("a rung claim needs --rung 0, 1 or 2 (3 is the confirmatory design)")
-        if not (a.about and a.source):
+        if not (about and a.source):
             raise Refused("a rung claim needs --about H-XXXX and --source E-XXXX")
     hub_id = ""
     hub = project_dir / "_hub.md"
@@ -114,8 +120,10 @@ def cmd_new(a) -> Path:
         f"created: {today}",
         f"updated: {today}",
     ]
-    if a.about:
-        fm.append(f"about: {a.about}")
+    if len(about) == 1:
+        fm.append(f"about: {about[0]}")
+    elif about:
+        fm.append(f"about: [{', '.join(about)}]")
     if a.source:
         fm.append(f"source: {a.source}")
     fm.append(f"depends_on: [{', '.join(a.depends_on or [])}]")
@@ -191,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     n.add_argument("--kind", required=True, choices=KINDS)
     n.add_argument("--statement", required=True)
     n.add_argument("--by", required=True)
-    n.add_argument("--about")
+    n.add_argument("--about", nargs="+", action="extend",
+                   help="H-XXXX / C-XXXX this claim is about; repeatable or space-separated")
     n.add_argument("--source")
     n.add_argument("--depends-on", nargs="*", default=[])
     n.add_argument("--role", choices=("exploratory", "confirmatory"))

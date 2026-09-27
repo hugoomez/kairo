@@ -157,9 +157,11 @@ rung that also "fixes" things is testing a different design.
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/claim_status.py new \
      --project-dir <vault>/Projects/<slug> --kind rung --role exploratory --rung <k> \
-     --about <H-XXXX> --source <E-XXXX> --by <who> \
+     --about <H-XXXX> [<H-YYYY> ...] --source <E-XXXX> --by <who> \
      --statement "<the relaxed prediction>" --how "<E-XXXX decision rule>"
    ```
+   A rung that informs the design of more than one hypothesis lists them all
+   in `--about` (the claim links to each and is still evidence for none).
 3. **No `update-confidence` trigger** — not at freeze, not at run start, not at
    the result. `update-confidence` would refuse it anyway
    (`evidence_gate.py check` exits 3 on `role: exploratory`); do not add a rung

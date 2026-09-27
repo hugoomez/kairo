@@ -254,6 +254,27 @@ class ClaimWriter(LedgerFixture):
         self.assertIn("| H-0001 | C-0001 | 0 | E-0001 | pendiente |",
                       (self.proj / "_ledger.md").read_text(encoding="utf-8"))
 
+    def test_rung_about_several_hypotheses(self):
+        # a rung that informs two hypotheses' designs links to both
+        self.hyp("H-0001")
+        self.hyp("H-0002")
+        base = ["new", "--project-dir", str(self.proj), "--kind", "rung", "--statement", "s",
+                "--by", "t", "--role", "exploratory", "--rung", "2", "--source", "E-0001"]
+        code, out, err = _run(claim_status.main, base + ["--about", "H-0002", "H-0001",
+                                                         "--about", "H-0002"])
+        self.assertEqual(code, 0, err)
+        c = next((self.proj / "Claims").glob("C-*.md"))
+        self.assertIn("about: [H-0002, H-0001]\n", c.read_text(encoding="utf-8"))
+        _, js, _ = _run(build_graph.main, ["--vault", str(self.vault), "--write", "--json"])
+        self.assertEqual(json.loads(js)["nodes"]["C-0001"]["about"], ["H-0002", "H-0001"])
+        self.assertIn("| H-0002, H-0001 | C-0001 | 2 | E-0001 | pendiente |",
+                      (self.proj / "_ledger.md").read_text(encoding="utf-8"))
+        # a single id keeps the scalar form; a bad id in the list is refused
+        self.assertEqual(_run(claim_status.main, base + ["--about", "H-0001"])[0], 0)
+        c2 = sorted((self.proj / "Claims").glob("C-*.md"))[-1]
+        self.assertIn("about: H-0001\n", c2.read_text(encoding="utf-8"))
+        self.assertEqual(_run(claim_status.main, base + ["--about", "H-0001", "nope"])[0], 3)
+
     def test_column0_block_list_propagates(self):
         # review finding: `depends_on:\n- C-0001` (valid YAML) used to be dropped silently
         a = self.claim("A")

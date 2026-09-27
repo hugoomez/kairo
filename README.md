@@ -325,6 +325,18 @@ manual read and say so in their output — they never silently skip the check.
 Set up the MCP server separately and point it at your vault; it is not bundled
 with this plugin.
 
+**Most common reason it is "not available": the session's root directory.**
+Claude Code reads a project's `.mcp.json` and `.claude/settings.json` (where
+the vault's `send_guard` hooks live) only from the directory it was started
+in. Start vault work from the vault root (`cd <vault> && claude`). A session
+started anywhere else — e.g. in this plugin's repo while editing vault notes —
+has neither the MCP server nor the `send_guard` hooks. If you do vault work
+from another root, register both there at local scope (never committed):
+`claude mcp add smart-connections --scope local -e VAULT_PATH=<vault> -- node
+<path>/dist/index.js`, and the same PreToolUse `send_guard` hooks (with
+`--vault <vault>`) in that directory's `.claude/settings.local.json`. Neither
+takes effect until the next session (no hot reload); check with `/mcp`.
+
 ---
 
 ## Optional companion: Zotero (reference manager)
@@ -450,9 +462,39 @@ a manuscript gate, set one up so a spent budget doesn't turn papers into
 3. **Never commit it** — keep it out of the vault, out of this repo, and out of
    any note.
 
-Optional, same pattern: `SEMANTIC_SCHOLAR_API_KEY` (see `literature-search` →
-Configuración opcional) is sent as `x-api-key` when the resolver falls back to
-Semantic Scholar.
+---
+
+## Optional companion: Semantic Scholar API key (literature search)
+
+`literature-search` (via its `facet-searcher` subagents) and the citation
+resolver's fallback query [Semantic Scholar](https://www.semanticscholar.org/).
+Keyless requests share one public rate pool; with several facets searched in
+parallel they often come back `HTTP 429`, and the run records that pass as lost
+(degraded coverage). A free key removes most of those failures.
+
+**Setup:**
+
+1. Request a free key with the form linked at
+   <https://www.semanticscholar.org/product/api> (approval by email, usually a
+   day or two).
+2. Set it as an environment variable named **`SEMANTIC_SCHOLAR_API_KEY`** in
+   the environment that starts Claude Code — so both the main session and its
+   subagents' `curl` calls inherit it. Pick one:
+   - **Windows (recommended):** a user environment variable, outside any repo:
+     `setx SEMANTIC_SCHOLAR_API_KEY "<your key>"` in a terminal, then close
+     every terminal and start Claude Code again from a new one (`setx` does
+     not change terminals that are already open). Check with
+     `echo $env:SEMANTIC_SCHOLAR_API_KEY` (PowerShell) or
+     `echo $SEMANTIC_SCHOLAR_API_KEY` (Git Bash).
+   - **macOS / Linux:** `export SEMANTIC_SCHOLAR_API_KEY="<your key>"` in your
+     shell profile (`~/.zshrc`, `~/.bashrc`), then open a new terminal.
+   - **Claude Code user settings:** an `"env": {"SEMANTIC_SCHOLAR_API_KEY":
+     "<your key>"}` block in `~/.claude/settings.json` (your user file, not a
+     project's). Don't put it in a vault's or repo's `.claude/settings.json`.
+3. **Never commit it** — keep it out of the vault, out of this repo, and out of
+   any note. `facet-searcher` sends it only as the `x-api-key` header and never
+   prints it. The resolver sends it the same way when it falls back to
+   Semantic Scholar.
 
 ---
 
