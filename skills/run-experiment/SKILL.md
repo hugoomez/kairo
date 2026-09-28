@@ -113,6 +113,14 @@ Recompute, **the same way `preregister-experiment` did**:
   a mismatch. *(On an external runtime the code is a transfer bundle, not a git
   tree — instead verify `MANIFEST.sha256` inside the bundle and that those files
   are byte-identical to `Scripts/experiments/E-XXXX/` at that sha. See step 2.)*
+- **Applied projects — `environment.code: {repo: <code_repo path>, commit: <sha>}`.**
+  When the experiment runs the project's own code repository, the frozen
+  manifest (or the implementation `## Enmiendas` entry) names that repository
+  and commit. Check the repository is at exactly that commit with no
+  uncommitted changes (`git -C <repo> rev-parse HEAD`, `git -C <repo> status
+  --porcelain`), or check it out; anything else is a mismatch. A transfer
+  bundle takes the repository's files from that commit (`git -C <repo> archive
+  <sha>`), never from the working tree.
 
 **Any mismatch → stop. Do not run.** Report: which check failed, expected vs
 actual value, and that no code was executed. A hardware string that differs from

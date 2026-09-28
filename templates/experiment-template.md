@@ -47,6 +47,10 @@ environment:
   # tools — validated paper-to-tool tools this design uses (preregister-experiment
   # step 3f); run-experiment pre-flight re-verifies each hash with tool_hash.py.
   tools: []   # e.g. [{path: Tools/P-0002/modular-addition-training, validation_hash: <sha256>}]
+  # code — applied projects only: the project's own code repository at an exact
+  # commit (outside the vault). run-experiment checks the repo is at this commit
+  # with no uncommitted changes; a transfer bundle is built from this commit.
+  code: {}    # e.g. {repo: C:/Users/me/code/proyecto, commit: <40-hex sha>}
 # method_provenance — where the code of a reproduced paper's method comes from.
 # reimplemented_from_text carries an `importante` flag: "método reimplementado
 # desde el texto, no validado contra el código original" (see ## Manifiesto de entorno).

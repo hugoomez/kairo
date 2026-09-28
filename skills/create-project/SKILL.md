@@ -470,6 +470,33 @@ re-run resolve_refs.py --only P-0018 --write`. These papers are ingested, but
 must not be cited as support until resolved (a `retracted` / `withdrawn` paper
 never is).
 
+## Applied projects: the code repository
+
+For the `aplicado` template, in step 2, after the scaffold:
+
+1. **Where:** the brief gives an absolute path for the project's code
+   repository. It is always a **separate** git repository and never inside
+   the vault; the scripts below refuse either way round.
+2. **Create or link it**, which also installs its pre-push guard:
+   ```
+   # a new repository (CONVENTIONS.md, .gitignore, README, first commit):
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/code_repo/repo_setup.py" create \
+     --repo <path> --vault <vault> --project-dir Projects/<slug> --name "<project name>"
+   # an existing repository:
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/code_repo/repo_setup.py" link \
+     --repo <path> --vault <vault> --project-dir Projects/<slug>
+   ```
+   The guard (`scripts/code_repo/repo_guard.py`) runs before every push and
+   blocks anything that would carry vault content out: keys and secrets,
+   copied notes, vault paths, text sharing 12-word fragments with any vault
+   note, a remote pointing at the vault, or a remote whose visibility differs
+   from the hub's `code_visibility`.
+3. **Hub fields:** `code_repo: <path>`, `code_remote: none`,
+   `code_visibility: private`.
+4. **No remote here.** A GitHub remote is created later, only through an
+   approved action: private by default, public only by the researcher's
+   explicit choice. The vault itself never gets a remote.
+
 ## Naming & ids
 
 | Thing | Rule |
