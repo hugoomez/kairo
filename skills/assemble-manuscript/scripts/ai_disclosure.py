@@ -285,7 +285,7 @@ def _split_flow(inner: str) -> list[str]:
     depth = 0
     q = None
     cur: list[str] = []
-    for i, ch in enumerate(inner):
+    for ch in inner:
         if q:
             cur.append(ch)
             if ch == q:

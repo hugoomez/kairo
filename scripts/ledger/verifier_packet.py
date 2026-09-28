@@ -506,7 +506,7 @@ def build(vault: str, note: str, experiments: list[str],
                          "verdicts and is never sent to the verifier")
     inc, exc = [], []
     fm_inc, fm_exc = [], []
-    for k, lines in frontmatter_blocks(fm):
+    for k, _lines in frontmatter_blocks(fm):
         (fm_inc if k in HYP_FM_KEYS else fm_exc).append(k)
     out.append(f"## Nota: {label}")
     out.append("")

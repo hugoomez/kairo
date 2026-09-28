@@ -524,7 +524,13 @@ parallel they often come back `HTTP 429`, and the run records that pass as lost
 claude --plugin-dir .          # load this repo as a plugin for one session
 claude plugin validate .       # check the manifest and component paths
 /reload-plugins                # pick up edits without restarting
+python -m pytest -q            # script tests (standard library + pytest)
+python -m ruff check .         # lint (rules in ruff.toml)
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same lint and tests on Linux and
+Windows, and validates the plugin manifest, on every push to `main` and every
+pull request.
 
 **Research content never goes in this repo.** This repository is public and
 holds only the plugin: skills, agents, scripts, templates and their synthetic

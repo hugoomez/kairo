@@ -251,7 +251,9 @@ def _rescore(run: Path, program: Path, heldout: Path | None, why: str) -> dict:
     bad = harness.verify_hashes(lock)
     if bad:
         raise Critical("frozen evaluator changed: " + "; ".join(bad))
-    strip = lambda r: {k: v for k, v in r.items() if k not in ("inputs", "outputs", "targets")}
+    def strip(r):
+        return {k: v for k, v in r.items() if k not in ("inputs", "outputs", "targets")}
+
     tr = strip(harness.score_split(str(program), lock, Path(lock["train_dir"])))
     he = strip(harness.score_split(str(program), lock, ho_dir))
     gap = tr["score"] - he["score"]

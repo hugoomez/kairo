@@ -1,0 +1,14 @@
+# Lint baseline for the plugin's Python scripts (CI: .github/workflows/ci.yml).
+# Pyflakes + pycodestyle errors + bugbear: rules that catch bugs, not taste.
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+  "E741",  # `l` for a line is used deliberately in short comprehensions
+  "B905",  # zip() here pairs a list with its own tail (pairwise) or follows a length check
+]
+
+[lint.per-file-ignores]
+# Tests put the script directory on sys.path before importing it.
+"**/test_*.py" = ["E402"]

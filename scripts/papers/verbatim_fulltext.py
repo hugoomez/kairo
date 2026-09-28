@@ -166,7 +166,7 @@ def _figure(f, out: list[str]) -> None:
     is_table = f.has("ltx_table")
     subs = list(_iter(f, lambda x: x.tag == "figure"))
     for s in subs:   # sub-figure captions, or numbered figures nested in a wrapper
-        for cap in _iter(s, lambda x: x.tag == "figcaption" and _owner_figure(x) is s):
+        for cap in _iter(s, lambda x, s=s: x.tag == "figcaption" and _owner_figure(x) is s):
             tag, rest = _title(cap)
             tag = tag.rstrip(": ")
             if re.match(r"(Figure|Table|Fig\.)\s*\d", tag):

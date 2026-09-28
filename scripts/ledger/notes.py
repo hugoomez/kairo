@@ -29,7 +29,7 @@ def split_note(text: str) -> tuple[list[str], str] | None:
     if not text.startswith("---\n"):
         return None
     end = text.find("\n---", 4)
-    while end != -1 and not (text[end + 4:end + 5] in ("\n", "")):
+    while end != -1 and text[end + 4:end + 5] not in ("\n", ""):
         end = text.find("\n---", end + 1)
     if end == -1:
         return None

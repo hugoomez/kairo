@@ -102,8 +102,9 @@ class Gate(unittest.TestCase):
 
     def test_relabel_after_freeze_is_refused(self):
         import subprocess
-        git = lambda *a: subprocess.run(["git", *a], cwd=self.tmp / "vault", check=True,
-                                        capture_output=True)
+        def git(*a):
+            return subprocess.run(["git", *a], cwd=self.tmp / "vault", check=True,
+                                  capture_output=True)
         git("init", "-q")
         git("config", "user.email", "t@t")
         git("config", "user.name", "t")
@@ -128,8 +129,9 @@ class Gate(unittest.TestCase):
     def test_relabel_after_draft_commit_is_refused(self):
         # found at integration review: a pre-freeze draft commit hid the freeze
         import subprocess
-        git = lambda *a: subprocess.run(["git", *a], cwd=self.tmp / "vault", check=True,
-                                        capture_output=True)
+        def git(*a):
+            return subprocess.run(["git", *a], cwd=self.tmp / "vault", check=True,
+                                  capture_output=True)
         git("init", "-q")
         git("config", "user.email", "t@t")
         git("config", "user.name", "t")
