@@ -449,6 +449,7 @@ class Scanner:
         if low in (".netrc", "_netrc"):
             self.add(shown, "netrc", BLOCK, "netrc_name")
         if (low in ("kaggle.json", ".pypirc", ".npmrc")
+                or (low == "access_token" and parent == ".kaggle")
                 or (low == "credentials" and parent == ".aws")
                 or (low == "config.json" and parent == ".docker")
                 or (low == "token" and parent in ("huggingface", ".huggingface"))

@@ -249,6 +249,54 @@ this machine doesn't have — Kaggle, Colab, a rented box:
   frozen `## Manifiesto de entorno`, that difference is a `## Enmiendas` entry,
   not a silent adjustment.
 
+**Kaggle through the Kairo backend (two modes).** When the Kairo interface
+drives a Kaggle run, this skill is invoked twice, and the backend does the
+part in between: upload, push, polling, download. Credentials never enter
+your session. The backend holds the Kaggle token and strips every `KAGGLE_*`
+variable from agent sessions.
+
+- **Prepare mode** — the prompt names a run directory `<run_dir>` outside the
+  vault. Do step 0 and the step 1 pre-flight checks, then build the transfer
+  bundle above in `<run_dir>/bundle/` with its `MANIFEST.sha256`. Write
+  `<run_dir>/bundle.json` (`kairo/kaggle-bundle@1`, the fields
+  `scripts/kaggle/bundle_contract.py` validates):
+  - the run's trace fields: `experiment`, `hypothesis`, `run_id`, `role`,
+    `rung`, `attempt`, `retry_of`, `seeds`, `cell`, `plan_index`,
+    `config_hash`;
+  - `entry`: the frozen command as an argv, run from the bundle root;
+  - `accelerator`, `enable_internet` and `max_wallclock_s`, from the frozen
+    manifest and stopping rule. Internet is `false` unless the preregistration
+    says otherwise;
+  - `estimated_gpu_h`, from `cost_estimated`;
+  - `outputs`: globs of the result files the analysis needs.
+
+  Then run
+  `python "${CLAUDE_PLUGIN_ROOT}/scripts/kaggle/bundle_contract.py" check --run-dir <run_dir>`.
+  It must print `"ok": true`. Anything else, you fix it or you report it; you
+  never hand over a bundle that does not check. **Do not** write trace-index
+  entries, upload anything, or run the experiment in this mode. Stop and
+  report the run directory.
+- **Analyze mode** — the prompt names the run and the vault folder where the
+  backend archived its outputs, `Experimentos/resultados/E-XXXX/<run_id>/`,
+  with `result.json` and `run.log`. The backend has already written the run's
+  trace-index record through the backfill path: one `end` entry with
+  `provenance.backfilled: true` and its sources (the kernel, the sha256 of its
+  `result.json`, the bundle manifest). It carries the kernel's own times, or
+  `unknown`, bracketed by `started_after` / `ended_before` as the backend
+  observed them. It also carries `entered_analysis: null` and the archived
+  artifacts. Run steps 3–7 on those outputs:
+  - sanity checks;
+  - validity;
+  - the frozen analysis, applied mechanically;
+  - `E-XXXX.analysis.json`;
+  - cost calibration with the GPU-h the backend recorded;
+  - the log.
+
+  Settle whether the run entered the analysis with
+  `trace_index.py correct --seq <end seq> --set entered_analysis=<true|false>`,
+  plus the exclusion reason and source when false, exactly as step 1b
+  requires. Never edit the index. Then commit and hand off (step 8) as usual.
+
 Capture:
 
 - **stdout + stderr** — streamed to the log file (step 7).

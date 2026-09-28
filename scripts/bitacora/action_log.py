@@ -120,7 +120,7 @@ def validate(e: dict) -> None:
     _opt(e, "trace", str, "a vault-relative path")
     if isinstance(e.get("trace"), str) and (e["trace"].startswith(("/", "\\")) or ":" in e["trace"] or ".." in e["trace"]):
         raise ActionLogError("trace must be a vault-relative path")
-    for key in ("cost_usd", "duration_s"):
+    for key in ("cost_usd", "duration_s", "gpu_h"):
         v = e.get(key)
         if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
             raise ActionLogError(f"{key} must be a non-negative number or null")
@@ -219,6 +219,8 @@ def _facts(e: dict) -> str:
         bits.append(f"{e['duration_s'] / 60:.1f} min")
     if e.get("cost_usd") is not None:
         bits.append(f"coste equivalente ${e['cost_usd']:.2f}")
+    if e.get("gpu_h") is not None:
+        bits.append(f"{e['gpu_h']:.2f} GPU-h")
     if e.get("trace"):
         bits.append(f"traza `{e['trace']}`")
     return f" ({', '.join(bits)})" if bits else ""

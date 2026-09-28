@@ -141,6 +141,7 @@ CONTAMINATED = {
     "http.sh": ("token", "curl -H 'Authorization: Bearer " + TOKVAL + "' https://api.example.org\n"),
     ".netrc": ("netrc", "machine example.org login a password b\n"),
     "kaggle.json": ("credentials_file", json.dumps({"username": "a", "key": GENERIC})),
+    ".kaggle/access_token": ("credentials_file", "an invented token value\n"),
     "Projects/demo/Experimentos/E-0001.md": ("vault_path", "copied note\n"),
     "extra/Papers/P-0001 note.md": ("vault_path", "copied note\n"),
     "paths.py": ("vault_absolute_path",
