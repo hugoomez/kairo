@@ -319,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--id", required=True)
         if name in ("coverage", "write-section"):
             p.add_argument("--vault", required=True, type=Path)
+        if name == "coverage":
+            p.add_argument("--no-write", action="store_true", help="print only; do not write coverage-<thread>.md")
         if name == "write-section":
             p.add_argument("--section", required=True)
             p.add_argument("--from", dest="source", required=True, type=Path, help="file with the section's text")
@@ -333,8 +335,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"depends_on": bind(args.project_dir, args.thread, args.section, args.id)}))
         elif args.cmd == "coverage":
             cov = coverage(args.vault, args.project_dir, args.thread)
-            out = args.project_dir / "Manuscritos" / f"coverage-{args.thread}.md"
-            out.write_text(render_coverage(cov), encoding="utf-8", newline="\n")
+            if not args.no_write:
+                out = args.project_dir / "Manuscritos" / f"coverage-{args.thread}.md"
+                out.write_text(render_coverage(cov), encoding="utf-8", newline="\n")
             print(json.dumps(cov, ensure_ascii=False))
         elif args.cmd == "write-section":
             write_section(args.vault, args.project_dir, args.thread, args.section, args.source.read_text(encoding="utf-8"))
