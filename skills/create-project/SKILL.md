@@ -79,6 +79,21 @@ Frontmatter: set `name`, `created` (today), `status: active`, `type`
 (`ciencia | producto | hibrido`), and `autonomy_defaults.*`. Leave
 `related_projects: []` — step 3 fills it. Leave `id` for step 2.
 
+**Creation template.** The brief may name a template. A template only fills
+existing fields — never a new `type` value:
+
+| template | `type` | also set | scaffolded in step 2 |
+|---|---|---|---|
+| `teorico` (paper) | `ciencia` | `paper_thread: <slug of the paper's working title>`, `default_linea_publicacion: true` | `Claims/`, `Manuscritos/` with the outline + manuscript skeleton |
+| `aplicado` (code) | `hibrido` | `code_repo`, `code_remote: none`, `code_visibility: private` | the repository link + its pre-push guard (see "Applied projects: the code repository") |
+| `producto` | `producto` | — | as today |
+| `ciencia` (default) | `ciencia` | — | as today |
+
+Set `template:` to the one used. For `teorico`, tell the researcher once, in
+your report: `default_linea_publicacion: true` means every experiment that
+adjudicates a hypothesis will need the `completo` preregistration tier; they
+can set it to `false` in the hub.
+
 ### 2. Assign id and scaffold
 
 - **Next id:** scan `Projects/*/_hub.md` frontmatter `id:`, take the max
@@ -88,6 +103,17 @@ Frontmatter: set `name`, `created` (today), `status: active`, `type`
 - Create empty subfolders `Projects/<slug>/Hipotesis/`,
   `Projects/<slug>/Experimentos/`, `Projects/<slug>/Producto/`, each with a
   `.gitkeep` so git tracks them.
+- **`teorico`:** also `Projects/<slug>/Claims/` (with `.gitkeep`) and the
+  paper, from day one:
+  ```
+  python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/manuscript.py" init \
+    --project-dir Projects/<slug> --thread <paper_thread> --title "<working title>"
+  ```
+  It writes `Manuscritos/outline-<paper_thread>.md` (the section plan, each
+  section with its `depends_on`) and `Manuscritos/manuscript-<paper_thread>.md`
+  (a skeleton whose sections are marked placeholders). No prose is drafted
+  here: `assemble-manuscript` (progressive mode) does that later, under its
+  gates.
 
 ### 3. Compute `related_projects`
 

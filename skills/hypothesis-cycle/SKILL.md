@@ -389,6 +389,18 @@ feedback to the claim + test sketch, then re-enter at Check 1.
 | **Clear fail** at any check | **Do not create a note** (one logged exception — see "On a clear fail"). Append one line to `Projects/<slug>/_digest.md` stating the claim and which check killed it and why — so it isn't re-proposed. |
 | **Rounds exhausted, no clear verdict** | Save as `status: propuesta` anyway, set `needs_human_review: true`, and write the **full** round-by-round critic exchange in `## Revisión del ciclo`. Flag it to the user. |
 
+### Frontmatter defaults from the project hub
+
+When creating the note, read the project's `_hub.md`:
+
+- `linea_publicacion` = the hub's `default_linea_publicacion` (`false` when
+  absent), unless the researcher says otherwise for this candidate.
+- `paper_thread` = the hub's `paper_thread` when `linea_publicacion` is true
+  and the hub has one.
+
+Say in your report when a note was filed as publication-track because of the
+hub default: its experiments will need the `completo` tier.
+
 ### `## Génesis` — always, on every note this skill creates
 
 Every note created by this skill carries a `## Génesis` section, written from

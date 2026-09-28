@@ -4,6 +4,27 @@ name: <value>
 created: <YYYY-MM-DD>
 status: <active | paused | archived>
 type: <ciencia | producto | hibrido>
+# template — the creation template that set this project up. It only fills
+# existing fields; `type` above is what skills branch on.
+#   teorico  — type ciencia, organised around one paper from day one
+#   aplicado — type hibrido, with a linked code repository
+#   producto — type producto: pure engineering, no scientific questions
+#   ciencia  — type ciencia, no paper skeleton
+template: <teorico | aplicado | producto | ciencia>
+# paper_thread — teorico: the paper the project is organised around
+# (Manuscritos/outline-<paper_thread>.md). Optional otherwise.
+paper_thread: <slug>
+# default_linea_publicacion — the linea_publicacion value hypothesis-cycle
+# gives new hypotheses in this project (teorico: true). true means every
+# adjudicating experiment needs the `completo` preregistration tier.
+default_linea_publicacion: false
+# code_repo — aplicado: absolute path of the project's own git repository,
+# always OUTSIDE the vault. code_remote: none, or the remote URL.
+# code_visibility: private by default; public only by the researcher's
+# explicit choice. The repo's pre-push guard blocks vault content.
+code_repo: <path>
+code_remote: none
+code_visibility: private
 # deadline — optional
 deadline: <YYYY-MM-DD>
 # compute_budget — optional (e.g. "500 GPU-h" or a currency figure)
