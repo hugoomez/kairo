@@ -90,7 +90,13 @@ TEST_SKETCH_RE = re.compile(
 # Sections that carry reasoning, critiques or prior verdicts. Never verifiable
 # on their own and never sent in any mode — `--section` cannot reach them.
 NEVER_SECTIONS = ("Revisión del ciclo", "Hipótesis rival descartada", "Lección",
-                  "Verificación independiente")
+                  "Verificación independiente", "Génesis")
+
+# A lemma / theorem claim note is verified on its proof: the statement, the
+# proof, and — as given assumptions — the STATEMENTS of what it depends on
+# (never their proofs, discussion or records).
+PROOF_KINDS = ("lema", "teorema")
+PROOF_SECTIONS = ("Enunciado", "Demostración")
 
 # Source fields must hold only text fetched from the paper (create-project step
 # 5). These markers betray model-written text standing in for the source; a
@@ -508,11 +514,20 @@ def build(vault: str, note: str, experiments: list[str],
     fm_inc, fm_exc = [], []
     for k, _lines in frontmatter_blocks(fm):
         (fm_inc if k in HYP_FM_KEYS else fm_exc).append(k)
+    is_proof = (fm_scalar(fm, "kind") or "") in PROOF_KINDS
+    if is_proof:
+        missing = [s for s in PROOF_SECTIONS if not any(h == s and t.strip() for h, t in sections)]
+        if missing:
+            raise ValueError(f"{label}: a {fm_scalar(fm, 'kind')} is verified on its proof — "
+                             f"missing or empty: {', '.join('## ' + m for m in missing)}")
     out.append(f"## Nota: {label}")
     out.append("")
     for h, text in sections:
         shown = h or "(preámbulo)"
-        allowed = (h == section) if section is not None else hyp_section_allowed(h)
+        if is_proof and section is None:
+            allowed = h in PROOF_SECTIONS
+        else:
+            allowed = (h == section) if section is not None else hyp_section_allowed(h)
         if not allowed:
             exc.append(shown)
             continue
@@ -530,6 +545,36 @@ def build(vault: str, note: str, experiments: list[str],
         "path": _display(note, vault), "role": "note",
         "included_sections": inc, "excluded_sections": exc,
         "included_frontmatter": fm_inc, "excluded_frontmatter": fm_exc})
+
+    # ---- a proof's assumptions: the statements it depends on, as given
+    if is_proof:
+        deps = dependency_ids(fm)
+        out.append("## Supuestos: enunciados de las dependencias (se dan por buenos; "
+                   "no se incluyen sus demostraciones)")
+        out.append("")
+        if not deps:
+            out.append("(ninguna dependencia declarada en depends_on)")
+            out.append("")
+        for dep in deps:
+            path = find_note(vault, dep)
+            if path is None:
+                out.append(f"### {dep}")
+                out.append("")
+                out.append("(no encontrada en el vault)")
+                out.append("")
+                continue
+            if is_flagged(Path(path)):
+                raise ValueError(f"{dep} is marked send: never; a proof that depends on it "
+                                 "cannot be sent to the verifier")
+            dfm, dbody = split_frontmatter(read_text(path))
+            dsec = dict(body_sections(dbody))
+            text = dsec.get("Enunciado") or dsec.get("Claim") or ""
+            out.append(f"### {dep} ({fm_scalar(dfm, 'kind') or 'hipótesis'})")
+            out.append("")
+            out.append(text.strip() or "(sin enunciado)")
+            out.append("")
+            manifest["sources"].append({"path": _display(path, vault), "role": "assumption",
+                                        "included_sections": ["Enunciado" if "Enunciado" in dsec else "Claim"]})
 
     # ---- experiments
     for ep in experiments:
@@ -591,6 +636,27 @@ def build(vault: str, note: str, experiments: list[str],
     manifest["sha256"] = hashlib.sha256(packet.encode("utf-8")).hexdigest()
     manifest["bytes"] = len(packet.encode("utf-8"))
     return packet, manifest
+
+
+def dependency_ids(fm_lines: list[str]) -> list[str]:
+    """`depends_on` ids, inline (`[C-0001, H-0002]`) or as a block list."""
+    ids: list[str] = []
+    for k, lines in frontmatter_blocks(fm_lines):
+        if k != "depends_on":
+            continue
+        joined = " ".join(lines)
+        ids = re.findall(r"\b[CH]-\d{4}\b", joined)
+    return list(dict.fromkeys(ids))
+
+
+def find_note(vault: str, nid: str) -> str | None:
+    """A claim (Claims/) or hypothesis (Hipotesis/) note by id, any project."""
+    folder = "Claims" if nid.startswith("C-") else "Hipotesis"
+    for p in sorted(glob.glob(os.path.join(vault, "Projects", "*", folder, f"{nid}*.md"))):
+        name = os.path.basename(p)
+        if name == f"{nid}.md" or name.startswith(f"{nid} "):
+            return p
+    return None
 
 
 def render_justification(vault: str, text: str, manifest: dict) -> list[str]:

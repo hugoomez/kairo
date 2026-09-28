@@ -49,7 +49,8 @@ __version__ = "1.1.0"
 TOOL = f"kairo/claim_status@{__version__}"
 
 STATUSES = ("pendiente", "probado", "fallido", "refutado")
-KINDS = ("lema", "resultado_intermedio", "rung", "linaje")
+KINDS = ("lema", "teorema", "resultado_intermedio", "rung", "linaje")
+PROOF_KINDS = ("lema", "teorema")   # probado only through claim_gate.py
 TRANSITIONS = {"pendiente": {"probado", "fallido", "refutado"},
                "probado": {"refutado"},
                "fallido": set(), "refutado": set()}
@@ -136,9 +137,16 @@ def cmd_new(a) -> Path:
            "    status: pendiente",
            f"    by: {_yaml_str(a.by)}",
            f"    evidence: {_yaml_str('creado por ' + TOOL)}"]
-    body = (f"\n## Enunciado\n\n{a.statement.strip()}\n\n"
-            f"## Cómo se establece\n\n{(a.how or '<pendiente>').strip()}\n\n"
-            "## Resultado\n\n<pendiente>\n\n## Qué informa\n\n<pendiente>\n")
+    if a.kind in PROOF_KINDS:
+        body = (f"\n## Enunciado\n\n{a.statement.strip()}\n\n"
+                f"## Demostración\n\n{(a.how or '<pendiente>').strip()}\n\n"
+                "## Comprobación numérica\n\n<Qué casos pequeños prueba Claims/checks/"
+                "C-XXXX.py, o por qué no es factible comprobarlo computacionalmente.>\n\n"
+                "## Qué informa\n\n<Qué notas lo usan (ver su depends_on).>\n")
+    else:
+        body = (f"\n## Enunciado\n\n{a.statement.strip()}\n\n"
+                f"## Cómo se establece\n\n{(a.how or '<pendiente>').strip()}\n\n"
+                "## Resultado\n\n<pendiente>\n\n## Qué informa\n\n<pendiente>\n")
     claims = project_dir / "Claims"
     claims.mkdir(exist_ok=True)
     # Allocate the id with an exclusive create: parallel `new` calls (independent
@@ -174,6 +182,14 @@ def cmd_set(a) -> Path:
                       f"(allowed from {cur}: {sorted(TRANSITIONS[cur]) or 'none, terminal'})")
     if not a.evidence.strip():
         raise Refused("--evidence is required")
+    if a.status == "probado" and str(fm.get("kind", "")) in PROOF_KINDS:
+        # the three-layer rigor gate: verifier, the researcher's sign-offs,
+        # numerical check (+ dependencies) — all on the current text
+        from claim_gate import gate
+        vault = note.parent.parent.parent.parent
+        g = gate(str(vault), note)
+        if not g["ok"]:
+            raise Refused("la puerta de rigor no está abierta: " + " · ".join(g["missing"]))
     today = a.date or dt.date.today().isoformat()
     fm_lines = set_scalar(fm_lines, "status", a.status)
     fm_lines = set_scalar(fm_lines, "updated", today)

@@ -211,7 +211,7 @@ class Integrity(LedgerFixture):
 
 class ClaimWriter(LedgerFixture):
     def test_transitions(self):
-        c = self.claim("x")
+        c = self.claim("x", kind="resultado_intermedio")
         code, _, err = _run(claim_status.main, ["set", "--note", str(c), "--status", "probado",
                                                 "--by", "t", "--evidence", "ok"])
         self.assertEqual(code, 0, err)
@@ -288,7 +288,7 @@ class ClaimWriter(LedgerFixture):
         self.assertEqual({f["node"] for f in json.loads(out)["findings"]}, {"H-0001"})
 
     def test_set_preserves_crlf(self):
-        c = self.claim("x")
+        c = self.claim("x", kind="resultado_intermedio")
         c.write_bytes(c.read_bytes().replace(b"\n", b"\r\n"))
         code, _, err = _run(claim_status.main, ["set", "--note", str(c), "--status", "probado",
                                                 "--by", "t", "--evidence", "ok"])

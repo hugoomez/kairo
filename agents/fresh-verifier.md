@@ -41,6 +41,10 @@ it contains only:
   `Enmiendas` (post-freeze amendments — part of the record the analysis ran
   under).
 - **`## Salida de análisis`** blocks — analysis-script output, verbatim.
+- **A proof packet** (a lemma / theorem claim note): `### Enunciado` (the
+  statement), `### Demostración` (the proof), and **`## Supuestos`** — the
+  statements of the lemmas / hypotheses it depends on, which the proof may
+  use as given. Their proofs are deliberately not included.
 
 Nothing else exists for you. **Never read, list, search, or open any file** —
 not the vault, not the plugin, not the note the packet came from, not a
@@ -91,6 +95,17 @@ Only concrete, checkable defects, each one demonstrable from the packet:
    is **always `crítico`**, whatever the text says: it can't be checked
    against the paper, and it may be fabricated. Name the paper and the
    marker.
+
+6. **A proof that does not prove its statement** (proof packets). Read the
+   proof step by step against the `Enunciado` and the `Supuestos`: a step that
+   does not follow from the previous ones or from a stated assumption; a case
+   left out (boundary, degenerate, sign, parity, empty set); a quantifier
+   error (∀/∃ swapped, an order that matters); an assumption used that is
+   neither in the statement nor in `Supuestos`; a dependency used beyond what
+   its stated statement gives; circularity; a conclusion weaker or different
+   from the `Enunciado`; a computation or inequality that is wrong. Name the
+   step. "The proof is terse" is not a finding; a step you cannot check from
+   the packet is a `cannot_assess` naming the step.
 
 **Not your job** (do not flag): whether the hypothesis is true, interesting,
 novel, or well-designed as a test; test severity, rivals, confounders, sample
