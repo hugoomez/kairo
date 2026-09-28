@@ -50,6 +50,43 @@ manuscript built on `ligero`-tier thresholds or a hypothesis that's only
    name.
 5. Every experiment linked from a qualifying hypothesis's `linked_experiment`.
 
+## Progressive mode — projects organised around a paper from day one
+
+When `Projects/<slug>/Manuscritos/outline-<paper_thread>.md` exists (the
+`teorico` template creates it with `manuscript.py init`), the manuscript is
+written section by section as the project advances, instead of in one pass
+at the end. The outline, not this skill, decides the sections: each has a
+`kind` and the `depends_on` claims / hypotheses it rests on.
+
+1. **Coverage first:**
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/manuscript.py" coverage
+   --vault <vault> --project-dir Projects/<slug> --thread <paper_thread>`.
+   It writes `Manuscritos/coverage-<paper_thread>.md` and prints, per section,
+   whether it is ready and what each dependency still lacks. Report that table
+   to the researcher.
+2. **Draft only what is ready**, one section at a time:
+   - `prosa` (introduction, related work, problem setup / definitions) — from
+     the hub and `Estado-del-arte.md`, under this skill's citation rules and
+     gate (Step 2b): real references built from `Papers/`, claims about a paper
+     only as its verbatim text supports them.
+   - `resultado` — only when every dependency passed its gate. A **theorem or
+     lemma** is stated with its `## Enunciado` **verbatim** (the text the
+     researcher signed off; never reworded) and proved from its signed
+     `## Demostración`; a **hypothesis** follows Step 3's Resultados rules.
+   - `cierre` — once a result is written.
+3. **Write each section through the script**, which refuses a section that is
+   not ready and touches nothing else in the file:
+   `manuscript.py write-section --vault <vault> --project-dir Projects/<slug>
+   --thread <paper_thread> --section <id> --from <tmp>/section.md`.
+4. Fresh verification of each drafted section and the AI-use disclosure work
+   exactly as below. Commit the manuscript, the coverage view and the
+   verification records together.
+
+Never fill a placeholder with "to be completed" prose, and never draft a
+`resultado` section around a claim that has not passed its gate "to show the
+shape": the placeholder already shows the shape, and coverage says what is
+missing.
+
 ## Step 1 — Collect the thread
 
 Scan the project's `Hipotesis/*.md` for `paper_thread: <slug>` (exact match).
@@ -64,7 +101,7 @@ for the whole thread:
 | Condition | Classification |
 |---|---|
 | `linea_publicacion: true`, `status: apoyada`, and **every** hypothesis in `linked_experiment` has `tier: completo` and `experiment_validity: valid` | **Qualifies** — goes into the draft. |
-| `linea_publicacion: true`, `status: apoyada`, but at least one `linked_experiment` entry is `tier: ligero` | **Excluded — missing `completo` tier.** Name the exact experiment id(s) and say `completo` tier is required before this can go into a `linea_publicacion` manuscript. As of this writing `preregister-experiment` has not yet implemented `completo` — if so, say that plainly too, rather than implying the researcher just forgot a step. |
+| `linea_publicacion: true`, `status: apoyada`, but at least one `linked_experiment` entry is `tier: ligero` | **Excluded — missing `completo` tier.** Name the exact experiment id(s) and say `completo` tier is required before this can go into a `linea_publicacion` manuscript (`preregister-experiment` step 1a sets it). |
 | `linea_publicacion: true`, status anything other than `apoyada` (`propuesta`, `en_cola`, `preregistrada`, `en_experimento`) | **Not yet resolved.** Not an error — just not ready. State the current status plainly. |
 | `linea_publicacion: false` (or unset) | **Out of scope for this thread's rigor bar.** If the researcher wants it included, they need to set `linea_publicacion: true` and take it through the `completo`-tier path first — this skill does not draft a publication section around a hypothesis nobody flagged as publication-track. |
 | The hypothesis note, or any of its `linked_experiment` notes, has `send: never` | **Excluded — `send: never`** (`importante`). Don't open it; the researcher drafts that part by hand or unmarks the note. |

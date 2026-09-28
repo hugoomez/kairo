@@ -171,10 +171,143 @@ def bind(project_dir: Path, thread: str, section: str, note_id: str) -> list[str
     return target["depends_on"]
 
 
+# --------------------------------------------------------------------------
+# Coverage: which section is backed, and what is missing
+# --------------------------------------------------------------------------
+
+def _ledger():
+    here = Path(__file__).resolve().parent
+    sys.path.insert(0, str(here.parent / "ledger"))
+    import claim_gate  # noqa: PLC0415
+    import verifications  # noqa: PLC0415
+    from notes import parse_frontmatter, split_note  # noqa: PLC0415
+    from verifier_packet import find_note  # noqa: PLC0415
+    return claim_gate, verifications, parse_frontmatter, split_note, find_note
+
+
+def dep_state(vault: Path, dep: str) -> dict:
+    """Whether one bound claim / hypothesis passed its gate."""
+    claim_gate, vf, parse_fm, split_note, find_note = _ledger()
+    path = find_note(str(vault), dep)
+    if path is None:
+        return {"id": dep, "ok": False, "status": None, "missing": ["no encontrada en el vault"]}
+    fm = parse_fm(split_note(Path(path).read_text(encoding="utf-8-sig"))[0])
+    status = str(fm.get("status", ""))
+    missing: list[str] = []
+    if str(fm.get("send", "")) == "never":
+        return {"id": dep, "ok": False, "status": status, "missing": ["send: never — se redacta a mano"]}
+    if dep.startswith("C-"):
+        g = claim_gate.gate(str(vault), Path(path))
+        if g["applies"]:
+            missing += g["missing"]
+        if status != "probado":
+            missing.append(f"estado «{status}», no probado")
+    else:
+        if str(fm.get("linea_publicacion", "")).lower() != "true":
+            missing.append("linea_publicacion no es true")
+        if status != "apoyada":
+            missing.append(f"estado «{status}», no apoyada")
+        linked = fm.get("linked_experiment") or []
+        linked = linked if isinstance(linked, list) else [linked]
+        for e in [str(x) for x in linked if str(x).strip()]:
+            ep = next(Path(vault, "Projects").glob(f"*/Experimentos/{e}.md"), None)
+            efm = parse_fm(split_note(ep.read_text(encoding="utf-8-sig"))[0]) if ep else {}
+            if str(efm.get("send", "")) == "never":
+                missing.append(f"{e}: send: never")
+            if str(efm.get("tier", "")) != "completo":
+                missing.append(f"{e}: tier «{efm.get('tier', '?')}», se exige completo")
+            if str(efm.get("experiment_validity", "")) == "invalid":
+                missing.append(f"{e}: inválido")
+        last = vf.latest(vf.load(str(path))[5], "note")
+        if not last or last.get("verdict") != "no_errors_found":
+            missing.append(f"verificación: {last.get('verdict') if last else 'nunca verificada'}")
+    return {"id": dep, "ok": not missing, "status": status, "missing": missing}
+
+
+def section_bodies(manuscript: Path) -> dict[str, str]:
+    """Text under each `<!-- kairo:section <id> -->` marker, up to the next `## `."""
+    text = manuscript.read_text(encoding="utf-8").replace("\r\n", "\n")
+    out: dict[str, str] = {}
+    for m in re.finditer(r"<!-- kairo:section ([a-z0-9-]+) -->\n(.*?)(?=\n## |\Z)", text, re.S):
+        out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+def is_placeholder(body: str) -> bool:
+    return not body.strip() or body.strip().startswith("_(pendiente")
+
+
+def coverage(vault: Path, project_dir: Path, thread: str) -> dict:
+    outline, manuscript = paths(project_dir, thread)
+    meta, sections, _ = parse_outline(outline)
+    bodies = section_bodies(manuscript) if manuscript.exists() else {}
+    out = []
+    for s in sections:
+        deps = [dep_state(vault, d) for d in s["depends_on"]]
+        drafted = not is_placeholder(bodies.get(s["id"], ""))
+        if s["kind"] == "prosa":
+            ready, why = True, "prosa: se redacta pronto"
+        elif s["kind"] == "resultado":
+            ready = bool(deps) and all(d["ok"] for d in deps)
+            why = ("sin claims ni hipótesis vinculados" if not deps
+                   else "todas sus dependencias pasaron su puerta" if ready
+                   else "hay dependencias que no pasan su puerta")
+        else:
+            ready = False
+            why = "cierre: espera a que haya un resultado redactado"
+        out.append({**s, "deps": deps, "drafted": drafted, "ready": ready, "why": why})
+    has_result = any(x["kind"] == "resultado" and x["drafted"] for x in out)
+    for x in out:
+        if x["kind"] == "cierre" and has_result:
+            x["ready"], x["why"] = True, "cierre: ya hay un resultado redactado"
+    return {"meta": meta, "sections": out}
+
+
+def render_coverage(cov: dict) -> str:
+    lines = ["---", f"paper_thread: {cov['meta'].get('paper_thread')}", f"generated_by: kairo/manuscript@{__version__}",
+             f"generated: {date.today().isoformat()}", "---", "",
+             f"# Cobertura del paper — {cov['meta'].get('title')}", "",
+             "> Vista derivada: la regenera `manuscript.py coverage`. No editar a mano.", "",
+             "| sección | tipo | respaldo | ¿lista? | ¿redactada? |", "|---|---|---|---|---|"]
+    for s in cov["sections"]:
+        backing = "; ".join(f"{d['id']} {'✓' if d['ok'] else '✗'}" for d in s["deps"]) or "—"
+        lines.append(f"| {s['title']} | {s['kind']} | {backing} | {'sí' if s['ready'] else 'no'} | {'sí' if s['drafted'] else 'no'} |")
+    lines.append("")
+    for s in cov["sections"]:
+        bad = [d for d in s["deps"] if not d["ok"]]
+        if bad:
+            lines += [f"## Falta en «{s['title']}»", ""]
+            for d in bad:
+                lines += [f"- **{d['id']}**: " + "; ".join(d["missing"])]
+            lines.append("")
+    return "\n".join(lines)
+
+
+def write_section(vault: Path, project_dir: Path, thread: str, section: str, text: str) -> None:
+    """Replace one section's body. Refused unless coverage says it is ready:
+    the gate is enforced here, not only described in a skill."""
+    cov = coverage(vault, project_dir, thread)
+    s = next((x for x in cov["sections"] if x["id"] == section), None)
+    if s is None:
+        raise Refused(f"no section {section}")
+    if not s["ready"]:
+        raise Refused(f"section {section} is not ready: {s['why']}")
+    if not text.strip():
+        raise Refused("empty section text")
+    _, manuscript = paths(project_dir, thread)
+    raw = manuscript.read_text(encoding="utf-8").replace("\r\n", "\n")
+    marker = f"<!-- kairo:section {section} -->"
+    m = re.search(re.escape(marker) + r"\n(.*?)(?=\n## |\Z)", raw, re.S)
+    if not m:
+        raise Refused(f"marker for {section} not found in the manuscript")
+    new = raw[: m.start(1)] + text.strip() + "\n" + raw[m.end(1):]
+    manuscript.write_text(new, encoding="utf-8", newline="\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("init", "bind", "show"):
+    for name in ("init", "bind", "show", "coverage", "write-section"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
         p.add_argument("--thread", required=True)
@@ -184,6 +317,11 @@ def main(argv: list[str] | None = None) -> int:
         if name == "bind":
             p.add_argument("--section", required=True)
             p.add_argument("--id", required=True)
+        if name in ("coverage", "write-section"):
+            p.add_argument("--vault", required=True, type=Path)
+        if name == "write-section":
+            p.add_argument("--section", required=True)
+            p.add_argument("--from", dest="source", required=True, type=Path, help="file with the section's text")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -193,6 +331,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"outline": str(o), "manuscript": str(m)}, ensure_ascii=False))
         elif args.cmd == "bind":
             print(json.dumps({"depends_on": bind(args.project_dir, args.thread, args.section, args.id)}))
+        elif args.cmd == "coverage":
+            cov = coverage(args.vault, args.project_dir, args.thread)
+            out = args.project_dir / "Manuscritos" / f"coverage-{args.thread}.md"
+            out.write_text(render_coverage(cov), encoding="utf-8", newline="\n")
+            print(json.dumps(cov, ensure_ascii=False))
+        elif args.cmd == "write-section":
+            write_section(args.vault, args.project_dir, args.thread, args.section, args.source.read_text(encoding="utf-8"))
+            print(json.dumps({"written": args.section}))
         else:
             meta, sections, _ = parse_outline(paths(args.project_dir, args.thread)[0])
             print(json.dumps({"meta": meta, "sections": sections}, ensure_ascii=False))

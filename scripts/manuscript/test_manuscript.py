@@ -77,5 +77,117 @@ class TestBind(Base):
         self.assertEqual(len(json.loads(buf.getvalue())["sections"]), 5)
 
 
+HYP = """---
+id: {hid}
+project: PROJ-900
+status: {status}
+linea_publicacion: true
+linked_experiment:
+  - E-9001
+verifications:
+  - verifier: kairo/fresh-verifier@1.1.0
+    model: test
+    date: 2026-01-01
+    verdict: no_errors_found
+    scope: note
+---
+
+## Claim
+
+Un claim inventado.
+"""
+
+EXP = """---
+id: E-9001
+hypothesis: H-9001
+tier: {tier}
+experiment_validity: valid
+---
+"""
+
+
+class TestCoverage(Base):
+    """Coverage reads the gates; write-section refuses what is not ready."""
+
+    def setUp(self):
+        super().setUp()
+        self.vault = self.tmp
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
+        import claim_status  # noqa: PLC0415
+        self.cs = claim_status
+        (self.proj / "Claims" / "C-9001.md").unlink()
+        (self.proj / "Experimentos").mkdir()
+        ms.init(self.proj, "t", "Paper inventado", None)
+
+    def claim(self, kind, statement):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(self.cs.main(["new", "--project-dir", str(self.proj), "--kind", kind,
+                                           "--statement", statement, "--how", "…", "--by", "t"]), 0)
+        return Path(buf.getvalue().strip())
+
+    def cov(self):
+        return {s["id"]: s for s in ms.coverage(self.vault, self.proj, "t")["sections"]}
+
+    def test_prose_is_ready_early_and_results_wait_for_their_gate(self):
+        c = self.cov()
+        self.assertTrue(c["introduccion"]["ready"])
+        self.assertFalse(c["resultados"]["ready"])
+        self.assertIn("sin claims", c["resultados"]["why"])
+        self.assertFalse(c["discusion"]["ready"])
+
+        t = self.claim("teorema", "Un teorema inventado.")
+        ms.bind(self.proj, "t", "resultados", t.stem)
+        c = self.cov()
+        self.assertFalse(c["resultados"]["ready"])
+        self.assertTrue(any("visto bueno" in m for m in c["resultados"]["deps"][0]["missing"]))
+        src = self.tmp / "sec.md"
+        src.write_text("Teorema 1. …", encoding="utf-8")
+        with self.assertRaises(ms.Refused):
+            ms.write_section(self.vault, self.proj, "t", "resultados", src.read_text(encoding="utf-8"))
+
+    def test_writing_a_ready_section_touches_only_that_section(self):
+        _, manuscript = ms.paths(self.proj, "t")
+        before = ms.section_bodies(manuscript)
+        ms.write_section(self.vault, self.proj, "t", "introduccion", "Texto de la introducción.\n\nSegundo párrafo.")
+        after = ms.section_bodies(manuscript)
+        self.assertEqual(after["introduccion"], "Texto de la introducción.\n\nSegundo párrafo.")
+        for k in before:
+            if k != "introduccion":
+                self.assertEqual(after[k], before[k])
+        self.assertTrue(self.cov()["introduccion"]["drafted"])
+
+    def test_an_established_result_opens_its_section_and_then_the_discussion(self):
+        r = self.claim("resultado_intermedio", "Un resultado intermedio inventado.")
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(self.cs.main(["set", "--note", str(r), "--status", "probado", "--by", "t", "--evidence", "x"]), 0)
+        ms.bind(self.proj, "t", "resultados", r.stem)
+        self.assertTrue(self.cov()["resultados"]["ready"])
+        ms.write_section(self.vault, self.proj, "t", "resultados", "Resultado 1.")
+        self.assertTrue(self.cov()["discusion"]["ready"])
+
+    def test_hypotheses_need_the_publication_bar(self):
+        (self.proj / "Hipotesis" / "H-9001 x.md").write_text(HYP.format(hid="H-9001", status="apoyada"), encoding="utf-8")
+        (self.proj / "Experimentos" / "E-9001.md").write_text(EXP.format(tier="ligero"), encoding="utf-8")
+        ms.bind(self.proj, "t", "resultados", "H-9001")
+        dep = self.cov()["resultados"]["deps"][0]
+        self.assertFalse(dep["ok"])
+        self.assertIn("completo", " ".join(dep["missing"]))
+        (self.proj / "Experimentos" / "E-9001.md").write_text(EXP.format(tier="completo"), encoding="utf-8")
+        self.assertTrue(self.cov()["resultados"]["ready"])
+
+    def test_coverage_cli_writes_the_view(self):
+        import io
+        from contextlib import redirect_stdout
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(ms.main(["coverage", "--vault", str(self.vault), "--project-dir", str(self.proj), "--thread", "t"]), 0)
+        text = (self.proj / "Manuscritos" / "coverage-t.md").read_text(encoding="utf-8")
+        self.assertIn("| Resultados principales | resultado | — | no | no |", text)
+
+
 if __name__ == "__main__":
     unittest.main()
