@@ -193,6 +193,19 @@ claude --plugin-dir /path/to/kairo
   `send: never` note).
 - `scripts/analysis/evidence_gate.py` — the mechanical rule that exploratory
   experiments never count as evidence (`check`, `gather`).
+- `scripts/bitacora/` — the per-project lab notebook:
+  - `action_log.py` — `Projects/<slug>/Bitacora/acciones.jsonl`, one line per
+    action (job started / finished / cancelled, run approved or rejected, an
+    automation switch changed, a commit). Append-only and hash-chained with the
+    same rules as the trace index (`verify --git` anchors it to history). A
+    human decision records its `reason`, or `null` when none was given — never
+    an invented one. `render` writes the daily page `Bitacora/YYYY-MM-DD.md`
+    (*Hecho*, *Decidido (y por qué)*, and a *Notas* section that is yours and
+    is never rewritten).
+  - `commit_hook.py` — vault `PostToolUse` hook on `Bash` / `PowerShell`: after
+    a `git commit`, logs it in every project it touched (a `Papers/` note counts
+    for the projects in its `projects:`), so work done from a plain Claude Code
+    session lands in the notebook too.
 
 ---
 
