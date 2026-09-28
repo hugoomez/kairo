@@ -247,3 +247,59 @@ Since send_guard 1.1.0 the same hook also refuses every model read of
 `Papers/_notas/` (model-written reading notes; `is_model_notes`), for the main
 session and subagents alike; `verifier_packet.py` (≥ 1.3.0) skips that
 directory in code.
+
+## 4. Full-trace index and pitfall audit (2026-09-27)
+
+### 4a. Trace index: written by `run-experiment`, read by `pitfall-audit`
+
+`Projects/<slug>/Experimentos/trazas/index.jsonl`, written only through
+`scripts/traces/trace_index.py` (`start`, `end`, `append`, `correct`; read with
+`list`, `show`, `verify [--git]`). It has one canonical JSON object per line
+(`schema: kairo/trace@1`), and every run attempt gets entries: completed,
+aborted, crashed, invalid, retried, never launched, rungs and pilots.
+
+- Per entry: `run_id`, `experiment`, `role`, `rung`, `attempt`, `retry_of`,
+  `seeds`, `cell`, `plan_index`, `config_hash`, `started_at` / `ended_at` (UTC
+  ISO, `unknown` or null), `outcome` (`running | completed | aborted | crashed
+  | invalid | not_launched | unknown`), `entered_analysis` (true/false/null =
+  unknown). `entered_analysis: false` requires `exclusion_reason`, and
+  `exclusion_rule_source` points to the preregistered rule. `provenance` holds
+  `written_by`, `backfilled`, and `sources`, which a backfilled entry must
+  have. Optional fields: `artifacts` (path + sha256 + archived),
+  `started_after` / `ended_before` bounds, `date`, `unknown`.
+- **Append-only.** Each entry carries `seq` (its line number), `prev_sha256`
+  (the sha256 of the previous line) and `entry_sha256`. `verify` exits 3 on any
+  edited, deleted or reordered line. With `--git`, every committed version must
+  also be a byte prefix of every later version, which is autocrlf-neutral. A
+  correction is a new `event: correction` entry naming the `seq` +
+  `entry_sha256` it corrects, and the latest entry per `run_id` is the run's
+  state.
+- `run-experiment` also writes `trazas/E-XXXX.analysis.json`
+  (`kairo/analysis@1`: the primary metric as computed, the metric the verdict
+  used, `runs_in_analysis` and/or `cells`, and `parameters_used`).
+
+### 4b. Pitfall audit: called by `update-confidence` before every evidence edge
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/audit/pitfall_audit.py" audit --experiment <E> --hypothesis <H> [...] [--apply]
+```
+
+It runs four checks after Luo et al. (NeurIPS 2025): (a) benchmark,
+(b) leakage, (c) metric and (d) selection. Every finding has a `severity`
+(`crítico | importante | menor`), a `location` and a `kind`. Stdout is a human
+summary, or with `--json` the report: `checks.<name>.{status, worst,
+findings, passed}`, `counts`, `worst`, `blocking`, `needs_human_review_written`.
+
+| Exit | Meaning |
+|---|---|
+| `0` | no crítico: the transition may proceed, and its findings are reported |
+| `3` | at least one crítico: **the transition is blocked** |
+| `1` | error: treated as blocked, and nothing is written |
+
+**Blocking semantics.** A crítico blocks the evidence transition and, with
+`--apply`, sets `needs_human_review: true` on the hypothesis. The only writer
+is `set_needs_human_review`, which touches only that line. The audit never
+changes `status`: `update-confidence` remains its only writer, and a crítico is
+never read as evidence about the claim. Only the researcher clears the flag,
+or authorises an override that is recorded in `history`. Without `--apply` the
+audit is a dry run and writes nothing.

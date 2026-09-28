@@ -25,6 +25,11 @@ Encoded rules:
 - **No transition to `apoyada` without a fresh verification** that found no
   errors — see "Fresh-verification gate before `apoyada`". The verifier can
   only block; it never moves `status` anywhere.
+- **No evidence transition before the pitfall audit** (benchmark, leakage,
+  metric, selection) has run on every adjudicating experiment. A `crítico`
+  finding blocks the transition and sets `needs_human_review: true`. Like the
+  verifier, the audit only blocks and never moves `status`. See "Pitfall audit
+  before any evidence edge".
 
 ## When to use
 
@@ -105,6 +110,43 @@ experiment** — and that is checked mechanically, not by reading prose:
    reasons — exploratory rungs appear there even when nobody linked them) goes
    into the output so the researcher sees what did **not** count. Never add an
    experiment to the evidence set by hand.
+
+## Pitfall audit before any evidence edge — blocking
+
+Run the `pitfall-audit` skill on **every** experiment in `gather`'s `eligible`
+list before any evidence-based transition is decided. That covers the
+`evidence result` trigger and any other edge whose input is an experiment result
+(first support or refutation, second replication, `evidencia_mixta`,
+`inconclusa`). Run it after `evidence_gate.py check` / `gather` and **before**
+`combine_effects.py` or the tables below. Queue, prereg and run-start edges
+carry no result and are not audited.
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/audit/pitfall_audit.py audit \
+    --experiment <E-XXXX.md> --hypothesis <H-XXXX.md> \
+    --claim-setup <tmp>/claim.json --design-setup <tmp>/design.json \
+    --judgement <tmp>/judgement.json [--splits <tmp>/splits.json] [--plan <E-XXXX.data.json>] \
+    --apply --json --out <tmp>/pitfall-E-XXXX.json
+```
+
+The skill writes the setup and judgement files, which stay outside the vault.
+The script reads the trace index `Experimentos/trazas/index.jsonl` and the
+analysis record `Experimentos/trazas/E-XXXX.analysis.json`, both written by
+`run-experiment`. It checks (a) benchmark, (b) leakage, (c) metric and
+(d) selection, as defined in `skills/pitfall-audit/SKILL.md`.
+
+| Exit | Result |
+|---|---|
+| `0` | continue. List every `importante` / `menor` finding in the output, and add `pitfall-audit: 0 crítico, N importante (E-XXXX, …)` to the `history` `evidence` line. |
+| `3` | **blocked, no transition**: no `history`, no `linked_experiment` change, no digest / SOTA refresh. `--apply` has set `needs_human_review: true` on the hypothesis (that one field, via `set_needs_human_review`; the script never touches `status`). Report every crítico finding (check, location, message) as the outcome of this invocation. |
+| `1` | an input could not be read. Treat it as blocked without writing the flag. Fix the input and re-invoke. Never continue anyway. |
+
+**The audit never moves status.** A crítico is not evidence about the claim, so
+never go to `refutada`, `inconclusa` or anywhere else because of it. The
+hypothesis stays where it was until the cause is fixed and the trigger is
+re-invoked. The only other way through is a researcher override, recorded in
+`history` as `override humano de pitfall-audit (<fecha>): <motivo>`. Only the
+researcher clears `needs_human_review`.
 
 ## Deciding an evidence transition
 
@@ -350,7 +392,7 @@ this skill does all of it.
 |---|---|---|---|---|
 | `preregister-experiment` | after the prereg note is frozen (its old step 3b) | `prereg frozen` | **primary** hypothesis id, experiment id | `propuesta → preregistrada`; append `E-XXXX` to `linked_experiment`; `history`; digest. (Secondary hypotheses don't transition — `preregister-experiment` writes their `collateral_evidence` itself.) |
 | `run-experiment` | after pre-flight passes and the run starts (its step 1) | `preregistrada → en_experimento` | hypothesis id, experiment id | `preregistrada → en_experimento`; `history`; digest |
-| `run-experiment` | after a **valid** mechanical analysis (its step 5) | `evidence result` | hypothesis id, experiment id, mechanical verdict (`apoyada`/`refutada`/`inconclusa`), effect + CI/SE | gather **all** `experiment_validity: valid` linked experiments, check `linea_publicacion`, run `combine_effects.py`, decide `apoyada`/`refutada`/`inconclusa`/`evidencia_mixta` per the tables above; **before `apoyada`, run the fresh-verification gate** (a non-`no_errors_found` verdict leaves it `en_experimento` + `needs_human_review`); on `evidencia_mixta` spawn the moderator hypothesis; `history`; digest; SOTA |
+| `run-experiment` | after a **valid** mechanical analysis (its step 5) | `evidence result` | hypothesis id, experiment id, mechanical verdict (`apoyada`/`refutada`/`inconclusa`), effect + CI/SE | gather **all** `experiment_validity: valid` linked experiments, **run the pitfall audit on each (a crítico blocks, sets `needs_human_review`, and ends the invocation)**, check `linea_publicacion`, run `combine_effects.py`, decide `apoyada`/`refutada`/`inconclusa`/`evidencia_mixta` per the tables above; **before `apoyada`, run the fresh-verification gate** (a non-`no_errors_found` verdict leaves it `en_experimento` + `needs_human_review`); on `evidencia_mixta` spawn the moderator hypothesis; `history`; digest; SOTA |
 | `hypothesis-cycle` | budget overflow — more candidates passed than the per-cycle budget | `budget overflow` | ordered list of the overflow candidate `H-XXXX` ids (already created at `propuesta`) | `propuesta → en_cola` for each, in the given order; `history`; digest |
 | `hypothesis-cycle` / human | a queued candidate is picked up | `budget freed` | `H-XXXX` id(s) | `en_cola → propuesta`; `history`; digest |
 
@@ -401,6 +443,11 @@ note).
   experiments decide status, not the verifier.
 - **Giving `fresh-verifier` more than the packet.** The packet file's text,
   verbatim, is its whole prompt — no history, no reasoning, no hints.
+- **Deciding an evidence edge without the pitfall audit, or through a crítico.**
+  Every eligible experiment is audited first. Exit 3 or exit 1 means no
+  transition. A crítico sets `needs_human_review` and never changes `status`.
+- **Treating a missing trace or analysis record as "nothing to audit".** Both
+  are crítico. `run-experiment` writes them for every run.
 
 ## Related
 
@@ -408,6 +455,9 @@ note).
   DerSimonian–Laird; `--help` documents the `consistency` band cut-points).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — single-experiment mechanical test.
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py` — exploratory experiments never count (`check`, `gather`).
+- `pitfall-audit` skill + `${CLAUDE_PLUGIN_ROOT}/scripts/audit/pitfall_audit.py`: the blocking
+  audit before every evidence edge. `${CLAUDE_PLUGIN_ROOT}/scripts/traces/trace_index.py`
+  is the full-trace index it checks selection against.
 - `${CLAUDE_PLUGIN_ROOT}/agents/fresh-verifier.md`,
   `${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py`,
   `${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py` — the `apoyada` gate.

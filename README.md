@@ -314,6 +314,26 @@ a Kaggle transfer bundle under `run-experiment`'s no-vault-remote rule.
 
 ---
 
+## Full-trace index and pitfall audit
+
+Every experiment run attempt — completed, crashed, aborted, retried, never
+launched, exploratory rungs and pilots — is recorded by `run-experiment` in
+`Projects/<slug>/Experimentos/trazas/index.jsonl`
+(`scripts/traces/trace_index.py`). The index is append-only and hash-chained:
+`verify` detects any edited, deleted or reordered line, and a correction is a
+new entry that references the old one.
+
+Before any evidence-based status change, `update-confidence` runs the
+`pitfall-audit` skill (`scripts/audit/pitfall_audit.py`) on every adjudicating
+experiment. It checks the four pitfalls of Luo, Kasirzadeh & Shah (NeurIPS 2025
+AI4Science, arXiv:2509.08713) — benchmark, leakage, metric, post-hoc selection —
+against the frozen preregistration and the trace. A `crítico` finding blocks the
+transition and sets `needs_human_review: true` on the hypothesis; it never
+changes `status` (`update-confidence` remains the only writer). Without
+`--apply` it is a dry run, for auditing past experiments.
+
+---
+
 ## Optional companion: Smart Connections (semantic vault search)
 
 `create-project` (related-project detection) and `hypothesis-cycle` (semantic

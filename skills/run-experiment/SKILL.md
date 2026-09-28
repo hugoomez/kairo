@@ -133,6 +133,61 @@ where it is. Everything else in this skill — literal implementation, pre-fligh
 sanity checks, validity, the frozen mechanical analysis, the log — applies to a
 rung exactly as to a confirmatory run. A rung is cheap, not sloppy.
 
+### 1b. Full-trace index: every attempt, at start and at end
+
+Every run attempt gets two entries in
+`Projects/<slug>/Experimentos/trazas/index.jsonl`: one when it starts and one
+when it ends. That covers confirmatory runs, exploratory rungs, pilots,
+retries, runs that crash or are aborted, and runs that come back invalid. The
+index is append-only and hash-chained. `pitfall-audit` compares the analysis
+against it: a run that was executed but is missing from the analysis without a
+preregistered reason is `crítico`.
+
+At launch, before the process starts, write:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/traces/trace_index.py start \
+    --index <Projects/<slug>/Experimentos/trazas/index.jsonl> \
+    --experiment E-XXXX --run-id <E-XXXX-runNN[-retryK]> --role <confirmatory|exploratory> \
+    [--rung N] --attempt <1|2|3> [--retry-of <failed run id>] --seeds <s1,s2> \
+    --cell <condition label, as the analysis names it> --plan-index <run_index in the frozen plan> \
+    --config-hash <trace_index.py config-hash --file <run config json>> --by <agent id | researcher>
+```
+
+When the run ends, however it ends, write:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/traces/trace_index.py end \
+    --index <…/trazas/index.jsonl> --run-id <same id> \
+    --outcome <completed|aborted|crashed|invalid> --entered-analysis <true|false> \
+    [--exclusion-reason "<why>" --exclusion-rule-source "E-XXXX.md ## <frozen section>"] \
+    --artifact <results path>=<sha256> --by <…>
+```
+
+- **A retry is a new run id** (`--attempt 2 --retry-of <id>`). The failed
+  attempt keeps its own `end` entry (`crashed` / `invalid`). Never reuse or
+  overwrite the failed attempt's entries.
+- **Runs the frozen stopping rule never launched** (for example when a
+  backstop is reached) get one `end` entry each: `--outcome not_launched
+  --entered-analysis false`, with the stopping rule as the source. Write it
+  through `append` with a full entry, because there is no start.
+- **`--entered-analysis false` needs a preregistered reason.** Give the frozen
+  section that allows the exclusion (a stopping rule or a validity threshold)
+  in `--exclusion-rule-source`. If no frozen rule allows the exclusion, the run
+  goes **into** the analysis, or you ask the researcher. The pitfall audit
+  treats an unsourced exclusion as `crítico`.
+- **Archive every output you analyse.** Copy it into the vault (for example
+  `Experimentos/resultados/E-XXXX/`) and give its path and sha256 in
+  `--artifact`. An output that stays on the remote runtime is `importante` in
+  the audit, because the analysis cannot be re-derived.
+- **External runtimes.** When the runtime cannot reach the vault, record
+  `start` / `end` with the real UTC times from the runtime's log as soon as the
+  log comes back, before the analysis. Never estimate a time. If you do not
+  know it, write `unknown`.
+- **Never edit the file.** A wrong entry is fixed with `trace_index.py correct
+  --seq N --reason … --set key=<json>`. `trace_index.py verify --git` before the
+  commit catches edits, deletions and reorders.
+
 ### 2. Execution
 
 Run the experiment command from the note's `## Diseño` / documented entrypoint
@@ -225,7 +280,9 @@ analysis with a leak present.
 - **Any sanity check fails as an infrastructure / data-integrity failure** (crash,
   OOM, missing file, network error, non-deterministic blow-up, **data leakage
   detected**) → `experiment_validity: invalid`; **auto-retry the run up to 2 more
-  times** (3 attempts total). Still failing →
+  times** (3 attempts total). Each attempt is traced (step 1b): the failed one
+  ends `crashed` / `invalid`, and each retry starts under a new run id with
+  `--retry-of`. Still failing →
   **stop**, set `status: completed`, `experiment_validity: invalid`,
   `needs_human_review: true`, and flag for human review. Do **not** run analysis.
   If all 3 attempts failed identically and deterministically, say so in the flag —
@@ -279,6 +336,19 @@ enum (same mapping regardless of which script produced it):
 conflict.) Add a `## Resultado` section (new content, not a frozen edit) with the
 exact command run, the full script output, and the mapped verdict.
 
+**Analysis record.** Write
+`Projects/<slug>/Experimentos/trazas/E-XXXX.analysis.json`
+(`kairo/analysis@1`, format in `skills/pitfall-audit/SKILL.md`). It holds the
+script and version, the primary metric as computed (name, cell, estimator,
+interval, thresholds, value, CI), the metric the verdict used, the exact
+`runs_in_analysis` (run ids as traced) and/or the per-cell `n_completed`, and
+`parameters_used`: every constant the analysis applied, each with its value,
+and with `chosen_on` / `chosen_at` if any was not frozen. Copy the values from
+the script output and the code's constants. Do not retype them from memory.
+`update-confidence` refuses to decide an evidence edge without this record
+(pitfall audit, `crítico`). Write it for invalid runs and rungs too: it records
+what the analysis saw.
+
 ### 6. Cost / time calibration
 
 Record `cost_actual` and actual wall-clock, and in `## Resultado` note them
@@ -290,7 +360,10 @@ future estimates.
 
 - Write the full run log (stdout+stderr, timings, resources, retry attempts) to
   **`Projects/<slug>/Experimentos/logs/E-XXXX.log`** (create `logs/` if missing).
-- Set `status: completed`. Commit the note + log: `Run E-XXXX: <verdict>` (or
+- Run `trace_index.py verify --index <…/trazas/index.jsonl> --git`. It must
+  exit 0, and every attempt of this experiment must have an `end` entry.
+- Set `status: completed`. Commit the note + log + `trazas/` (index, analysis
+  record) + archived outputs: `Run E-XXXX: <verdict>` (or
   `Run E-XXXX: invalid (flagged)`).
 - **Report back only:** `experiment_validity`, `result` (effect + p-value),
   `verdict`. Not the log. Example:
@@ -392,6 +465,15 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - **Shipping a script that hard-codes a vault path.** Bundled scripts resolve
   inputs from `Path(__file__).parent`; a vault-tree dependency breaks the run on
   any external runtime.
+- **Tracing only the runs that worked.** Every attempt gets a `start` and an
+  `end` entry: crashes, aborts, retries, rungs, pilots, and runs that were never
+  launched. A run missing from the trace, or excluded without a frozen rule, is
+  `crítico` in the pitfall audit that `update-confidence` runs.
+- **Editing `trazas/index.jsonl`.** Corrections are new entries
+  (`trace_index.py correct`). `verify` detects any edited, deleted or reordered
+  line.
+- **Leaving the analysed outputs on the runtime.** Archive them with their
+  sha256. Otherwise nobody can re-derive the analysis.
 - **Transferring a bundle without a clean `check_bundle.py` run** — or after
   exit 1, or after editing the bundle since the last clean run. Exit 2 is
   `crítico`; exit 1 is not clean either.
@@ -410,6 +492,9 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/tool_hash.py` — the pre-flight
   check of every `environment.tools` hash (step 1); tools are built by
   `paper-to-tool`.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/traces/trace_index.py`: the append-only,
+  hash-chained index of every run attempt (step 1b). `pitfall-audit` reads it
+  together with `trazas/E-XXXX.analysis.json` (step 5).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/security/check_bundle.py` — the isolation
   check every external-runtime transfer bundle passes before it leaves this
   machine (step 2). Its docstring documents every finding `kind`.
