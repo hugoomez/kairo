@@ -3,3 +3,5 @@
 *.py text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+# cmd.exe scripts need CRLF.
+*.cmd text eol=crlf

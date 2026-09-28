@@ -389,6 +389,39 @@ feedback to the claim + test sketch, then re-enter at Check 1.
 | **Clear fail** at any check | **Do not create a note** (one logged exception — see "On a clear fail"). Append one line to `Projects/<slug>/_digest.md` stating the claim and which check killed it and why — so it isn't re-proposed. |
 | **Rounds exhausted, no clear verdict** | Save as `status: propuesta` anyway, set `needs_human_review: true`, and write the **full** round-by-round critic exchange in `## Revisión del ciclo`. Flag it to the user. |
 
+### `## Génesis` — always, on every note this skill creates
+
+Every note created by this skill carries a `## Génesis` section, written from
+what the cycle already did — never reconstructed afterwards, never embellished.
+It answers "where did this hypothesis come from?" for the researcher, and it is
+what the interface shows first. Facts only, one line each:
+
+```
+## Génesis
+
+- **Entrada:** hueco del Estado-del-arte | afirmación del investigador |
+  spawn-hypothesis desde F-XXX | comodín de serendipity | evolución.
+  Texto de entrada literal: «…» (the gap or claim exactly as given).
+- **Ciclo:** kairo/hypothesis-cycle v1 | v2 (crítico dual) · <fecha> ·
+  rondas de refinamiento: N.
+- **Chequeos:** 1 dedup — pasa (sin duplicados; o: más cercana H-XXXX, sim 0.xx) ·
+  2 falsabilidad/novedad — pasa (<motivo en una línea>) · 3 fallos conocidos —
+  pasa (<motivo>) · 4 test severo — pasa (<rival contra la que discrimina>).
+- **Candidatas hermanas de esta tanda:** H-XXXX (creada) · «<claim>» descartada
+  en el chequeo N: <motivo> · … (only for gap-derived batches; omit the line
+  for a single human claim).
+- **Verificación fresca:** <veredicto> (see `## Verificación independiente`).
+```
+
+- A check that needed rounds says so on its line ("pasa tras 2 rondas — ver
+  Revisión del ciclo"); the round-by-round detail stays in `## Revisión del
+  ciclo`, not here.
+- A sibling discarded in this batch is listed with the same check and reason
+  as its `_digest.md` discard line.
+- `## Génesis` is **not** evidence and is never sent to a verifier: the
+  fresh-verifier packet is an allow-list (Claim, Justificación, test sketch)
+  and does not include it.
+
 ### `## Revisión del ciclo` — when to include it (single rule)
 
 Write the section **whenever the cycle ran ≥ 1 refinement round**, whatever the

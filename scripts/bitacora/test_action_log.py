@@ -95,6 +95,13 @@ class TestAppendAndVerify(Base):
             with self.subTest(e=e), self.assertRaises(al.ActionLogError):
                 al.append(self.log, e)
 
+    def test_trace_must_be_vault_relative(self):
+        e = al.append(self.log, entry(trace="Projects/demo/_trazas-agente/cli/x.jsonl"))
+        self.assertIn("traza", al._line(e))
+        for bad in ("C:/Users/x.jsonl", "/etc/x", "../x"):
+            with self.subTest(bad=bad), self.assertRaises(al.ActionLogError):
+                al.append(self.log, entry(trace=bad))
+
     def test_human_decision_with_null_reason_is_accepted(self):
         e = al.append(self.log, entry(actor="human", by="researcher", event="rejected", reason=None))
         self.assertIsNone(e["reason"])

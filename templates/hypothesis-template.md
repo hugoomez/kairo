@@ -94,6 +94,13 @@ history:
 <!-- Excepción origin: human sin respaldo: escribir exactamente
      "intuición del investigador, sin respaldo directo en la literatura" -->
 
+## Génesis
+
+<Escrita por hypothesis-cycle en toda nota que crea: entrada literal (hueco o
+afirmación), versión del ciclo y fecha, veredicto de cada chequeo en una línea,
+candidatas hermanas de la tanda y su destino, veredicto de la verificación
+fresca. Solo hechos. No es evidencia y nunca va al verificador.>
+
 ## Hipótesis rival descartada
 
 <La hipótesis rival plausible contra la que se contrastó (Check 4 de

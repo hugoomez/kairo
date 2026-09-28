@@ -69,6 +69,10 @@ The precursor predicts the transition with AUROC >= 0.9.
 - P-0901 App B.2 Fig 7 — sharpness anti-correlates with accuracy.
 - Hueco §H-x del Estado del arte — nobody compared them head to head.
 
+## Génesis
+
+GENESISTEXT entry: gap, checks 1-4 passed, one sibling discarded.
+
 ## Hipótesis rival descartada
 
 RIVALTEXT the validation curve alone is as good.
@@ -156,14 +160,14 @@ class TestPacket(unittest.TestCase):
     def test_excluded_sections_never_in_packet(self):
         packet, m = self.build(experiments=[str(self.f["exp"])],
                                outputs=[str(self.f["out"])])
-        for secret in ("SECRETCRITIQUE", "RIVALTEXT", "LESSONTEXT",
+        for secret in ("SECRETCRITIQUE", "RIVALTEXT", "LESSONTEXT", "GENESISTEXT",
                        "PRIORVERIFICATION", "MANIFESTTEXT", "frequentist_heuristic",
                        "synthetic-model", "needs_human_review", "propuesta"):
             self.assertNotIn(secret, packet, secret)
         src = m["sources"][0]
         self.assertEqual(src["included_sections"],
                          ["Claim", "Justificación (evidencia citada)"])
-        for h in ("Revisión del ciclo", "Hipótesis rival descartada", "Lección",
+        for h in ("Génesis", "Revisión del ciclo", "Hipótesis rival descartada", "Lección",
                   "Verificación independiente"):
             self.assertIn(h, src["excluded_sections"])
         self.assertIn("history", src["excluded_frontmatter"])

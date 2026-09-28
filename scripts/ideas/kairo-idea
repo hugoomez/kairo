@@ -1,0 +1,8 @@
+#!/bin/sh
+# Capture an idea from any terminal:  kairo-idea probar X en Y
+# Needs KAIRO_VAULT (the vault folder). Put this folder on PATH, or copy the file.
+if [ -z "$KAIRO_VAULT" ]; then
+  echo 'KAIRO_VAULT no está definido: export KAIRO_VAULT=/ruta/al/vault' >&2
+  exit 1
+fi
+exec python "$(dirname "$0")/idea.py" add --vault "$KAIRO_VAULT" --source cli --commit "$@"
