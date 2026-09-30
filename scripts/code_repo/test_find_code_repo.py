@@ -32,7 +32,7 @@ class TestNormalize(unittest.TestCase):
 
     def test_rejects_non_repositories(self):
         self.assertIsNone(normalize_repo_url("https://github.com/openai"))       # profile
-        self.assertIsNone(normalize_repo_url("https://neelnanda.io/grokking-paper"))
+        self.assertIsNone(normalize_repo_url("https://example.org/toy-dynamics-paper"))
         self.assertIsNone(normalize_repo_url("https://github.com/orgs/foo"))
 
 
@@ -42,12 +42,12 @@ class TestExtraction(unittest.TestCase):
         self.assertEqual(repo_urls_in(tex), ["https://github.com/a/my_repo"])
 
     def test_arxiv_comment_style(self):
-        c = "Correspondence to alethea@openai.com. Code available at: https://github.com/openai/grok"
-        self.assertEqual(repo_urls_in(c), ["https://github.com/openai/grok"])
+        c = "Correspondence to author@example.org. Code available at: https://github.com/example-lab/toy-dynamics"
+        self.assertEqual(repo_urls_in(c), ["https://github.com/example-lab/toy-dynamics"])
 
     def test_code_context_url_is_a_one_hop_candidate(self):
-        tex = "the code to reproduce our results, are available at https://neelnanda.io/grokking-paper."
-        self.assertEqual(code_context_urls(tex), ["https://neelnanda.io/grokking-paper"])
+        tex = "the code to reproduce our results, are available at https://example.org/toy-dynamics-paper."
+        self.assertEqual(code_context_urls(tex), ["https://example.org/toy-dynamics-paper"])
 
     def test_url_without_code_context_is_not_followed(self):
         tex = "We thank the reviewers. " + "x " * 200 + "https://example.org/about"

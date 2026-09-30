@@ -15,6 +15,46 @@ plain Markdown with YAML frontmatter — but nothing here depends on it.
 
 ---
 
+## Quickstart (15 minutes)
+
+1. **Prerequisites:** Claude Code on a Pro / Max / Team plan, `git`, Python 3.10+
+   (as `python`) and Node 20+ on your PATH.
+2. **Install the plugin** in Claude Code:
+   ```
+   /plugin marketplace add hugoomez/kairo
+   /plugin install kairo@kairo
+   ```
+   Restart Claude Code. `/plugin` should list `kairo` with its current version.
+3. **Create your vault:** an empty folder with `Papers/` and `Projects/`, as a git
+   repository (`git init`). Kairo's hooks recognise any folder holding both. Keep
+   the vault local: it is never pushed.
+4. **Open Claude Code in the vault** (`cd <vault> && claude`) and ask for your first
+   project, e.g. *"crea un proyecto sobre …"*. `kairo:create-project` searches the
+   literature, asks which papers to ingest, maps the state of the art and seeds
+   hypotheses. The first run takes a while (tens of minutes).
+5. **Every day:** capture ideas with `/kairo:idea`, ask for hypotheses, review them,
+   and preregister before running anything. See "What's in the plugin" below for
+   each skill.
+
+Optional companions (none are required): Smart Connections for semantic search,
+Zotero for references, and Semantic Scholar / OpenAlex keys for heavier
+literature work. Each has a section at the end of this README.
+
+**Hooks come with the plugin.** They are declared in `hooks/hooks.json` and routed
+by `scripts/hooks/kairo_hook.py`:
+- `send_guard` keeps `send: never` notes and model-written reading notes from
+  ever being read;
+- `_digest.md` and `_ledger.md` are rebuilt when a hypothesis or claim changes;
+- the Smart Connections index is refreshed when a paper note changes;
+- the Bitácora logs every commit;
+- a session that wrote research notes keeps its transcript.
+
+They activate in any session whose folder (or `vault/` subfolder, or
+`$KAIRO_VAULT`) is a Kairo vault, and do nothing anywhere else. Each firing is
+recorded in `~/.kairo/hook-events.jsonl`.
+
+---
+
 ## Core principles
 
 1. **No API keys required — runs on a Claude subscription.** The core pipeline
@@ -269,8 +309,8 @@ the model or a third-party service: every Kairo skill and agent that reads the
 vault skips it explicitly, the citation scripts never look it up, the
 fresh-verifier's packet builder refuses it, the AI-use disclosure lists it by
 id only, `check_bundle.py` blocks it inside a transfer bundle, and the vault's
-`send_guard` PreToolUse hook (`scripts/security/send_guard.py`, copied to
-`vault/Scripts/hooks/`) refuses `Read`, content-mode `Grep`, shell commands
+`send_guard` PreToolUse hook (`scripts/security/send_guard.py`, run by the
+plugin's own hooks — nothing to copy into the vault) refuses `Read`, content-mode `Grep`, shell commands
 naming it, and Smart Connections `get_note` on it. File names and titles can
 still surface in listings — give a sensitive note a neutral file name. List
 flagged notes with `python scripts/security/send_guard.py list <vault>`.
@@ -371,16 +411,14 @@ Set up the MCP server separately and point it at your vault; it is not bundled
 with this plugin.
 
 **Most common reason it is "not available": the session's root directory.**
-Claude Code reads a project's `.mcp.json` and `.claude/settings.json` (where
-the vault's `send_guard` hooks live) only from the directory it was started
-in. Start vault work from the vault root (`cd <vault> && claude`). A session
-started anywhere else — e.g. in this plugin's repo while editing vault notes —
-has neither the MCP server nor the `send_guard` hooks. If you do vault work
-from another root, register both there at local scope (never committed):
-`claude mcp add smart-connections --scope local -e VAULT_PATH=<vault> -- node
-<path>/dist/index.js`, and the same PreToolUse `send_guard` hooks (with
-`--vault <vault>`) in that directory's `.claude/settings.local.json`. Neither
-takes effect until the next session (no hot reload); check with `/mcp`.
+Claude Code reads a project's `.mcp.json` only from the directory it was started
+in, so start vault work from the vault root (`cd <vault> && claude`). The
+plugin's hooks (`send_guard` included) no longer depend on this: they find the
+vault from the session folder, its `vault/` subfolder or `$KAIRO_VAULT`. To have
+the MCP server from another root too, register it there at local scope (never
+committed): `claude mcp add smart-connections --scope local -e VAULT_PATH=<vault>
+-- node <path>/dist/index.js`. It takes effect in the next session; check with
+`/mcp`.
 
 ---
 
