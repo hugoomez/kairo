@@ -51,7 +51,7 @@ def _run(fn, argv):
 
 class LedgerFixture(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="kairo-ledger-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="kairo-ledger-")).resolve()  # Windows temp may be an 8.3 short path
         self.vault = self.tmp / "vault"
         self.proj = self.vault / "Projects" / "synthetic"
         (self.proj / "Hipotesis").mkdir(parents=True)

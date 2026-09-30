@@ -116,8 +116,9 @@ def is_flagged(path: Path) -> bool:
 
 def is_model_notes(path: Path) -> bool:
     """True when `path` is inside a `Papers/_notas/` directory (or is that
-    directory). Case-insensitive, like Windows paths."""
-    parts = [x.lower() for x in Path(path).parts]
+    directory). Case-insensitive, like Windows paths, and a backslash counts as a
+    separator on every OS: a Windows-style path in a tool call is still refused."""
+    parts = [x.lower() for x in Path(str(path).replace("\\", "/")).parts]
     return any(a == "papers" and b == MODEL_NOTES_DIR for a, b in zip(parts, parts[1:]))
 
 
