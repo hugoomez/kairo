@@ -23,6 +23,18 @@ aid. No skill may use it as evidence: to cite a paper, cite the paper.
 - Triggered from the Kairo interface (an `ask_corpus` job), which passes the
   project, the question and the output path.
 
+## Draft-only mode (the Kairo interface)
+
+When the Kairo interface runs this skill, the session is read-only: no file
+writes and no commands. That lets it answer while a long job is using the vault.
+
+- Step 1 is already done: the prompt lists the papers you may quote.
+- Do steps 2 and 3 with Smart Connections, Read and Grep.
+- Return the step-3 draft between a line `<<<BORRADOR` and a line
+  `BORRADOR>>>`.
+- Kairo then runs step 4 itself (`check_quotes.py`, the note, the commit).
+- Skip step 5's commit; still end with a one-line report.
+
 ## Steps
 
 ### 1. The papers you may quote (mechanical)
