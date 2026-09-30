@@ -2,7 +2,7 @@
 id: H-XXXX
 project: <PROJ-XXX>
 # status enum — use exactly one:
-# propuesta | en_cola | preregistrada | en_experimento | apoyada | refutada | inconclusa | evidencia_mixta
+# propuesta | en_cola | preregistrada | en_experimento | apoyada | refutada | inconclusa | evidencia_mixta | descartada
 status: propuesta
 created: <YYYY-MM-DD>
 updated: <YYYY-MM-DD>

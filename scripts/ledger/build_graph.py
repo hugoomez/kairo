@@ -47,7 +47,7 @@ __version__ = "1.0.0"
 TOOL = f"kairo/build_graph@{__version__}"
 
 H_STATUSES = {"propuesta", "en_cola", "preregistrada", "en_experimento",
-              "apoyada", "refutada", "inconclusa", "evidencia_mixta"}
+              "apoyada", "refutada", "inconclusa", "evidencia_mixta", "descartada"}
 C_STATUSES = {"pendiente", "probado", "fallido", "refutado"}
 FAILED = {("H", "refutada"), ("C", "fallido"), ("C", "refutado")}
 

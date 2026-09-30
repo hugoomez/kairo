@@ -119,6 +119,9 @@ is a clear fail.
 
 - Near-duplicate of a live hypothesis → clear fail.
 - Overlaps a `refutada` claim / its `Lección` → clear fail (log which one).
+- Near-duplicate of a `descartada` hypothesis → clear fail. The researcher
+  already discarded it; name it and quote its discard reason from `history`.
+  Only a claim that differs in substance may pass.
 - Partial overlap → *refinable*: sharpen the contrast or narrow scope.
 
 If `mcp__smart-connections__*` is unavailable, fall back to a manual read of the

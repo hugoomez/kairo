@@ -290,7 +290,7 @@ zero-padded, vault-wide, max-existing + 1).
 in the original vault) and no others:
 
 ```
-propuesta | en_cola | preregistrada | en_experimento | apoyada | refutada | inconclusa | evidencia_mixta
+propuesta | en_cola | preregistrada | en_experimento | apoyada | refutada | inconclusa | evidencia_mixta | descartada
 ```
 
 **Claim status enum** (`Claims/` only, written only by `claim_status.py`):

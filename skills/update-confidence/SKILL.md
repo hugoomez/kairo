@@ -44,8 +44,14 @@ Always invoked by a **Caller** (see that section for the exact trigger + payload
 - `hypothesis-cycle` overflowed / a queue was drained (triggers `budget
   overflow` / `budget freed`) → `propuesta ↔ en_cola`.
 
+**Not this skill's to write:** `propuesta | en_cola → descartada`. It is the
+researcher's own decision, not evidence, so it is written only by
+`scripts/ledger/review.py discard`, with a reason. That script is delegated this
+single edge, refuses inside agent sessions, and adds the `history` entry itself.
+Never write `descartada` from this skill. Treat a `descartada` note as terminal.
+
 **When not to use:** changing a terminal verdict (`apoyada` / `refutada` /
-`inconclusa` / `evidencia_mixta` have no outgoing edges — pursue the question with
+`inconclusa` / `evidencia_mixta` / `descartada` have no outgoing edges — pursue the question with
 a new child hypothesis instead); anything an invalid experiment produced (invalid
 experiments never move the state).
 
@@ -55,6 +61,7 @@ experiments never move the state).
 |---|---|---|
 | `propuesta` | `en_cola` | parked for budget (generation-order queue) |
 | `en_cola` | `propuesta` | dequeued when budget frees |
+| `propuesta` / `en_cola` | `descartada` | **the researcher discarded it**, written only by `scripts/ledger/review.py discard` (never by this skill) |
 | `propuesta` | `preregistrada` | a prereg `E-XXXX` was frozen for it |
 | `preregistrada` | `en_experimento` | its experiment run started |
 | `en_experimento` | `refutada` | **one** valid experiment's verdict is `refutada`. **If `linea_publicacion: true`**, a refutation also needs replication — the first refuting run stays `en_experimento` (pending), a second independent valid refuting run makes it `refutada`. |
