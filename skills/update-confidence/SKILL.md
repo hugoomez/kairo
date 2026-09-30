@@ -66,6 +66,7 @@ experiments never move the state).
 | `preregistrada` | `en_experimento` | its experiment run started |
 | `en_experimento` | `refutada` | **one** valid experiment's verdict is `refutada`. **If `linea_publicacion: true`**, a refutation also needs replication — the first refuting run stays `en_experimento` (pending), a second independent valid refuting run makes it `refutada`. |
 | `en_experimento` | `en_experimento` | **first** valid experiment's verdict is `apoyada` — stays here, replication pending; add a `history` entry noting the first support |
+| `en_experimento` | `en_experimento` | **replication frozen** (trigger `prereg frozen` for a hypothesis already `en_experimento`): the independent replication `E-XXXX` was frozen — append it to `linked_experiment` and add a `history` entry naming it and the experiment it replicates. No status change. |
 | `en_experimento` | `apoyada` | a **second independent** valid experiment's verdict is also `apoyada` and the combination is consistent |
 | `en_experimento` | `evidencia_mixta` | two valid experiments disagree — opposing verdicts, or the combination script flags `conflicting` / `heterogeneous` / `borderline` (see the k = 2 heterogeneity caution) |
 | `en_experimento` | `inconclusa` | the available valid experiments neither clearly support nor refute |

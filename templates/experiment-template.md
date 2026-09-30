@@ -10,6 +10,10 @@ hypothesis: <H-XXXX>
 # hypothesis). These are NEVER given a decision threshold and NEVER trigger
 # update-confidence. Use for rival-pair designs where one sweep informs both sides.
 secondary_hypotheses: []   # e.g. [H-0001]
+# replicates — optional: the adjudicated experiment this one independently
+# replicates (same prediction, thresholds and analysis plan; different seed and,
+# where avoidable, data snapshot). Omit for a first experiment.
+# replicates: E-XXXX
 project: <PROJ-XXX>
 # role / rung — docs/v3-interfaces.md §1d. Set by preregister-experiment and
 # frozen with the rest of the preregistration.

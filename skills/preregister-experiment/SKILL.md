@@ -433,6 +433,21 @@ hypothesis id + this experiment id. It moves that hypothesis
 `propuesta → preregistrada`, appends `E-XXXX` to its `linked_experiment`, appends
 the `history` entry, and regenerates `_digest.md`.
 
+**Replication (the hypothesis is already `en_experimento`).** When the operator
+asks for the replication of an adjudicated experiment (Kairo sends `purpose:
+replication` and the experiment it replicates), design a *confirmatory*
+experiment that is **independent** in update-confidence's sense (its step 2):
+- a distinct `E-XXXX`;
+- a different seed;
+- not the identical dataset snapshot where avoidable.
+
+The prediction, thresholds and analysis plan must be the same, so the two
+results can be combined. Name the replicated experiment in `## Diseño`
+("Replica E-XXXX: …") and set `replicates: E-XXXX` in the frontmatter. The
+hand-off is the same trigger, `prereg frozen`. update-confidence applies its
+**replication frozen** self-loop: it links the experiment, adds a history
+entry, and leaves the status unchanged.
+
 **Exploratory rung (`role: exploratory`, step 0): no trigger.** Skip this
 handoff entirely — create the rung's `Claims/` node instead (step 0, item 2)
 and regenerate the ledger (`build_graph.py --write`). The hypothesis status and
