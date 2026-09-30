@@ -86,7 +86,8 @@ class TestCheck(Base):
         self.assertIn("not in the manifest: extra.py", probs)
 
     def test_a_secret_in_the_bundle_blocks_it(self):
-        (self.bundle / "kaggle.json").write_text('{"username": "u", "key": "0123456789abcdef0123456789abcdef"}', encoding="utf-8")
+        fake_key = "0123456789abcdef" * 2  # built at runtime: no key-shaped literal in the source
+        (self.bundle / "kaggle.json").write_text(json.dumps({"username": "u", "key": fake_key}), encoding="utf-8")
         write_manifest(self.bundle)
         r = bc.check(self.run_dir)
         self.assertFalse(r["ok"])
