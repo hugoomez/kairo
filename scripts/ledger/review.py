@@ -2,13 +2,14 @@
 """The researcher's own decisions on a hypothesis. Researcher only, always with a reason.
 
     review.py show          --vault <vault> --hypothesis H-XXXX
-    review.py mark-reviewed --vault <vault> --hypothesis H-XXXX --reason "..." --by "<name>"
+    review.py mark-reviewed --vault <vault> --hypothesis H-XXXX|E-XXXX --reason "..." --by "<name>"
     review.py ack-findings  --vault <vault> --hypothesis H-XXXX --reason "..." --by "<name>"
     review.py discard       --vault <vault> --hypothesis H-XXXX --reason "..." --by "<name>"
 
 - `show` (JSON): which decisions apply now, and why the others don't.
-- `mark-reviewed`: you read a hypothesis the cycle flagged
-  (`needs_human_review: true`). Sets it to `false`. Status is unchanged.
+- `mark-reviewed`: you read a hypothesis (or an experiment) that was
+  flagged (`needs_human_review: true`). Sets it to `false`. Status is
+  unchanged.
 - `ack-findings`: you read the fresh verifier's findings on the governing
   `note` verification. Sets `verification_reviewed: true`. Refused when the
   latest verdict is `no_errors_found`, since there is nothing to acknowledge.
@@ -57,7 +58,7 @@ from verifications import (  # noqa: E402
 TOOL = "kairo/review@1.0.0"
 AGENT_MARKERS = ("CLAUDECODE", "KAIRO_AGENT_SESSION")
 DISCARDABLE = ("propuesta", "en_cola")
-_ID = re.compile(r"^H-\d{4}$")
+_ID = re.compile(r"^[HE]-\d{4}$")
 
 
 class Refused(Exception):
@@ -66,11 +67,12 @@ class Refused(Exception):
 
 def find_hypothesis(vault: Path, hid: str) -> Path:
     if not _ID.match(hid):
-        raise Refused("hypothesis must look like H-XXXX")
-    hits = sorted(vault.glob(f"Projects/*/Hipotesis/{hid}*.md"))
+        raise Refused("the note must look like H-XXXX (or E-XXXX for mark-reviewed)")
+    folder = "Hipotesis" if hid.startswith("H-") else "Experimentos"
+    hits = sorted(vault.glob(f"Projects/*/{folder}/{hid}*.md"))
     hits = [h for h in hits if re.match(rf"^{hid}(\b|[ _.-])", h.name)]
     if not hits:
-        raise Refused(f"{hid} not found under Projects/*/Hipotesis/")
+        raise Refused(f"{hid} not found under Projects/*/{folder}/")
     if len(hits) > 1:
         raise Refused(f"{hid} matches several notes: {', '.join(h.name for h in hits)}")
     return hits[0]
@@ -78,6 +80,7 @@ def find_hypothesis(vault: Path, hid: str) -> Path:
 
 def state(path: Path) -> dict:
     _, lines, _, lo, hi, entries = load(str(path))
+    experiment = path.parent.name == "Experimentos"
     status = (fm_value(lines, lo + 1, hi, "status") or "").strip()
     nhr = (fm_value(lines, lo + 1, hi, "needs_human_review") or "").lower() == "true"
     reviewed = (fm_value(lines, lo + 1, hi, "verification_reviewed") or "").lower() == "true"
@@ -90,10 +93,10 @@ def state(path: Path) -> dict:
         "governing_verdict": gov.get("verdict") if gov else None,
         "decisions": {
             "mark-reviewed": None if nhr else "no hay revisión pendiente (needs_human_review no es true)",
-            "ack-findings": (None if findings and not reviewed else
+            "ack-findings": ("solo para hipótesis" if experiment else None if findings and not reviewed else
                              "el verificador no encontró errores" if not findings else
                              "los hallazgos ya están reconocidos"),
-            "discard": None if status in DISCARDABLE else
+            "discard": "solo para hipótesis" if experiment else None if status in DISCARDABLE else
             f"solo se descarta una hipótesis propuesta o en cola (está «{status}»); tras el preregistro decide la evidencia",
         },
     }

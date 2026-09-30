@@ -139,6 +139,19 @@ class TestReview(unittest.TestCase):
         self.assertEqual(self.cli("show", "--vault", str(self.vault), "--hypothesis", "H-0999")[0], 3)
         self.assertEqual(self.cli("show", "--vault", str(self.vault), "--hypothesis", "../x")[0], 3)
 
+    def test_an_experiment_can_be_marked_reviewed_only(self):
+        e = self.vault / "Projects" / "demo" / "Experimentos"
+        e.mkdir()
+        (e / "E-0981.md").write_text("---\nid: E-0981\nstatus: completed\nneeds_human_review: true\n---\n", encoding="utf-8")
+        code, out, err = self.cli("mark-reviewed", "--vault", str(self.vault), "--hypothesis", "E-0981",
+                                  "--reason", "Revisé la desviación.", "--by", "Investigadora")
+        self.assertEqual(code, 0, err)
+        self.assertIn("needs_human_review: false", (e / "E-0981.md").read_text(encoding="utf-8"))
+        code, _, err = self.cli("discard", "--vault", str(self.vault), "--hypothesis", "E-0981",
+                                "--reason", "No aplica aquí.", "--by", "Investigadora")
+        self.assertEqual(code, 3)
+        self.assertIn("solo para hipótesis", err)
+
     def test_crlf_notes_keep_their_line_endings(self):
         p = self.note(nhr="true")
         p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
