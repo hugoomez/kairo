@@ -52,7 +52,11 @@ hypothesis's `status`; never edit `status` or `history` by hand.**
   - the adjudicating experiments come from `evidence_gate.py gather`;
   - two experiments are combined with `combine_effects.py`;
   - a `needs_verifier: true` proposal (into `apoyada`) still needs the
-    fresh-verification gate further down.
+    fresh-verification gate further down;
+  - it runs the pitfall audit (dry run) on every experiment about to be
+    adjudicated. A crítico finding means no edge, with the findings in
+    `reason` / `audit`. Still run the audit with `--apply` as the
+    pitfall-audit section says, so `needs_human_review` is recorded.
   Start every evidence trigger with it, and apply exactly the edge it
   proposes. If it proposes none, change nothing and report its `reason`.
 - `apply --to <status> --by <you> --evidence "<why>" [--experiments …]

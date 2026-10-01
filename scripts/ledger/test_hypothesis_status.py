@@ -108,6 +108,18 @@ class Base(unittest.TestCase):
 
 
 class TestPropose(Base):
+    """The state table. The pitfall audit is stubbed here (these invented
+    experiments are deliberately thin); TestAuditGate runs the real one."""
+
+    def setUp(self):
+        super().setUp()
+        self.audit = mock.patch.object(hs, "audit_blockers", return_value=[])
+        self.audit.start()
+
+    def tearDown(self):
+        self.audit.stop()
+        super().tearDown()
+
     def test_one_refutation_is_terminal_unless_on_a_publication_line(self):
         self.exp("E-0991", "refutada")
         self.hyp(linked=["E-0991"])
@@ -159,6 +171,19 @@ class TestPropose(Base):
         self.hyp(status="preregistrada", linked=["E-0991"])
         self.commit()
         self.assertEqual(self.propose()["to"], "en_experimento")
+
+
+class TestAuditGate(Base):
+    def test_a_critical_audit_finding_blocks_any_evidence_edge(self):
+        self.exp("E-0991", "refutada")  # no frozen_at, no analysis record, no trace: the audit blocks
+        self.hyp(linked=["E-0991"])
+        self.commit()
+        p = self.propose()
+        self.assertIsNone(p["to"])
+        self.assertIn("auditoría de trampas", p["reason"])
+        self.assertTrue(any(b["check"] == "leakage" for b in p["audit"]))
+        text = (self.proj / "Hipotesis" / "H-0991 prueba.md").read_text(encoding="utf-8")
+        self.assertNotIn("needs_human_review: true", text)  # the preview's audit is a dry run
 
 
 class TestApplyAndDiscard(Base):

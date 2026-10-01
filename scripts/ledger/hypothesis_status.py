@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -112,6 +113,30 @@ def _verdict(lines: list[str]) -> tuple[str | None, str | None]:
     return field("verdict"), field("effect")
 
 
+def audit_blockers(hyp_path: Path, new: list[dict]) -> list[dict]:
+    """pitfall_audit.py (dry run, nothing written) on each experiment about to be
+    adjudicated: its crítico findings block any evidence edge, exactly as the
+    update-confidence skill applies it."""
+    script = HERE.parent / "audit" / "pitfall_audit.py"
+    out = []
+    for c in new:
+        exp = next(iter(sorted((hyp_path.parent.parent / "Experimentos").glob(f"{c['id']}*.md"))), None)
+        if exp is None:
+            continue
+        r = subprocess.run([sys.executable, str(script), "audit", "--experiment", str(exp), "--hypothesis", str(hyp_path), "--json"],
+                           capture_output=True, text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        try:
+            rep = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            out.append({"experiment": c["id"], "check": "audit", "message": f"la auditoría no pudo ejecutarse ({(r.stderr or '').strip()[:120]})"})
+            continue
+        for check, res in (rep.get("checks") or {}).items():
+            for f in res.get("findings") or []:
+                if f.get("severity") == "crítico":
+                    out.append({"experiment": c["id"], "check": check, "message": f.get("message", "")})
+    return out
+
+
 def propose(vault: Path, hid: str) -> dict:
     path = find_hypothesis(vault, hid)
     _, lines, _, lo, hi, _ = load(str(path))
@@ -148,6 +173,16 @@ def propose(vault: Path, hid: str) -> dict:
     if not counted:
         out["reason"] = "ningún experimento válido y confirmatorio con veredicto todavía"
         return out
+    if new:
+        blockers = audit_blockers(path, new)
+        if blockers:
+            out["audit"] = blockers
+            out["reason"] = (
+                f"la auditoría de trampas (obligatoria antes de cualquier cambio por evidencia) encuentra "
+                f"{len(blockers)} problema(s) crítico(s): "
+                + "; ".join(f"{b['experiment']} {b['check']}: {b['message']}" for b in blockers[:3])
+            )
+            return out
     if not new:
         out["reason"] = "nada nuevo que adjudicar: sus experimentos ya están en el historial"
         awaiting = len(counted) == 1 and (counted[0]["verdict"] == "apoyada" or (linea and counted[0]["verdict"] == "refutada"))
