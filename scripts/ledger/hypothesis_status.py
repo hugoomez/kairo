@@ -98,7 +98,9 @@ def find_hypothesis(vault: Path, hid: str) -> Path:
 def _history_experiments(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
     m = re.search(r"^history:\s*\n((?:[ \t-].*\n?)*)", text, re.MULTILINE)
-    return set(re.findall(r"E-\d{4}", m.group(1))) if m else set()
+    if not m:
+        return set()
+    return {e for line in m.group(1).splitlines() if re.match(r"^\s+experiments:", line) for e in re.findall(r"E-\d{4}", line)}
 
 
 def _verdict(lines: list[str]) -> tuple[str | None, str | None]:
@@ -234,7 +236,7 @@ def _append_history(lines: list[str], nl: str, fields: list[tuple[str, str]]) ->
     hi = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
     k = find_key(lines, 1, hi, "history")
     entry = [f"  - {fields[0][0]}: {yaml_scalar(fields[0][1])}{nl}"]
-    entry += [f"    {n}: {v if n == 'experiments' else yaml_scalar(v)}{nl}" for n, v in fields[1:]]
+    entry += [f"    {n}: {v if n in ('experiments', 'replication_frozen') else yaml_scalar(v)}{nl}" for n, v in fields[1:]]
     if k is None:
         lines[hi:hi] = [f"history:{nl}", *entry]
         return
@@ -244,10 +246,38 @@ def _append_history(lines: list[str], nl: str, fields: list[tuple[str, str]]) ->
     lines[end:end] = entry
 
 
-def apply(vault: Path, hid: str, to: str, by: str, evidence: str, experiments: list[str], combination: str | None) -> dict:
+def _link(lines: list[str], nl: str, eid: str) -> None:
+    """Append `eid` to `linked_experiment` (block or inline list), once."""
+    hi = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    k = find_key(lines, 1, hi, "linked_experiment")
+    if k is None:
+        lines[hi:hi] = [f"linked_experiment:{nl}", f"  - {eid}{nl}"]
+        return
+    end = block_end(lines, k, hi)
+    if eid in "".join(lines[k:end]):
+        return
+    head = lines[k].rstrip("\r\n")
+    inline = head.split(":", 1)[1].strip()
+    if inline.startswith("["):
+        items = [x.strip() for x in inline.strip("[]").split(",") if x.strip()]
+        lines[k] = f"linked_experiment: [{', '.join([*items, eid])}]{nl}"
+    else:
+        lines[end:end] = [f"  - {eid}{nl}"]
+
+
+def apply(vault: Path, hid: str, to: str, by: str, evidence: str, experiments: list[str], combination: str | None,
+          replication_frozen: str | None = None) -> dict:
     path = find_hypothesis(vault, hid)
     text, lines, nl, lo, hi, entries = load(str(path))
     status = (fm_value(lines, lo + 1, hi, "status") or "").strip()
+    if replication_frozen:
+        # The self-loop that links a frozen replication. It records the experiment
+        # under `replication_frozen`, never `experiments`: only evidence edges name
+        # `experiments`, and propose treats those as already adjudicated.
+        if (status, to) != ("en_experimento", "en_experimento"):
+            raise Refused("--replication-frozen is the en_experimento self-loop only")
+        if experiments:
+            raise Refused("--replication-frozen records no evidence: don't pass --experiments")
     if (status, to) not in EDGES:
         raise Refused(f"«{status} → {to}» no está en la tabla de estados de update-confidence")
     if to == "descartada":
@@ -263,6 +293,9 @@ def apply(vault: Path, hid: str, to: str, by: str, evidence: str, experiments: l
         _set_scalar(lines, "status", to, nl)
     _set_scalar(lines, "updated", today, nl)
     fields = [("date", today), ("status", to), ("by", by)]
+    if replication_frozen:
+        _link(lines, nl, replication_frozen)
+        fields.append(("replication_frozen", f"[{replication_frozen}]"))
     if experiments:
         fields.append(("experiments", "[" + ", ".join(experiments) + "]"))
     if combination:
@@ -309,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--evidence", required=True)
             p.add_argument("--experiments", nargs="*", default=[])
             p.add_argument("--combination", default=None)
+            p.add_argument("--replication-frozen", default=None, metavar="E-XXXX",
+                           help="the self-loop for a frozen independent replication: links it, records no evidence")
         if name == "discard":
             p.add_argument("--reason", required=True)
             p.add_argument("--by", required=True)
@@ -320,7 +355,11 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "propose":
             out = propose(vault, a.hypothesis)
         elif a.cmd == "apply":
-            out = apply(vault, a.hypothesis, a.to, a.by, a.evidence, [e for e in a.experiments if re.match(r"^E-\d{4}$", e)], a.combination)
+            rf = a.replication_frozen if a.replication_frozen and re.match(r"^E-\d{4}$", a.replication_frozen) else None
+            if a.replication_frozen and not rf:
+                raise Refused("--replication-frozen must look like E-XXXX")
+            out = apply(vault, a.hypothesis, a.to, a.by, a.evidence, [e for e in a.experiments if re.match(r"^E-\d{4}$", e)],
+                        a.combination, rf)
         else:
             out = discard(vault, a.hypothesis, a.reason, a.by)
     except Refused as exc:

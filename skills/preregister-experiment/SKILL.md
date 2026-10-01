@@ -445,8 +445,9 @@ The prediction, thresholds and analysis plan must be the same, so the two
 results can be combined. Name the replicated experiment in `## Diseño`
 ("Replica E-XXXX: …") and set `replicates: E-XXXX` in the frontmatter. The
 hand-off is the same trigger, `prereg frozen`. update-confidence applies its
-**replication frozen** self-loop: it links the experiment, adds a history
-entry, and leaves the status unchanged.
+**replication frozen** self-loop with `hypothesis_status.py apply --to
+en_experimento --replication-frozen E-XXXX`: it links the experiment, records
+it as `replication_frozen` (not as evidence), and leaves the status unchanged.
 
 **Exploratory rung (`role: exploratory`, step 0): no trigger.** Skip this
 handoff entirely — create the rung's `Claims/` node instead (step 0, item 2)

@@ -173,6 +173,34 @@ class TestPropose(Base):
         self.assertEqual(self.propose()["to"], "en_experimento")
 
 
+class TestReplicationFrozen(Base):
+    def test_the_replication_self_loop_links_it_and_does_not_count_as_adjudicated(self):
+        self.exp("E-0991", "apoyada")
+        self.hyp(linked=["E-0991"], adjudicated=["E-0991"])
+        self.commit()
+        code, out, err = self.cli("apply", "--vault", str(self.vault), "--hypothesis", "H-0991", "--to", "en_experimento",
+                                  "--by", "kairo/update-confidence", "--evidence", "replicación E-0992 congelada",
+                                  "--replication-frozen", "E-0992")
+        self.assertEqual(code, 0, err)
+        text = (self.proj / "Hipotesis" / "H-0991 prueba.md").read_text(encoding="utf-8")
+        self.assertIn("replication_frozen: [E-0992]", text)
+        self.assertIn("E-0992", text.split("history:")[0])  # linked
+        self.assertNotIn("experiments: [E-0992]", text)
+        # once it runs and agrees, it is new evidence (not "already adjudicated")
+        self.exp("E-0992", "apoyada", "0.11 [0.05, 0.17]")
+        self.commit()
+        with mock.patch.object(hs, "audit_blockers", return_value=[]):
+            p = hs.propose(self.vault, "H-0991")
+        self.assertEqual((p["to"], p["needs_verifier"]), ("apoyada", True))
+
+    def test_replication_frozen_only_as_the_self_loop(self):
+        self.hyp(status="propuesta")
+        code, _, err = self.cli("apply", "--vault", str(self.vault), "--hypothesis", "H-0991", "--to", "preregistrada",
+                                "--by", "k", "--evidence", "x", "--replication-frozen", "E-0992")
+        self.assertEqual(code, 3)
+        self.assertIn("self-loop only", err)
+
+
 class TestAuditGate(Base):
     def test_a_critical_audit_finding_blocks_any_evidence_edge(self):
         self.exp("E-0991", "refutada")  # no frozen_at, no analysis record, no trace: the audit blocks
