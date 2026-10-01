@@ -15,8 +15,8 @@
   latest verdict is `no_errors_found`, since there is nothing to acknowledge.
   Status is unchanged; promotion stays with update-confidence and its gates.
 - `discard`: the edge `propuesta | en_cola → descartada`, a terminal state.
-  It is the one status edge not decided by evidence, so update-confidence
-  delegates it to this script (see its state table). Refused from any other
+  Written by update-confidence's status writer (`hypothesis_status.py
+  discard`), the only code that changes a status. Refused from any other
   status: after a preregistration, evidence decides.
 
 The first two decisions append an entry to the note's `reviews:` block
@@ -43,6 +43,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import hypothesis_status  # noqa: E402
 from verifications import (  # noqa: E402
     InputError,
     _set_scalar,
@@ -140,11 +141,10 @@ def decide(vault: Path, hid: str, kind: str, reason: str, by: str) -> dict:
         append_entry(lines, nl, "reviews", [("date", today), ("kind", "hallazgos_reconocidos"), ("by", by),
                                             ("verdict", str(before["governing_verdict"])), ("reason", reason)])
     else:
-        _set_scalar(lines, "status", "descartada", nl)
-        _set_scalar(lines, "updated", today, nl)
-        append_entry(lines, nl, "history", [("date", today), ("status", "descartada"), ("by", by),
-                                            ("evidence", f"descartada por el investigador: {reason}")])
-    write_raw(str(path), "".join(lines))
+        # the status edge belongs to update-confidence's writer, the only one
+        hypothesis_status.discard(vault, hid, reason, by)
+    if kind != "discard":
+        write_raw(str(path), "".join(lines))
     after = state(path)
     return {"tool": TOOL, "hypothesis": hid, "decision": kind, "file": path.relative_to(vault).as_posix(),
             "before": {k: before[k] for k in ("status", "needs_human_review", "verification_reviewed")},
@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
             out = {"hypothesis": a.hypothesis, "file": path.relative_to(a.vault.resolve()).as_posix(), **state(path)}
         else:
             out = decide(a.vault.resolve(), a.hypothesis, a.cmd, a.reason, a.by)
-    except Refused as exc:
+    except (Refused, hypothesis_status.Refused) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     except (InputError, OSError, StopIteration) as exc:

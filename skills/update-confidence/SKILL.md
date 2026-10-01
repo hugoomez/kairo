@@ -44,11 +44,24 @@ Always invoked by a **Caller** (see that section for the exact trigger + payload
 - `hypothesis-cycle` overflowed / a queue was drained (triggers `budget
   overflow` / `budget freed`) → `propuesta ↔ en_cola`.
 
-**Not this skill's to write:** `propuesta | en_cola → descartada`. It is the
-researcher's own decision, not evidence, so it is written only by
-`scripts/ledger/review.py discard`, with a reason. That script is delegated this
-single edge, refuses inside agent sessions, and adds the `history` entry itself.
-Never write `descartada` from this skill. Treat a `descartada` note as terminal.
+**Every status write goes through this skill's writer,
+`scripts/ledger/hypothesis_status.py`. It is the only code that changes a
+hypothesis's `status`; never edit `status` or `history` by hand.**
+- `propose --vault <v> --hypothesis H-XXXX` computes, read-only, the edge the
+  state table below allows now:
+  - the adjudicating experiments come from `evidence_gate.py gather`;
+  - two experiments are combined with `combine_effects.py`;
+  - a `needs_verifier: true` proposal (into `apoyada`) still needs the
+    fresh-verification gate further down.
+  Start every evidence trigger with it, and apply exactly the edge it
+  proposes. If it proposes none, change nothing and report its `reason`.
+- `apply --to <status> --by <you> --evidence "<why>" [--experiments …]
+  [--combination "<line>"]` writes the edge. It refuses any pair not in the
+  table, and `apoyada` unless the governing verification is `no_errors_found`.
+- `descartada` (from `propuesta` / `en_cola`) is a **terminal** state set only
+  by an explicit discard from the researcher, through the writer's `discard`:
+  the interface or `review.py discard`. Both refuse inside agent sessions and
+  need a reason. Never propose or write `descartada` from this skill.
 
 **When not to use:** changing a terminal verdict (`apoyada` / `refutada` /
 `inconclusa` / `evidencia_mixta` / `descartada` have no outgoing edges — pursue the question with
@@ -61,7 +74,7 @@ experiments never move the state).
 |---|---|---|
 | `propuesta` | `en_cola` | parked for budget (generation-order queue) |
 | `en_cola` | `propuesta` | dequeued when budget frees |
-| `propuesta` / `en_cola` | `descartada` | **the researcher discarded it**, written only by `scripts/ledger/review.py discard` (never by this skill) |
+| `propuesta` / `en_cola` | `descartada` | **the researcher's explicit discard** (terminal), via `hypothesis_status.py discard`; never an evidence edge, never written by an agent |
 | `propuesta` | `preregistrada` | a prereg `E-XXXX` was frozen for it |
 | `preregistrada` | `en_experimento` | its experiment run started |
 | `en_experimento` | `refutada` | **one** valid experiment's verdict is `refutada`. **If `linea_publicacion: true`**, a refutation also needs replication — the first refuting run stays `en_experimento` (pending), a second independent valid refuting run makes it `refutada`. |
