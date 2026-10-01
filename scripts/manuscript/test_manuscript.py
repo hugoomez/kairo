@@ -106,8 +106,7 @@ experiment_validity: valid
 """
 
 
-class TestCoverage(Base):
-    """Coverage reads the gates; write-section refuses what is not ready."""
+class CoverageBase(Base):
 
     def setUp(self):
         super().setUp()
@@ -130,6 +129,10 @@ class TestCoverage(Base):
 
     def cov(self):
         return {s["id"]: s for s in ms.coverage(self.vault, self.proj, "t")["sections"]}
+
+
+class TestCoverage(CoverageBase):
+    """Coverage reads the gates; write-section refuses what is not ready."""
 
     def test_prose_is_ready_early_and_results_wait_for_their_gate(self):
         c = self.cov()
@@ -186,7 +189,98 @@ class TestCoverage(Base):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(ms.main(["coverage", "--vault", str(self.vault), "--project-dir", str(self.proj), "--thread", "t"]), 0)
         text = (self.proj / "Manuscritos" / "coverage-t.md").read_text(encoding="utf-8")
-        self.assertIn("| Resultados principales | resultado | — | no | no |", text)
+        self.assertIn("| Resultados principales | resultado | pendiente | — | no | no |", text)
+
+
+class TestSectionStates(CoverageBase):
+    """respaldada | pendiente | bloqueada, with build_graph's propagation."""
+
+    def quiet(self, fn, argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            return fn(argv)
+
+    def set_status(self, note, status):
+        self.assertEqual(self.quiet(self.cs.main, ["set", "--note", str(note), "--status", status,
+                                                   "--by", "t", "--evidence", "x"]), 0)
+
+    def claim_on(self, kind, statement, deps):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(self.cs.main(["new", "--project-dir", str(self.proj), "--kind", kind,
+                                           "--statement", statement, "--how", "…", "--by", "t",
+                                           "--depends-on", *deps]), 0)
+        return Path(buf.getvalue().strip())
+
+    def test_default_states(self):
+        c = self.cov()
+        self.assertEqual(c["introduccion"]["state"], "respaldada")
+        self.assertEqual(c["resultados"]["state"], "pendiente")
+        self.assertEqual(c["discusion"]["state"], "pendiente")
+        self.assertEqual(c["resultados"]["blocked_by"], [])
+
+    def test_a_proved_result_is_respaldada(self):
+        r = self.claim("resultado_intermedio", "Un resultado inventado.")
+        self.set_status(r, "probado")
+        ms.bind(self.proj, "t", "resultados", r.stem)
+        self.assertEqual(self.cov()["resultados"]["state"], "respaldada")
+
+    def test_a_failed_lemma_blocks_its_section_and_names_it(self):
+        lemma = self.claim("lema", "Un lema inventado.")
+        self.set_status(lemma, "fallido")
+        ms.bind(self.proj, "t", "resultados", lemma.stem)
+        s = self.cov()["resultados"]
+        self.assertEqual(s["state"], "bloqueada")
+        self.assertFalse(s["ready"])
+        self.assertIn(lemma.stem, s["why"])
+        self.assertIn("fallido", s["why"])
+        with self.assertRaises(ms.Refused):
+            ms.write_section(self.vault, self.proj, "t", "resultados", "Teorema 1.")
+
+    def test_transitive_failure_names_the_chain(self):
+        base = self.claim("lema", "Un lema base inventado.")
+        mid = self.claim_on("lema", "Un lema intermedio inventado.", [base.stem])
+        top = self.claim_on("teorema", "Un teorema inventado.", [mid.stem])
+        self.set_status(base, "refutado")
+        ms.bind(self.proj, "t", "resultados", top.stem)
+        s = self.cov()["resultados"]
+        self.assertEqual(s["state"], "bloqueada")
+        self.assertEqual(s["blocked_by"][0]["by"], base.stem)
+        self.assertEqual(s["blocked_by"][0]["chain"], [top.stem, mid.stem, base.stem])
+        self.assertIn(f"{top.stem} ← {mid.stem} ← {base.stem}", s["why"])
+
+    def test_a_discarded_hypothesis_blocks_and_so_does_what_rests_on_it(self):
+        (self.proj / "Hipotesis" / "H-9001 x.md").write_text(HYP.format(hid="H-9001", status="descartada"), encoding="utf-8")
+        dep = self.claim_on("lema", "Un lema que usa la hipótesis inventada.", ["H-9001"])
+        ms.bind(self.proj, "t", "planteamiento", "H-9001")
+        ms.bind(self.proj, "t", "resultados", dep.stem)
+        c = self.cov()
+        self.assertEqual(c["planteamiento"]["state"], "bloqueada")
+        self.assertIn("descartada", c["planteamiento"]["why"])
+        self.assertEqual(c["resultados"]["state"], "bloqueada")
+        self.assertEqual(c["resultados"]["blocked_by"][0]["chain"], [dep.stem, "H-9001"])
+
+    def test_a_blocked_result_does_not_open_the_discussion(self):
+        r = self.claim("resultado_intermedio", "Un resultado inventado.")
+        self.set_status(r, "probado")
+        ms.bind(self.proj, "t", "resultados", r.stem)
+        ms.write_section(self.vault, self.proj, "t", "resultados", "Resultado 1.")
+        self.assertTrue(self.cov()["discusion"]["ready"])
+        self.set_status(r, "refutado")
+        c = self.cov()
+        self.assertEqual(c["resultados"]["state"], "bloqueada")
+        self.assertFalse(c["discusion"]["ready"])
+
+    def test_view_lists_blocked_sections(self):
+        lemma = self.claim("lema", "Un lema inventado.")
+        self.set_status(lemma, "fallido")
+        ms.bind(self.proj, "t", "resultados", lemma.stem)
+        text = ms.render_coverage(ms.coverage(self.vault, self.proj, "t"))
+        self.assertIn("## Bloqueada: «Resultados principales»", text)
+        self.assertIn("| bloqueada |", text)
 
 
 if __name__ == "__main__":

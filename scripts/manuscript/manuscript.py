@@ -25,6 +25,17 @@ No prose is written here. ``bind`` adds an id to a section's ``depends_on``.
 The frontmatter is written and read by this script in one fixed shape — edit
 it keeping that shape (or use ``bind``).
 
+``coverage`` gives every section one of three states:
+
+* ``respaldada`` — every bound claim / hypothesis passed its gate (and the
+  section is ready by its kind);
+* ``bloqueada``  — a bound node failed (hypothesis ``refutada`` /
+  ``descartada``, claim ``fallido`` / ``refutado``) or depends, directly or
+  transitively, on one that failed. The propagation is build_graph.py's
+  (never re-derived here); the reason names the failed node and the chain.
+  A blocked section is never ``ready``, so ``write-section`` refuses it;
+* ``pendiente``  — anything else.
+
 Exit codes: 0 ok · 3 refused · 1 error. Standard library only.
 """
 
@@ -37,7 +48,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 KINDS = ("prosa", "resultado", "cierre")
 _ID = re.compile(r"^(C|H)-\d{4}$")
 _THREAD = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
@@ -237,13 +248,57 @@ def is_placeholder(body: str) -> bool:
     return not body.strip() or body.strip().startswith("_(pendiente")
 
 
+# Hypotheses that were dropped also block what rests on them; build_graph's own
+# FAILED set (refutada / fallido / refutado) does not include `descartada`, so
+# its propagation runs once with it added. The set is the only thing changed.
+BLOCKING = {("H", "refutada"), ("H", "descartada"), ("C", "fallido"), ("C", "refutado")}
+_VIA = re.compile(r"depende de (\S+) \(`([^`]+)`\) vía (.+?) — ")
+
+
+def failure_map(vault: Path) -> dict[str, dict]:
+    """id -> {by, status, chain} for every graph node that failed or rests on a
+    failed node, from build_graph.py's propagation (shortest chain, first
+    failed source in id order). Nodes that are fine are absent."""
+    here = Path(__file__).resolve().parent
+    sys.path.insert(0, str(here.parent / "ledger"))
+    import build_graph as bg  # noqa: PLC0415
+    nodes, base = bg.load_nodes(vault)
+    saved = bg.FAILED
+    bg.FAILED = set(saved) | BLOCKING
+    try:
+        findings = bg.analyse(nodes, base)
+    finally:
+        bg.FAILED = saved
+    out: dict[str, dict] = {}
+    for n in sorted(nodes.values(), key=lambda x: x.id):
+        if (n.kind, n.status) in BLOCKING:
+            out[n.id] = {"by": n.id, "status": n.status, "chain": [n.id]}
+    for f in findings:
+        if f.kind != "depends_on_failed" or f.node in out:
+            continue
+        m = _VIA.search(f.detail)
+        if m:
+            out[f.node] = {"by": m.group(1), "status": m.group(2),
+                           "chain": [x.strip() for x in m.group(3).split("←")]}
+    return out
+
+
+def blocked_reason(dep: str, info: dict) -> str:
+    if info["chain"] == [dep]:
+        return f"{dep} está «{info['status']}»"
+    return f"{dep} depende de {info['by']} («{info['status']}») vía {' ← '.join(info['chain'])}"
+
+
 def coverage(vault: Path, project_dir: Path, thread: str) -> dict:
     outline, manuscript = paths(project_dir, thread)
     meta, sections, _ = parse_outline(outline)
     bodies = section_bodies(manuscript) if manuscript.exists() else {}
+    failed = failure_map(vault)
     out = []
     for s in sections:
         deps = [dep_state(vault, d) for d in s["depends_on"]]
+        for d in deps:
+            d["blocked"] = failed.get(d["id"])
         drafted = not is_placeholder(bodies.get(s["id"], ""))
         if s["kind"] == "prosa":
             ready, why = True, "prosa: se redacta pronto"
@@ -256,10 +311,20 @@ def coverage(vault: Path, project_dir: Path, thread: str) -> dict:
             ready = False
             why = "cierre: espera a que haya un resultado redactado"
         out.append({**s, "deps": deps, "drafted": drafted, "ready": ready, "why": why})
-    has_result = any(x["kind"] == "resultado" and x["drafted"] for x in out)
+    has_result = any(x["kind"] == "resultado" and x["drafted"] and not any(d["blocked"] for d in x["deps"])
+                     for x in out)
     for x in out:
         if x["kind"] == "cierre" and has_result:
             x["ready"], x["why"] = True, "cierre: ya hay un resultado redactado"
+    for x in out:
+        blockers = [d for d in x["deps"] if d["blocked"]]
+        if blockers:
+            x["state"], x["ready"] = "bloqueada", False
+            x["why"] = "bloqueada: " + "; ".join(blocked_reason(d["id"], d["blocked"]) for d in blockers)
+            x["blocked_by"] = [{"dep": d["id"], **d["blocked"]} for d in blockers]
+        else:
+            x["state"] = "respaldada" if x["ready"] and all(d["ok"] for d in x["deps"]) else "pendiente"
+            x["blocked_by"] = []
     return {"meta": meta, "sections": out}
 
 
@@ -268,11 +333,15 @@ def render_coverage(cov: dict) -> str:
              f"generated: {date.today().isoformat()}", "---", "",
              f"# Cobertura del paper — {cov['meta'].get('title')}", "",
              "> Vista derivada: la regenera `manuscript.py coverage`. No editar a mano.", "",
-             "| sección | tipo | respaldo | ¿lista? | ¿redactada? |", "|---|---|---|---|---|"]
+             "| sección | tipo | estado | respaldo | ¿lista? | ¿redactada? |", "|---|---|---|---|---|---|"]
     for s in cov["sections"]:
         backing = "; ".join(f"{d['id']} {'✓' if d['ok'] else '✗'}" for d in s["deps"]) or "—"
-        lines.append(f"| {s['title']} | {s['kind']} | {backing} | {'sí' if s['ready'] else 'no'} | {'sí' if s['drafted'] else 'no'} |")
+        lines.append(f"| {s['title']} | {s['kind']} | {s['state']} | {backing} | "
+                     f"{'sí' if s['ready'] else 'no'} | {'sí' if s['drafted'] else 'no'} |")
     lines.append("")
+    for s in cov["sections"]:
+        if s["state"] == "bloqueada":
+            lines += [f"## Bloqueada: «{s['title']}»", "", f"- {s['why']}", ""]
     for s in cov["sections"]:
         bad = [d for d in s["deps"] if not d["ok"]]
         if bad:

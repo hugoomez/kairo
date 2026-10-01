@@ -62,8 +62,16 @@ at the end. The outline, not this skill, decides the sections: each has a
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/manuscript.py" coverage
    --vault <vault> --project-dir Projects/<slug> --thread <paper_thread>`.
    It writes `Manuscritos/coverage-<paper_thread>.md` and prints, per section,
-   whether it is ready and what each dependency still lacks. Report that table
-   to the researcher.
+   whether it is ready, its state, and what each dependency still lacks.
+   Report that table to the researcher. Each section's `state` is one of:
+   - `respaldada` — every bound claim / hypothesis passed its gate;
+   - `pendiente` — something is still missing (the `missing` lists say what);
+   - `bloqueada` — a bound hypothesis is `refutada` / `descartada`, a bound
+     claim or lemma is `fallido` / `refutado`, or a bound node rests on one
+     of those through `depends_on` (build_graph.py's propagation). `why`
+     names the failed node and the chain. A blocked section is never ready:
+     say so as an **importante** finding and do not draft around it — the
+     premise needs a human decision (rebind, or rethink the section).
 2. **Draft only what is ready**, one section at a time:
    - `prosa` (introduction, related work, problem setup / definitions) — from
      the hub and `Estado-del-arte.md`, under this skill's citation rules and
