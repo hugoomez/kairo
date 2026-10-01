@@ -5,7 +5,9 @@
     lit_watch.py triage  --project-dir <dir> --run <file> --key <k> --why "<one line>"
     lit_watch.py threat  --vault <vault> --project-dir <dir> --run <file> --key <k>
                          --hypothesis H-XXXX --sentence "<verbatim from the abstract>"
+                         --severity crítico|importante|menor
                          --judgement "<one line>" [--model <id>]
+    lit_watch.py check   --project-dir <dir> --run <file>
     lit_watch.py decide  --project-dir <dir> --run <file> --key <k> --decision ingerir|descartar
                          [--reason "..."] [--by <name>]
     lit_watch.py threat-decide --vault <vault> --project-dir <dir> --run <file> --key <k>
@@ -22,7 +24,10 @@
   - A candidate is *strong* when queries of two or more facets found it (or the
     project has one facet). The top `--top` strong candidates are marked for
     triage; the rest are listed, not surfaced.
-  - Novelty prefilter: word overlap between each non-refuted hypothesis's
+  - Each candidate keeps `abstract_sha256`, the hash of the abstract exactly
+    as the source returned it, so a later threat can only quote that text.
+  - Novelty prefilter: word overlap between each active hypothesis's (not
+    `refutada`, not `descartada`, not `send: never`)
     `## Claim` and each candidate's title + abstract. Only ids and scores are
     stored — the claim text never leaves the note.
   - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json` and sets the hub's
@@ -32,7 +37,14 @@
 `threat` records a novelty threat, which is a model's judgement and not
 evidence:
   - `--sentence` must appear verbatim (whitespace aside) in the candidate's
-    abstract or title, or the threat is refused.
+    abstract — the abstract's own words, never the title or a summary — or
+    the threat is refused. A candidate without an abstract cannot carry a
+    threat. If the abstract no longer matches `abstract_sha256`, the run file
+    was edited and the threat is refused.
+  - `--severity` is required: `crítico` (the abstract reports the same claim:
+    same effect, same kind of system, same direction), `importante` (a close
+    result that narrows what is new), `menor` (adjacent; to cite, novelty
+    intact).
   - One dated line goes into the hypothesis's `## Revisión de vigencia`, and
     the threat is recorded in the run file.
   - Never touches `status`, confidence or any frontmatter.
@@ -40,13 +52,19 @@ evidence:
 `decide` / `threat-decide` record the researcher's decision on a candidate or
 a threat. A threat decision appends one more dated line to the hypothesis.
 
-Prints one JSON object. Exit codes: 0 ok · 2 refused (bad input) · 1 error.
+`check` says whether a run is complete before it is committed: every
+triaged candidate has its one-line reason and every threat has a severity and
+a verbatim sentence. Exit 3 when something is missing (listed in `missing`).
+
+Prints one JSON object. Exit codes: 0 ok · 2 refused (bad input) · 3 run
+incomplete (`check`) · 1 error.
 Standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -71,7 +89,9 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.0.0"
+TOOL = "kairo/lit_watch@1.1.0"
+SEVERITIES = ("crítico", "importante", "menor")
+INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
 S2_FIELDS = "title,abstract,authors,year,externalIds,publicationDate,venue,citationCount,url"
 MAX_RESULTS = 50
@@ -99,6 +119,10 @@ class Refused(Exception):
 
 def ws(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
+
+
+def sha256(s: str) -> str:
+    return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
 
 
 def norm_title(s: str) -> str:
@@ -283,7 +307,7 @@ def hypotheses(pdir: Path) -> list[tuple[str, set[str]]]:
         if not parts:
             continue
         fm, body = parts
-        if (fm_get(fm, "status") or "") == "refutada":
+        if (fm_get(fm, "status") or "") in INACTIVE:
             continue
         hid = fm_get(fm, "id") or f.stem.split(" ")[0]
         out.append((hid, words(section(body, "Claim"))))
@@ -348,6 +372,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                 or norm_title(c["title"]) in titles or c["key"] in seen_before:
             continue
         c["strong"] = len(c["facets"]) >= 2 or len(facets_all) == 1
+        c["abstract_sha256"] = sha256(c.get("abstract") or "") if c.get("abstract") else None
         cands.append(c)
     hyps = hypotheses(pdir)
     for c in cands:
@@ -411,10 +436,18 @@ def cmd_threat(a) -> dict:
     run = load_run(a.run)
     c = find_candidate(run, a.key)
     sentence = ws(a.sentence).strip("\"“”«»")
+    abstract = c.get("abstract") or ""
+    if not abstract.strip():
+        raise Refused("the candidate has no abstract: a threat must quote the abstract's own words")
+    if c.get("abstract_sha256") and sha256(abstract) != c["abstract_sha256"]:
+        raise Refused("the candidate's abstract was edited after the watch fetched it")
     if len(sentence.split()) < 6:
         raise Refused("--sentence must quote at least six words of the abstract")
-    if sentence not in ws(c.get("abstract", "")) and sentence not in ws(c["title"]):
-        raise Refused("--sentence is not verbatim in the candidate's abstract or title")
+    if sentence not in ws(abstract):
+        raise Refused("--sentence is not verbatim in the candidate's abstract")
+    a.severity = {"critico": "crítico"}.get(ws(a.severity).lower(), ws(a.severity).lower())
+    if a.severity not in SEVERITIES:
+        raise Refused(f"--severity must be one of {', '.join(SEVERITIES)}")
     judgement = ws(a.judgement)
     if not judgement or len(judgement) > 300:
         raise Refused("--judgement must be one line of at most 300 characters")
@@ -424,14 +457,16 @@ def cmd_threat(a) -> dict:
     new = f"{a.key} " not in body_rev and f"({a.key})" not in body_rev
     if new:
         who = f", {a.model}" if a.model else ""
-        line = (f"- {date.today().isoformat()} · posible amenaza de novedad (juicio de un modelo{who}; no es evidencia): "
+        line = (f"- {date.today().isoformat()} · posible amenaza de novedad, gravedad {a.severity} "
+                f"(juicio de un modelo{who}; no es evidencia): "
                 f"«{sentence}» — {c['title']} ({a.key}). {judgement} · Pendiente de tu decisión.")
         write_text(f, append_revision_line(text, line), nl)
     if not any(t["key"] == a.key and t["hypothesis"] == a.hypothesis for t in run["threats"]):
         run["threats"].append({"key": a.key, "hypothesis": a.hypothesis, "sentence": sentence,
-                               "judgement": judgement, "model": a.model, "decision": None})
+                               "severity": a.severity, "judgement": judgement, "model": a.model,
+                               "decision": None})
         save_run(a.run, run)
-    return {"key": a.key, "hypothesis": a.hypothesis, "written": new,
+    return {"key": a.key, "hypothesis": a.hypothesis, "severity": a.severity, "written": new,
             "file": f.relative_to(a.vault.resolve()).as_posix() if a.vault else None}
 
 
@@ -462,6 +497,31 @@ def cmd_threat_decide(a) -> dict:
     return {"key": a.key, "hypothesis": a.hypothesis, "decision": a.decision}
 
 
+def check_run(run: dict) -> list[str]:
+    """What a run still lacks before it may be committed."""
+    missing = []
+    for c in run.get("candidates", []):
+        if c.get("triage") and not ws(c.get("why") or ""):
+            missing.append(f"{c['key']}: destacado sin su línea de por qué")
+    by_key = {c["key"]: c for c in run.get("candidates", [])}
+    for t in run.get("threats", []):
+        tag = f"{t.get('key')} → {t.get('hypothesis')}"
+        if t.get("severity") not in SEVERITIES:
+            missing.append(f"{tag}: alerta sin gravedad (crítico / importante / menor)")
+        c = by_key.get(t.get("key"))
+        if not c or not t.get("sentence") or ws(t["sentence"]) not in ws(c.get("abstract") or ""):
+            missing.append(f"{tag}: la frase citada no está literal en el resumen")
+    return missing
+
+
+def cmd_check(a) -> dict:
+    run = load_run(a.run)
+    missing = check_run(run)
+    return {"run": a.run.name, "complete": not missing, "missing": missing,
+            "triaged": sum(1 for c in run.get("candidates", []) if c.get("triage")),
+            "threats": len(run.get("threats", []))}
+
+
 # --------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: date | None = None) -> int:
@@ -472,11 +532,12 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--project-dir", required=True, type=Path)
     p.add_argument("--since", default=None)
     p.add_argument("--top", type=int, default=10)
-    for name in ("triage", "threat", "decide", "threat-decide"):
+    for name in ("triage", "threat", "decide", "threat-decide", "check"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
         p.add_argument("--run", required=True, type=Path)
-        p.add_argument("--key", required=True)
+        if name != "check":
+            p.add_argument("--key", required=True)
         p.add_argument("--vault", type=Path, default=None)
         if name == "triage":
             p.add_argument("--why", required=True)
@@ -484,6 +545,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
             p.add_argument("--hypothesis", required=True)
             p.add_argument("--sentence", required=True)
             p.add_argument("--judgement", required=True)
+            p.add_argument("--severity", required=True, help="crítico | importante | menor")
             p.add_argument("--model", default=None)
         if name == "decide":
             p.add_argument("--decision", required=True, choices=("ingerir", "descartar"))
@@ -508,7 +570,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
             if a.project_dir / "_vigilancia" != a.run.parent:
                 raise Refused("--run must be a file in this project's _vigilancia/")
             out = {"triage": cmd_triage, "threat": cmd_threat, "decide": cmd_decide,
-                   "threat-decide": cmd_threat_decide}[a.cmd](a)
+                   "threat-decide": cmd_threat_decide, "check": cmd_check}[a.cmd](a)
     except Refused as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 2
@@ -516,7 +578,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 1
     print(json.dumps(out, ensure_ascii=False))
-    return 0
+    return 3 if out.get("complete") is False else 0
 
 
 if __name__ == "__main__":

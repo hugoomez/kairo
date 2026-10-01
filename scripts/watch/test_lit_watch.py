@@ -171,7 +171,8 @@ class TestLitWatch(unittest.TestCase):
         _, res = self.delta()
         run = str(self.run_file(res))
         base = ["threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
-                "--key", "arxiv:2031.00002", "--hypothesis", "H-0961", "--judgement", "Mismo resultado, ya publicado."]
+                "--key", "arxiv:2031.00002", "--hypothesis", "H-0961", "--judgement", "Mismo resultado, ya publicado.",
+                "--severity", "crítico"]
         code, out = self.cli(*base, "--sentence", "fictional blue widgets are known to rotate faster than red")
         self.assertEqual(code, 2)
         self.assertIn("not verbatim", out["error"])
@@ -181,6 +182,7 @@ class TestLitWatch(unittest.TestCase):
         after = (self.p / "Hipotesis" / "H-0961.md").read_text(encoding="utf-8")
         self.assertIn("## Revisión de vigencia", after)
         self.assertIn("juicio de un modelo, m-1; no es evidencia", after)
+        self.assertIn("gravedad crítico", after)
         self.assertIn("«fictional blue widgets rotate faster than red widgets»", after)
         self.assertEqual(before.split("## Claim")[0], after.split("## Claim")[0])  # frontmatter untouched
         code, out = self.cli(*base, "--sentence", "fictional blue widgets rotate faster than red widgets")
@@ -208,6 +210,80 @@ class TestLitWatch(unittest.TestCase):
         code, out = self.cli("triage", "--project-dir", str(self.p), "--run", str(self.tmp / "elsewhere.json"),
                              "--key", "x", "--why", "y")
         self.assertEqual(code, 2)
+
+
+    # --- severity, verbatim abstract, active hypotheses, completeness ------------
+
+    def threat(self, run: str, sentence: str, severity: str = "importante", key: str = "arxiv:2031.00002"):
+        return self.cli("threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
+                        "--key", key, "--hypothesis", "H-0961", "--judgement", "Juicio inventado.",
+                        "--sentence", sentence, "--severity", severity)
+
+    def test_threat_severity_is_required_and_recorded(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        code, out = self.threat(run, "fictional blue widgets rotate faster than red widgets", "gravísimo")
+        self.assertEqual(code, 2)
+        self.assertIn("severity", out["error"])
+        code, out = self.threat(run, "fictional blue widgets rotate faster than red widgets", "critico")
+        self.assertEqual((code, out["severity"]), (0, "crítico"))
+        data = json.loads(Path(run).read_text(encoding="utf-8"))
+        self.assertEqual(data["threats"][0]["severity"], "crítico")
+
+    def test_threat_quotes_the_abstract_not_the_title_and_not_an_edited_abstract(self):
+        _, res = self.delta()
+        run = Path(self.run_file(res))
+        data = json.loads(run.read_text(encoding="utf-8"))
+        data["candidates"][0]["title"] = "Fictional blue widgets rotate faster in every invented case"
+        run.write_text(json.dumps(data), encoding="utf-8")
+        code, out = self.threat(str(run), "Fictional blue widgets rotate faster in every invented case")
+        self.assertEqual(code, 2)
+        self.assertIn("not verbatim in the candidate's abstract", out["error"])
+        data["candidates"][0]["abstract"] += " A sentence the model added to make its paraphrase pass."
+        run.write_text(json.dumps(data), encoding="utf-8")
+        code, out = self.threat(str(run), "A sentence the model added to make its paraphrase pass.")
+        self.assertEqual(code, 2)
+        self.assertIn("edited", out["error"])
+
+    def test_no_abstract_no_threat(self):
+        _, res = self.delta()
+        run = Path(self.run_file(res))
+        data = json.loads(run.read_text(encoding="utf-8"))
+        c = data["candidates"][0]
+        c["abstract"], c["abstract_sha256"] = "", None
+        run.write_text(json.dumps(data), encoding="utf-8")
+        code, out = self.threat(str(run), "fictional blue widgets rotate faster than red widgets")
+        self.assertEqual(code, 2)
+        self.assertIn("no abstract", out["error"])
+
+    def test_discarded_hypotheses_are_not_watched(self):
+        (self.p / "Hipotesis" / "H-0961.md").write_text(
+            hyp("H-0961", "descartada", "Fictional blue widgets rotate faster than red widgets under synthetic spin."),
+            encoding="utf-8")
+        _, res = self.delta()
+        run = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertTrue(all(not c["novelty"] for c in run["candidates"]))
+
+    def test_check_lists_what_a_run_lacks(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        common = ["--project-dir", str(self.p), "--run", run]
+        code, out = self.cli("check", *common)
+        self.assertEqual(code, 3)
+        self.assertFalse(out["complete"])
+        self.assertTrue(any("por qué" in m for m in out["missing"]))
+        for c in json.loads(Path(run).read_text(encoding="utf-8"))["candidates"]:
+            if c["triage"]:
+                self.cli("triage", *common, "--key", c["key"], "--why", "Línea inventada.")
+        self.threat(run, "fictional blue widgets rotate faster than red widgets", "menor")
+        code, out = self.cli("check", *common)
+        self.assertEqual((code, out["complete"], out["threats"]), (0, True, 1), out)
+        data = json.loads(Path(run).read_text(encoding="utf-8"))
+        del data["threats"][0]["severity"]  # a run written before severities existed
+        Path(run).write_text(json.dumps(data), encoding="utf-8")
+        code, out = self.cli("check", *common)
+        self.assertEqual(code, 3)
+        self.assertTrue(any("gravedad" in m for m in out["missing"]))
 
 
 if __name__ == "__main__":
