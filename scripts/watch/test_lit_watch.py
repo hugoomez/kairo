@@ -154,6 +154,10 @@ class TestLitWatch(unittest.TestCase):
     def test_partial_and_total_outages(self):
         code, res = self.delta(FakeNet(fail={"api.semanticscholar.org"}))
         self.assertEqual((code, res["lost"], res["lost_all"]), (0, 1, False))
+        # a window with lost queries was not covered: the run is saved, last_watch stays
+        self.assertFalse(res["last_watch_moved"])
+        self.assertIsNotNone(res["run"])
+        self.assertIn("last_watch: 2031-02-01", (self.p / "_hub.md").read_text(encoding="utf-8"))
         (self.p / "_hub.md").write_text(HUB, encoding="utf-8")
         for f in (self.p / "_vigilancia").glob("*.json"):
             f.unlink()

@@ -31,8 +31,10 @@
     `## Claim` and each candidate's title + abstract. Only ids and scores are
     stored — the claim text never leaves the note.
   - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json` and sets the hub's
-    `last_watch:` — unless every query failed, in which case nothing moves and
-    the run says so.
+    `last_watch:` only when every query answered. If some failed, the run is
+    still saved but `last_watch` stays where it was, so the next watch covers
+    the same window again (papers already offered are dropped, never repeated);
+    if every query failed, nothing is written and the run says so.
 
 `threat` records a novelty threat, which is a model's judgement and not
 evidence:
@@ -92,7 +94,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.2.0"
+TOOL = "kairo/lit_watch@1.3.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -397,13 +399,18 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
            "degraded": any(x["error"] for x in log), "lost_all": lost_all, "queries": log,
            "candidates": cands, "threats": []}
     out = None
+    moved = False
     if not lost_all:
         out = run_path(pdir, today)
         save_run(out, run)
-        text, nl = read_text(hub_path(pdir))
-        write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
+        if not run["degraded"]:
+            # A window with lost queries was not covered: keep it open for the next watch.
+            text, nl = read_text(hub_path(pdir))
+            write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
+            moved = True
     return {"run": out.relative_to(vault).as_posix() if out else None, "since": run["since"], "until": run["until"],
             "queries": len(log), "lost": sum(1 for x in log if x["error"]), "lost_all": lost_all,
+            "last_watch_moved": moved,
             "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
             "to_triage": sum(c["triage"] for c in cands),
             "novelty_candidates": sum(1 for c in cands if c["novelty"])}

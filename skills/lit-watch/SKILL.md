@@ -42,7 +42,9 @@ The JSON gives the run file (`_vigilancia/vigilancia-<date>.json`), the window
 
 - `lost_all: true`: nothing was written and `last_watch` did not move. Report
   the failure (network, 429, Semantic Scholar key) and stop.
-- Some queries lost: continue, and say which ones in the report.
+- Some queries lost: continue, and say which ones in the report. `last_watch`
+  did not move (`last_watch_moved: false`): the next watch covers this window
+  again, so say that the window stays open — never call it "nothing new".
 - Refused because there are no recorded queries: the project has no
   "Búsqueda ejecutada" block. Report that literature-search must run first,
   then stop.
