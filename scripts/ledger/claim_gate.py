@@ -108,13 +108,13 @@ def gate(vault: str, path: Path) -> dict:
 
     # 2. researcher sign-offs, bound to the exact texts
     signoffs = cr.read_block(path, "signoffs")
-    for part, sha, label in (("statement", s_sha, "enunciado"), ("proof", p_sha, "demostración")):
+    for part, sha, label in (("statement", s_sha, "al enunciado"), ("proof", p_sha, "a la demostración")):
         s = cr.latest(signoffs, part=part)
         ok = bool(statement if part == "statement" else proof) and s is not None and s.get("sha256") == sha
         L[f"signoff_{part}"] = {"ok": ok, "by": s.get("by") if s else None, "date": s.get("date") if s else None,
                                 "stale": bool(s) and s.get("sha256") != sha}
         if not ok:
-            miss.append(f"tu visto bueno al {label}: " + ("el texto cambió desde que lo firmaste" if s else "falta"))
+            miss.append(f"tu visto bueno {label}: " + ("el texto cambió desde que lo firmaste" if s else "falta"))
 
     # 3. numerical sanity check
     checks = cr.read_block(path, "numerical_checks")
