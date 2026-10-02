@@ -2,7 +2,7 @@
 name: facet-summarizer
 description: Reads the ingested Papers/ notes assigned to ONE Estado-del-arte facet and returns a compact, citation-grounded contribution (paper id + section/table/figure for every claim) to whichever of the canonical Estado-del-arte sections those papers actually support. It does not address every section. create-project step 7 (Map phase) dispatches one of these per facet, all launched together in the same turn.
 tools: Read, Grep, Glob
-model: claude-haiku-4-5
+model: claude-sonnet-5-5
 maxTurns: 5
 color: green
 ---

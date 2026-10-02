@@ -162,7 +162,7 @@ def solve(x):
 
     def test_plan_requires_matching_approval(self):
         code, plan = _cli(["plan", "--run-dir", str(self.run_dir), "--iterations", "4",
-                           "--model", "haiku", "--run-budget-usd", "0.5"])
+                           "--run-budget-usd", "0.5"])
         self.assertEqual(code, 0)
         self.assertLessEqual(plan["estimate"]["hard_ceiling_usd_equiv"], 0.5 + 2 * 0.25)
         # `run` re-launches itself in UTF-8 mode, so exercise it as a real CLI call

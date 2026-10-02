@@ -2,7 +2,7 @@
 name: fresh-verifier
 description: Fresh-instance error hunter for Kairo artifacts. Receives ONLY a verification packet built by scripts/ledger/verifier_packet.py (the claim, each cited-evidence assertion with the verbatim source text its locator points at, and — for experiments — the frozen preregistration plus the Resultado and analysis output). Never the conversation, the justification behind it, prior critiques, or the reasoning that produced it. Returns no_errors_found | errors_found (location + why + severity) | cannot_assess (reason) in a fixed JSON block. Dispatched by hypothesis-cycle before a note is created and by update-confidence before any transition to apoyada. It never decides or proposes a hypothesis status.
 tools: ""
-model: opus
+model: claude-opus-5-5
 maxTurns: 12
 color: orange
 ---

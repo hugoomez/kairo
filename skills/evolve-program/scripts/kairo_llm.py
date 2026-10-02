@@ -100,7 +100,9 @@ def ledger_totals(path: Path) -> tuple[float, int]:
 
 class KairoClaudeCodeLLM(LLMInterface):
     def __init__(self, model_cfg=None):
-        self.model = getattr(model_cfg, "name", None) or "haiku"
+        self.model = getattr(model_cfg, "name", None)
+        if not self.model:
+            raise ValueError("kairo_llm: no model in the run plan (config/models.toml decides it)")
         self.system_message = getattr(model_cfg, "system_message", None)
         self.timeout = getattr(model_cfg, "timeout", None) or 300
         self.ledger = Path(os.environ["KAIRO_EVOLVE_LEDGER"])

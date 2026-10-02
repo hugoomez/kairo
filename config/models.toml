@@ -1,0 +1,156 @@
+# Kairo model policy: the one source of truth for which Claude model each
+# Kairo task uses. Two tiers, each pinned to an exact model id (no aliases).
+#
+#   python scripts/models/model_policy.py show     # the resolved policy (JSON)
+#   python scripts/models/model_policy.py check    # agents/ and evolve agree with it
+#   python scripts/models/model_policy.py set --task <id> --tier opus|sonnet
+#                                                   # edits this file and the agent frontmatter
+#
+# kind = "job"   a task the Kairo interface launches (backend job kind = task id)
+# kind = "agent" a subagent; `file` is its definition, whose `model:` line is
+#                generated from this policy (check fails if it drifts)
+# kind = "tool"  a script that calls a model itself (evolve-program)
+#
+# Tasks with no model at all are not listed: «¿Dónde estaba?», the lab notebook,
+# the shareable report, idea capture, numerical checks, repo remote/push.
+# The second critic's own judgement runs on DeepSeek (DeepInfra), outside this
+# policy; only its Claude wrapper is listed.
+
+[tiers]
+opus = "claude-opus-5-5"
+sonnet = "claude-sonnet-5-5"
+
+# --- jobs the interface launches --------------------------------------------
+[tasks.hypothesis_generation]
+kind = "job"
+tier = "opus"
+label = "Generar hipótesis (ciclo, críticos y torneo)"
+
+[tasks.critique]
+kind = "job"
+tier = "opus"
+label = "Abogado del diablo (crítica)"
+
+[tasks.preregister]
+kind = "job"
+tier = "opus"
+label = "Diseñar y preregistrar el experimento"
+
+[tasks.theorem_work]
+kind = "job"
+tier = "opus"
+label = "Lemas y teoremas: enunciado, demostración y verificación"
+
+[tasks.manuscript_draft]
+kind = "job"
+tier = "opus"
+label = "Redactar el paper"
+
+[tasks.repo_review]
+kind = "job"
+tier = "opus"
+label = "Revisar cambios del código (repo-steward)"
+
+[tasks.adjudicate]
+kind = "job"
+tier = "opus"
+label = "Adjudicar: auditoría de trampas y cambio de estado (update-confidence)"
+
+[tasks.create_project]
+kind = "job"
+tier = "sonnet"
+label = "Crear proyecto (búsqueda, ingesta, mapa del Estado del arte)"
+
+[tasks.lit_watch]
+kind = "job"
+tier = "sonnet"
+label = "Vigilancia de literatura (primera pasada y triage)"
+
+[tasks.project_chat]
+kind = "job"
+tier = "sonnet"
+label = "Preguntar sobre el proyecto"
+
+[tasks.ask_corpus]
+kind = "job"
+tier = "sonnet"
+label = "Preguntar a los papers"
+
+[tasks.digest]
+kind = "job"
+tier = "sonnet"
+label = "Resumen narrativo"
+
+[tasks.run_local]
+kind = "job"
+tier = "sonnet"
+label = "Ejecutar el experimento en esta máquina"
+
+[tasks.kaggle_prepare]
+kind = "job"
+tier = "sonnet"
+label = "Preparar la ejecución en Kaggle"
+
+[tasks.slurm_prepare]
+kind = "job"
+tier = "sonnet"
+label = "Preparar la ejecución en el clúster"
+
+[tasks.run_analysis]
+kind = "job"
+tier = "sonnet"
+label = "Analizar una ejecución remota (plan congelado)"
+
+[tasks.repo_health]
+kind = "job"
+tier = "sonnet"
+label = "Salud del repositorio de código"
+
+# --- subagents ----------------------------------------------------------------
+[tasks.fresh_verifier]
+kind = "agent"
+file = "agents/fresh-verifier.md"
+tier = "opus"
+label = "Verificador independiente (fresh-verifier)"
+
+[tasks.devils_advocate]
+kind = "agent"
+file = "agents/devils-advocate.md"
+tier = "opus"
+label = "Abogado del diablo (subagente)"
+
+[tasks.sota_synthesizer]
+kind = "agent"
+file = "agents/sota-synthesizer.md"
+tier = "opus"
+label = "Síntesis final del Estado del arte (escuelas, huecos)"
+
+[tasks.novelty_judge]
+kind = "agent"
+file = "agents/novelty-judge.md"
+tier = "opus"
+label = "Confirmar una amenaza de novedad"
+
+[tasks.facet_searcher]
+kind = "agent"
+file = "agents/facet-searcher.md"
+tier = "sonnet"
+label = "Búsqueda de literatura por faceta"
+
+[tasks.facet_summarizer]
+kind = "agent"
+file = "agents/facet-summarizer.md"
+tier = "sonnet"
+label = "Resumen por faceta (pasada map)"
+
+[tasks.second_critic]
+kind = "agent"
+file = "agents/second-critic.md"
+tier = "sonnet"
+label = "Envoltorio del segundo crítico (el juicio lo da DeepSeek en DeepInfra)"
+
+# --- tools --------------------------------------------------------------------
+[tasks.evolve_program]
+kind = "tool"
+tier = "sonnet"
+label = "evolve-program (OpenEvolve); Opus se puede elegir por ejecución"

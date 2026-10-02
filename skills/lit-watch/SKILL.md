@@ -68,24 +68,18 @@ Look at each candidate whose `novelty` list names hypotheses. The list is a
 word-overlap prefilter and not a verdict. Take at most the 3 highest scores
 per hypothesis.
 
-1. Read the hypothesis's `## Claim` and nothing else of it: not its
-   justification, Génesis or reviews.
-2. Read the candidate's abstract.
-3. Is there a threat? Yes only if the abstract **reports the same claim**
-   (same effect, same kind of system, same direction), or reports a result
-   that makes the claim no longer new. A shared topic is not a threat.
-4. When it is a threat, pick the abstract sentence that shows it and copy it
-   exactly. It must come from the abstract: not the title, not your summary.
-   A candidate with no abstract cannot carry a threat; say so in its triage
-   line instead.
-5. Give it a severity:
-   - `crítico`: the abstract reports the same claim (same effect, same kind
-     of system, same direction). The hypothesis may no longer be new.
-   - `importante`: a close result that narrows what is new (the same effect
-     in a nearby system, or part of the claim).
-   - `menor`: adjacent work to cite; the novelty stands.
+The judgement is not yours: it runs on the policy's hard-task model
+(`config/models.toml`, task `novelty_judge`).
 
-   Then:
+1. For each (hypothesis, candidate) pair, dispatch one `novelty-judge`
+   subagent, all in the same turn. Give it the hypothesis's `## Claim` and
+   nothing else of it (not its justification, Génesis or reviews), and the
+   candidate's title and abstract exactly as in the run file.
+2. It answers `threat: true|false`, the exact abstract sentence, a severity
+   (`crítico` / `importante` / `menor`) and a one-line judgement. A candidate
+   with no abstract cannot carry a threat; say so in its triage line instead.
+3. Record only its `threat: true` answers, with its sentence, severity and
+   judgement, and `--model` set to the judge's model id:
 
 ```
 python <plugin>/scripts/watch/lit_watch.py threat --vault <vault> --project-dir <dir> --run <run file> \

@@ -2,7 +2,7 @@
 name: devils-advocate
 description: On-demand adversarial critic for one Kairo artifact (a hypothesis, an ADR, a manuscript section, or a recorded decision). Receives ONLY a critique packet built by scripts/critique/critique_note.py — the artifact itself and, for a hypothesis, the verbatim source text its citations point at — never the conversation, the reasoning that produced it, prior critiques or verdicts. Returns the strongest objections it can find, each pinned to a place in the packet, in a fixed JSON block. Dispatched only by the critique skill. It never decides, changes or proposes any status.
 tools: ""
-model: opus
+model: claude-opus-5-5
 maxTurns: 8
 color: red
 ---

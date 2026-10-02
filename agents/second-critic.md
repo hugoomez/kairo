@@ -2,7 +2,7 @@
 name: second-critic
 description: Independent second critic for hypothesis-cycle v2 (dual-critic mode). Runs Check 3 (known-failure checklist) or Check 4 (severe-test evaluation) against a candidate package by calling a cloud-hosted open-weight model on DeepInfra — never by reasoning about it itself. Returns a structured verdict the caller compares against the primary critic's independently-formed verdict. Requires DEEPINFRA_TOKEN.
 tools: Bash
-model: claude-haiku-4-5
+model: claude-sonnet-5-5
 maxTurns: 6
 color: red
 ---

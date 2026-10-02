@@ -135,7 +135,7 @@ evaluator_lock_sha256: <sha256 of evolve.lock.json>
 heldout_sha256: {inputs.json: <sha>, targets.json: <sha>}
 max_heldout_gap: <e.g. 0.05>
 feedback_points: <K train rows shown to the search, or 0>
-budget: {model: <haiku|sonnet|opus>, iterations: <N>, per_call_usd: <x>, run_budget_usd: <y>, workers: <w>}
+budget: {model: <pinned id from the plan, e.g. claude-sonnet-5-5>, iterations: <N>, per_call_usd: <x>, run_budget_usd: <y>, workers: <w>}
 run_dir: <absolute path outside the vault>
 result: {best_train: , best_heldout: , gap: , flag: , spent_usd_equiv: , calls: }
 spawned_hypothesis: <H-XXXX, once filed>
@@ -158,7 +158,7 @@ python .../evolve_run.py billing-check --test-call
 
 Must report `ok: true`: `claude auth status` shows `authMethod: claude.ai`,
 `apiProvider: firstParty` and a `subscriptionType`; no `apiKeyHelper` in your
-user settings; and one test call (Haiku, "Reply with exactly: OK") answered
+user settings; and one test call (the policy's model, "Reply with exactly: OK") answered
 with `provider: firstParty`. The evolution environment is always scrubbed of
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the
 Bedrock / Vertex / Foundry switches, and `--bare` is never used (bare mode
@@ -167,11 +167,14 @@ authenticates *only* with an API key). `ok: false` → **crítico**, do not run.
 ### 4. Plan, show the estimate, get approval
 
 ```
-python .../evolve_run.py plan --run-dir <run> --iterations 20 --model haiku \
+python .../evolve_run.py plan --run-dir <run> --iterations 20 \
     --per-call-usd 0.25 --run-budget-usd 2 --workers 2 --objective objective.txt
 ```
 
-Show the researcher the **whole** output: expected calls, expected and
+The model comes from `config/models.toml` (task `evolve_program`, Sonnet by
+default). For one run on Opus add `--model opus`; nothing else is accepted.
+
+Show the researcher the **whole** output: the model, expected calls, expected and
 hard-ceiling cost, and the note that the figures are the CLI's list-price
 equivalent of **subscription quota** (`costBasis: "list"`), not an API charge.
 Caps: `--iterations` (OpenEvolve iterations), `--max-calls` (default 2 ×

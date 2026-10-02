@@ -653,7 +653,7 @@ From `${CLAUDE_PLUGIN_ROOT}/templates/hypothesis-template.md`. Set at minimum:
 
 - `id`, `project: <PROJ-XXX>`, `status: propuesta` (always — never `en_cola` here;
   overflow → `update-confidence`), `created`/`updated` = today.
-- `generated_by`: `origin: agent`, `model: claude-sonnet-5`,
+- `generated_by`: `origin: agent`, `model: <this session's model id>`,
   `skill_version: hypothesis-cycle@v1`, `pipeline_config: <hub path>` — **or**
   `origin: human` (then `model`/`pipeline_config` omitted) for the human entry
   point.

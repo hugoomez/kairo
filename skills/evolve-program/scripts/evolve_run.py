@@ -52,7 +52,29 @@ OFF_SUBSCRIPTION_VARS = (
 # Rough list-price-equivalent USD per evolution call (a ~6-12k-token prompt with
 # code + ~1-3k output). Used only for the pre-run estimate shown for approval;
 # the real per-call figure is logged from each call's total_cost_usd.
-EST_PER_CALL = {"haiku": 0.03, "sonnet": 0.12, "opus": 0.40}
+# Rough list-price cost of one call, by policy tier (shown in the plan, labelled as an estimate).
+EST_PER_CALL = {"sonnet": 0.12, "opus": 0.40}
+
+
+def policy_model(choice: str | None) -> tuple[str, str]:
+    """(tier, pinned model id) for a run. None = the policy's default for
+    evolve-program; a tier name (sonnet | opus) or that tier's pinned id selects
+    it. Anything else (an alias of another family, an unpinned name) is refused."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "model_policy", Path(__file__).resolve().parents[3] / "scripts" / "models" / "model_policy.py")
+    mp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mp)
+    r = mp.resolve(mp.load())
+    tiers = r["tiers"]
+    if choice is None:
+        t = r["tasks"]["evolve_program"]
+        return t["tier"], t["model"]
+    for tier, model in tiers.items():
+        if choice in (tier, model):
+            return tier, model
+    raise SystemExit(json.dumps({"error": f"--model must be one of {', '.join(list(tiers) + list(tiers.values()))} "
+                                          f"(config/models.toml), not {choice!r}"}))
 
 
 class Refused(Exception):
@@ -147,7 +169,7 @@ def billing_check(test_call: bool) -> dict:
     ok = bool(sub_ok) and not helpers
     if test_call:
         import kairo_llm  # needs openevolve importable only for the class; build_cmd is plain
-        cmd = kairo_llm.build_cmd("haiku", 0.05, None)
+        cmd = kairo_llm.build_cmd(policy_model(None)[1], 0.05, None)
         env2 = kairo_llm.scrubbed_env()
         t = subprocess.run(cmd, input="Reply with exactly: OK", capture_output=True, text=True,
                            encoding="utf-8", env=env2, timeout=180)
@@ -181,10 +203,11 @@ def _token(plan: dict) -> str:
 def cmd_plan(a) -> dict:
     run = a.run_dir.resolve()
     lock_sha = sha(run / "evolve.lock.json")
-    per_call_est = EST_PER_CALL.get(a.model, EST_PER_CALL["sonnet"])
+    tier, model = policy_model(a.model)
+    per_call_est = EST_PER_CALL[tier]
     max_calls = a.max_calls or a.iterations * 2
     plan = {
-        "evaluator_lock_sha256": lock_sha, "iterations": a.iterations, "model": a.model,
+        "evaluator_lock_sha256": lock_sha, "iterations": a.iterations, "model": model, "tier": tier,
         "per_call_cap_usd": a.per_call_usd, "run_budget_usd": a.run_budget_usd,
         "workers": a.workers, "max_calls": max_calls, "seed": a.seed,
         # the researcher's objective statement, sent as the LLM system message. It is
@@ -482,7 +505,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("plan")
     p.add_argument("--run-dir", type=Path, required=True)
     p.add_argument("--iterations", type=int, required=True)
-    p.add_argument("--model", default="haiku")
+    p.add_argument("--model", default=None,
+                   help="sonnet | opus (or the tier's pinned id); default: config/models.toml, task evolve_program")
     p.add_argument("--per-call-usd", type=float, default=0.25)
     p.add_argument("--run-budget-usd", type=float, required=True)
     p.add_argument("--workers", type=int, default=2)

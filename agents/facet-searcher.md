@@ -2,7 +2,7 @@
 name: facet-searcher
 description: Runs all the queries for ONE literature-search facet — internal vault (Smart Connections), arXiv, Semantic Scholar, and PatentsView only when explicitly told — and returns a compact structured candidate list. Never returns raw Atom XML or raw JSON: parsing happens inside this subagent's own context. literature-search step 2 dispatches one of these per facet, all launched together in the same turn.
 tools: WebFetch, Bash, mcp__smart-connections
-model: claude-haiku-4-5
+model: claude-sonnet-5-5
 maxTurns: 12
 color: cyan
 ---

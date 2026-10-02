@@ -327,9 +327,14 @@ Estado del arte: send: never`). Each subagent reads **only its assigned notes** 
 fully-cited contribution to whichever canonical sections its papers support (it
 never touches §4 or §8). Collect every contribution.
 
-**Reduce — one pass in the main session.** Merge the sub-contributions into the
-final document in the canonical 9-section order below. Two sections are produced
-**here, not by any subagent**, because they need the whole cross-facet picture:
+**Reduce — one `sota-synthesizer` subagent.** Dispatch exactly one, with every
+Map contribution, the project's purpose and scope, and the canonical section
+list below. It runs on the policy's hard-task model (`config/models.toml`,
+task `sota_synthesizer`), whatever model this session uses. Write what it
+returns; you add the frontmatter, staleness notes and the Búsqueda ejecutada
+block. It merges the contributions into the final document in the canonical
+9-section order below, and drafts the two sections that need the whole
+cross-facet picture:
 
 - **§4 Escuelas de pensamiento en competencia** — from the `(para el reduce)
   señales de escuelas en competencia` material the summarizers flagged; include
@@ -409,6 +414,11 @@ PRISMA counts) so the map's evidence base is auditable.
 
 ### 8. Seed candidate hypotheses
 
+**Launched from the Kairo interface?** Skip this step: the prompt says so.
+Hypothesis generation runs on the policy's hard-task model as its own job
+(«Generar hipótesis»), never inside project creation. End the run saying the
+gaps are ready for it.
+
 Input = the **"Huecos identificados"** section. Feed **3–5** gaps as candidates —
 never more than 5 on this first pass.
 
@@ -425,7 +435,7 @@ never more than 5 on this first pass.
   - `Claim`: one falsifiable sentence.
   - `Justificación (evidencia citada)`: bullets citing `P-XXXX §…` — grounded in
     the state-of-the-art map, not invented.
-  - `generated_by`: `origin: agent`, `model: claude-sonnet-5`,
+  - `generated_by`: `origin: agent`, `model: <this session's model id>`,
     `skill_version: create-project@v1`, `pipeline_config: <hub path>`.
   - `history`: first entry — `date` today, `status: propuesta`,
     `by: <agent id>`, `evidence: "seeded from Estado-del-arte.md §Huecos"`.
