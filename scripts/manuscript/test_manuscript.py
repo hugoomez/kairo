@@ -217,7 +217,9 @@ class TestSectionStates(CoverageBase):
 
     def test_default_states(self):
         c = self.cov()
-        self.assertEqual(c["introduccion"]["state"], "respaldada")
+        # nothing bound: pendiente, though prosa may be drafted early
+        self.assertEqual((c["introduccion"]["state"], c["introduccion"]["ready"]), ("pendiente", True))
+        self.assertIn("sin respaldo vinculado", c["introduccion"]["why"])
         self.assertEqual(c["resultados"]["state"], "pendiente")
         self.assertEqual(c["discusion"]["state"], "pendiente")
         self.assertEqual(c["resultados"]["blocked_by"], [])

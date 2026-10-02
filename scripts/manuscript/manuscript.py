@@ -27,8 +27,10 @@ it keeping that shape (or use ``bind``).
 
 ``coverage`` gives every section one of three states:
 
-* ``respaldada`` — every bound claim / hypothesis passed its gate (and the
-  section is ready by its kind);
+* ``respaldada`` — at least one claim / hypothesis is bound, every bound one
+  passed its gate, and the section is ready by its kind. A section with nothing
+  bound is never respaldada: it is ``pendiente`` (a prosa section can still be
+  drafted early — ``ready`` — but nothing supports it yet);
 * ``bloqueada``  — a bound node failed (hypothesis ``refutada`` /
   ``descartada``, claim ``fallido`` / ``refutado``) or depends, directly or
   transitively, on one that failed. The propagation is build_graph.py's
@@ -48,7 +50,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 KINDS = ("prosa", "resultado", "cierre")
 _ID = re.compile(r"^(C|H)-\d{4}$")
 _THREAD = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
@@ -323,7 +325,10 @@ def coverage(vault: Path, project_dir: Path, thread: str) -> dict:
             x["why"] = "bloqueada: " + "; ".join(blocked_reason(d["id"], d["blocked"]) for d in blockers)
             x["blocked_by"] = [{"dep": d["id"], **d["blocked"]} for d in blockers]
         else:
-            x["state"] = "respaldada" if x["ready"] and all(d["ok"] for d in x["deps"]) else "pendiente"
+            backed = bool(x["deps"]) and all(d["ok"] for d in x["deps"])
+            x["state"] = "respaldada" if x["ready"] and backed else "pendiente"
+            if not x["deps"]:
+                x["why"] = f'{x["why"]} · sin respaldo vinculado'
             x["blocked_by"] = []
     return {"meta": meta, "sections": out}
 

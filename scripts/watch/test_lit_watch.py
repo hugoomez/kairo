@@ -245,6 +245,18 @@ class TestLitWatch(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("edited", out["error"])
 
+    def test_no_threat_on_a_discarded_or_refuted_hypothesis(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        h = self.p / "Hipotesis" / "H-0961.md"
+        before = h.read_text(encoding="utf-8")
+        for status in ("descartada", "refutada"):
+            h.write_text(before.replace("status: apoyada", f"status: {status}"), encoding="utf-8")
+            code, out = self.threat(run, "fictional blue widgets rotate faster than red widgets")
+            self.assertEqual(code, 2)
+            self.assertIn(status, out["error"])
+            self.assertNotIn("Revisión de vigencia", h.read_text(encoding="utf-8"))
+
     def test_no_abstract_no_threat(self):
         _, res = self.delta()
         run = Path(self.run_file(res))

@@ -64,7 +64,7 @@ at the end. The outline, not this skill, decides the sections: each has a
    It writes `Manuscritos/coverage-<paper_thread>.md` and prints, per section,
    whether it is ready, its state, and what each dependency still lacks.
    Report that table to the researcher. Each section's `state` is one of:
-   - `respaldada` — every bound claim / hypothesis passed its gate;
+   - `respaldada` — at least one claim / hypothesis is bound and every bound one passed its gate (nothing bound = `pendiente`, even for prosa that may be drafted early);
    - `pendiente` — something is still missing (the `missing` lists say what);
    - `bloqueada` — a bound hypothesis is `refutada` / `descartada`, a bound
      claim or lemma is `fallido` / `refutado`, or a bound node rests on one

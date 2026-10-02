@@ -40,7 +40,10 @@ evidence:
     abstract — the abstract's own words, never the title or a summary — or
     the threat is refused. A candidate without an abstract cannot carry a
     threat. If the abstract no longer matches `abstract_sha256`, the run file
-    was edited and the threat is refused.
+    was edited and the threat is refused. (This catches an accidental or
+    model-made edit; whoever can edit the run file can also recompute the
+    hash, so it is not a security boundary. Runs written before the hash
+    existed carry none and skip this check.)
   - `--severity` is required: `crítico` (the abstract reports the same claim:
     same effect, same kind of system, same direction), `importante` (a close
     result that narrows what is new), `menor` (adjacent; to cite, novelty
@@ -89,7 +92,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.1.0"
+TOOL = "kairo/lit_watch@1.2.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -453,6 +456,10 @@ def cmd_threat(a) -> dict:
         raise Refused("--judgement must be one line of at most 300 characters")
     f = hypothesis_file(a.project_dir, a.hypothesis)
     text, nl = read_text(f)
+    parts = split_frontmatter(text)
+    status = (fm_get(parts[0], "status") or "") if parts else ""
+    if status in INACTIVE:
+        raise Refused(f"{a.hypothesis} is {status}: the watch does not raise novelty threats on it")
     body_rev = text.split("## Revisión de vigencia", 1)[-1] if "## Revisión de vigencia" in text else ""
     new = f"{a.key} " not in body_rev and f"({a.key})" not in body_rev
     if new:
