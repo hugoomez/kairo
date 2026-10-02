@@ -67,6 +67,11 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/critique/critique_note.py" write \
   --result <tmp>/result.md --model <the subagent's model id> [--project <slug>]
 ```
 
+The note records the second critic's availability by itself
+(`second_critic: no disponible — …` while `KAIRO_SECOND_CRITIC` is not `on`).
+That is never an error: don't try the DeepInfra call and don't mention it as a
+failure.
+
 Exit 3 = the reply was not a valid critique (no objections, an objection with
 no location, a verdict or status in it). Re-dispatch **once** with the same
 packet; if it fails again, report that and stop — never edit the reply into

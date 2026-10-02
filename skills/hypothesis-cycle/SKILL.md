@@ -18,9 +18,12 @@ itself.
 critic — the `second-critic` subagent, which calls a cloud model on DeepInfra —
 running the *same* Check 3 / Check 4 text in parallel with, and without seeing,
 the primary critic's own verdict. See "## v2 mode — second, parallel critic"
-below. Use v2 when the researcher asks for it, or by default once
-`DEEPINFRA_TOKEN` is configured and the project's stakes warrant it (a
-`linea_publicacion` candidate, or the researcher's general preference) — v1
+below. v2 runs only when the switch is on: `KAIRO_SECOND_CRITIC=on` **and**
+`DEEPINFRA_TOKEN` set (`python ${CLAUDE_PLUGIN_ROOT}/scripts/second_critic/status.py`
+says `"available": true`). With the switch off, run v1 and record «segundo
+crítico: no disponible — desactivado» in the cycle output, without trying the
+call and without an error. With it on, use v2 when the researcher asks or the
+stakes warrant it (a `linea_publicacion` candidate) — v1
 remains correct and complete on its own; v2 is an added independence check, not
 a replacement for the primary critic's own reasoning.
 

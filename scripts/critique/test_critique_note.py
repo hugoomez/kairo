@@ -149,6 +149,13 @@ class TestWrite(Base):
             self.assertIn(s, text)
         self.assertEqual(cn.write_note(self.vault, "H-9001", self.packet(), RESULT, None).stem, "CR-0002")
 
+    def test_second_critic_off_is_recorded_as_no_disponible_not_an_error(self):
+        from unittest import mock
+        with mock.patch.dict("os.environ", {"KAIRO_SECOND_CRITIC": "", "DEEPINFRA_TOKEN": ""}):
+            text = cn.write_note(self.vault, "H-9001", self.packet(), RESULT, None).read_text(encoding="utf-8")
+        self.assertIn("second_critic: no disponible — desactivado", text)
+        self.assertIn("Segundo crítico (otra familia de modelos, DeepInfra): no disponible", text)
+
     def test_target_note_is_untouched(self):
         hyp = next((self.vault / "Projects/demo/Hipotesis").glob("H-9001*"))
         before = hyp.read_bytes()

@@ -155,6 +155,16 @@ def bullets(items: list[str]) -> list[str]:
     return [f"- {x}" for x in items] or ["- (ninguna)"]
 
 
+def _second_critic_label() -> str:
+    """Recorded on every critique: the second critic never fails a critique."""
+    import importlib.util  # noqa: PLC0415
+    spec = importlib.util.spec_from_file_location(
+        "second_critic_status", Path(__file__).resolve().parent.parent / "second_critic" / "status.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.label(mod.status())
+
+
 def write_note(vault: Path, target: str, packet: Path, result: dict, model: str | None,
                project: str | None = None) -> Path:
     validate_result(result)
@@ -176,6 +186,7 @@ def write_note(vault: Path, target: str, packet: Path, result: dict, model: str 
         f"critic: {CRITIC}",
         f"model: {model or 'desconocido'}",
         f"packet_sha256: {sha}",
+        f"second_critic: {_second_critic_label()}",
         "escrito_por: modelo",
         "citable: false",
         "---",
@@ -185,6 +196,8 @@ def write_note(vault: Path, target: str, packet: Path, result: dict, model: str 
         "> Generada por un modelo que solo vio el artefacto (y el texto citado), no cómo se",
         "> hizo. No es evidencia, no cambia ningún estado y no es citable. Tú decides qué",
         "> hacer con cada objeción.",
+        "",
+        f"*Segundo crítico (otra familia de modelos, DeepInfra): {_second_critic_label()}.*",
         "",
         "## Objeciones",
         "",
