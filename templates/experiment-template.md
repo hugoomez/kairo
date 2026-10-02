@@ -42,6 +42,9 @@ status: <preregistered | running | completed>
 frozen_at: <YYYY-MM-DDTHH:MM:SSZ>
 # frozen_commit — git sha of the experiment code at freeze time
 frozen_commit: <git-sha>
+# runtime — where it runs, frozen with the rest: local | kaggle | slurm.
+# Running anywhere else is an amendment (run-experiment, "Where it runs").
+runtime: <local | kaggle | slurm>
 environment:
   seed: <int>
   dependencies_lockfile: <path to the saved pip-freeze / npm-ls snapshot, e.g. E-XXXX.deps.txt>

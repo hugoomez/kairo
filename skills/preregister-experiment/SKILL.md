@@ -335,7 +335,10 @@ fails to reproduce that result, the run is `experiment_validity: invalid` and
 verdicts are not read.
 
 **d. Environment manifest** → `environment:` frontmatter + `## Manifiesto de entorno`
-(see next section).
+(see next section). Also fix **where it runs**: `runtime: local | kaggle | slurm`
+in the frontmatter (`local` unless the design needs a GPU or a cluster). It is
+frozen with everything else; running it elsewhere later is an amendment
+(run-experiment, "Where it runs"; `docs/compute-targets.md`).
 
 **e. Collateral evidence (only if `secondary_hypotheses` is non-empty)** →
 `## Evidencia colateral`
