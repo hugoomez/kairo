@@ -9,6 +9,7 @@ selection.json (everything is opt-in; the default is an empty report):
     {"sections": ["estado", "hipotesis", "experimentos", "cronologia",
                   "siguiente", "divulgacion"],
      "hypotheses": ["H-0001"], "experiments": ["E-0001"],
+     "unpublished": ["H-0002"],
      "title": "...", "intro": "text the researcher wrote or edited",
      "next_step": "text the researcher saw and accepted"}
 
@@ -20,24 +21,45 @@ when selected. "divulgacion" reuses assemble-manuscript's `ai_disclosure.py`
 on the selected hypotheses; it also names the experiments that adjudicate them,
 so those experiment ids are allowed in the report too.
 
+Unpublished hypotheses («sin publicar»): a hypothesis whose status is
+`propuesta`, `en_cola` (neither is preregistered), `descartada`, or missing.
+It is included only when its id is in `hypotheses` AND in `unpublished` (the
+researcher's explicit tick in the «Sin publicar» group); otherwise it is
+excluded with a reason. An included one is labelled «sin publicar» in the
+report itself, so the preview and the reader both see it.
+
 Before anything is written, the report is scanned. Any of these blocks it:
   - an H-/E-/C- id that was not selected;
   - the id or title of a `send: never` note;
   - what `check_bundle.py` blocks (secrets, absolute vault paths, copied
     vault notes), plus any vault-relative `Papers/` or `Projects/` path.
-Nothing is written when blocked.
+Nothing is written when blocked. Every blocking finding has `severity:
+"crítico"` (it stops the export).
+
+The JSON always carries `preview_sha256` (sha256 of the exact Markdown) and
+`html_sha256` (of the exact HTML that was scanned). With `--expect-sha256 <hex>`
+the report is written only if its Markdown is exactly the one previewed:
+otherwise nothing is written and the exit code is 4 (`stale_preview`). The
+backend uses this so an export is always of the content the researcher saw.
+
+    build_report.py --options --vault <vault> --project-dir <dir>
+
+lists what can be selected, for the selector: publishable hypotheses,
+«sin publicar» ones (in their own group), experiments, and the ids that never
+leave (`send: never`, listed without their text).
 
 Output: `<project>/Informes/informe-<date>[-n].md` and `.html` (self-contained,
 printable to PDF from the browser). With `--dry-run`, the Markdown is returned
 in the JSON (`preview`) and nothing is written.
 
 Prints one JSON object. Exit codes: 0 built (or previewed) · 3 blocked ·
-1 error. Standard library only.
+4 stale preview · 1 error. Standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import re
@@ -51,7 +73,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "ledger"))
 from notes import parse_frontmatter, section, split_note  # noqa: E402
 
-TOOL = "kairo/build_report@1.0.0"
+TOOL = "kairo/build_report@1.1.0"
+# Not preregistered (propuesta, en_cola) or discarded: never pre-selected, own group.
+UNPUBLISHED = ("propuesta", "en_cola", "descartada")
+UNPUBLISHED_LABEL = "sin publicar"
 SECTIONS = ("estado", "hipotesis", "experimentos", "cronologia", "siguiente", "divulgacion")
 _ID = re.compile(r"\b([HEC]-\d{4})\b")
 _SEL_ID = re.compile(r"^[HE]-\d{4}$")
@@ -61,6 +86,15 @@ DISCLOSURE = HERE.parent.parent / "skills" / "assemble-manuscript" / "scripts" /
 
 class Refused(Exception):
     pass
+
+
+def sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def is_unpublished(fm: dict) -> bool:
+    status = str(fm.get("status") or "").strip()
+    return not status or status in UNPUBLISHED
 
 
 # --------------------------------------------------------------------------
@@ -148,7 +182,7 @@ def build(vault: Path, pdir: Path, sel: dict, researcher: str | None) -> dict:
     unknown = [s for s in sel.get("sections", []) if s not in SECTIONS]
     if unknown:
         raise Refused(f"unknown sections: {', '.join(unknown)}")
-    for key in ("hypotheses", "experiments"):
+    for key in ("hypotheses", "experiments", "unpublished"):
         bad = [x for x in sel.get(key, []) if not _SEL_ID.match(str(x))]
         if bad:
             raise Refused(f"bad ids in {key}: {', '.join(map(str, bad))}")
@@ -170,7 +204,15 @@ def build(vault: Path, pdir: Path, sel: dict, researcher: str | None) -> dict:
             out.append((i, fm, fl, body))
         return out
 
-    hyps = pick(sel.get("hypotheses", []), hyp_paths)
+    ticked = set(sel.get("unpublished", []))
+    hyps = []
+    for h in pick(sel.get("hypotheses", []), hyp_paths):
+        if is_unpublished(h[1]) and h[0] not in ticked:
+            excluded.append({"id": h[0], "reason": f"{UNPUBLISHED_LABEL} ({h[1].get('status') or 'sin estado'}): "
+                                                   "márcala expresamente en «Sin publicar» para incluirla"})
+            continue
+        hyps.append(h)
+    unpublished = sorted(h[0] for h in hyps if is_unpublished(h[1]))
     exps = pick(sel.get("experiments", []), exp_paths)
     hyp_ids = {h[0] for h in hyps}
     allowed = set(hyp_ids) | {e[0] for e in exps}
@@ -204,10 +246,14 @@ def build(vault: Path, pdir: Path, sel: dict, researcher: str | None) -> dict:
             conf_line = next((ln for ln in fl if ln.startswith("confidence:")), "")
             kind = re.search(r"kind:\s*(\w+)", conf_line)
             conf = f"{fm.get('confidence') or '—'}" + (f" ({kind.group(1)})" if kind else "")
-            md.append(f"| {i} | {cell(fm.get('status'))} | {cell(conf)} |")
+            st = cell(fm.get("status")) + (f" — {UNPUBLISHED_LABEL}" if i in unpublished else "")
+            md.append(f"| {i} | {st} | {cell(conf)} |")
         md.append("")
         for i, _fm, _, body in hyps:
-            md += [f"### {i}", "", own_text(body, "Claim") or "*(sin sección Claim)*", ""]
+            head = f"### {i} · {UNPUBLISHED_LABEL}" if i in unpublished else f"### {i}"
+            note = ([f"*{UNPUBLISHED_LABEL.capitalize()}: hipótesis no preregistrada o descartada; no es un resultado.*", ""]
+                    if i in unpublished else [])
+            md += [head, "", *note, own_text(body, "Claim") or "*(sin sección Claim)*", ""]
 
     if "experimentos" in sections and exps:
         md += ["## Experimentos", ""]
@@ -259,7 +305,8 @@ def build(vault: Path, pdir: Path, sel: dict, researcher: str | None) -> dict:
 
     text = "\n".join(md).rstrip() + "\n"
     return {"markdown": text, "allowed": sorted(allowed), "excluded": excluded,
-            "hypotheses": sorted(hyp_ids), "experiments": sorted(e[0] for e in exps), "sections": sections}
+            "hypotheses": sorted(hyp_ids), "experiments": sorted(e[0] for e in exps), "sections": sections,
+            "unpublished": unpublished}
 
 
 def disclosure(vault: Path, pdir: Path, hyp_ids: list[str], researcher: str | None) -> tuple[str, set[str]]:
@@ -325,6 +372,8 @@ def scan(vault: Path, pdir: Path, texts: dict[str, str], allowed: set[str]) -> l
         for f in res.get("findings", []):
             if f["severity"] == "block" or f["kind"] == "vault_path_reference":
                 blocking.append({"kind": f["kind"], "detail": f"check_bundle.py: {f['kind']} en {f['path']}"})
+    for b in blocking:
+        b["severity"] = "crítico"  # every one of these stops the export
     return blocking
 
 
@@ -404,6 +453,34 @@ def to_html(md: str, title: str) -> str:
 
 # --------------------------------------------------------------------------
 
+def options(pdir: Path) -> dict:
+    """What the selector may offer. send: never notes are listed by id only."""
+    def excerpt(body: str) -> str:
+        t = re.sub(r"\s+", " ", own_text(body, "Claim"))
+        return t[:160] + ("…" if len(t) > 160 else "")
+
+    out: dict = {"hypotheses": [], "unpublished": [], "experiments": [], "never": []}
+    for hid, path in notes_in(pdir / "Hipotesis").items():
+        if not hid.startswith("H-"):
+            continue
+        fm, _, body = read(path)
+        if is_send_never(fm):
+            out["never"].append(hid)
+            continue
+        item = {"id": hid, "status": fm.get("status") or None, "claim": excerpt(body)}
+        out["unpublished" if is_unpublished(fm) else "hypotheses"].append(item)
+    for eid, path in notes_in(pdir / "Experimentos").items():
+        if not eid.startswith("E-"):
+            continue
+        fm, _, _ = read(path)
+        if is_send_never(fm):
+            out["never"].append(eid)
+            continue
+        out["experiments"].append({"id": eid, "status": fm.get("status") or None,
+                                   "hypothesis": str(fm.get("hypothesis") or "") or None})
+    return out
+
+
 def out_paths(pdir: Path) -> tuple[Path, Path]:
     folder = pdir / "Informes"
     stem = f"informe-{date.today().isoformat()}"
@@ -418,7 +495,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vault", required=True, type=Path)
     ap.add_argument("--project-dir", required=True, type=Path)
-    ap.add_argument("--selection", required=True, type=Path)
+    ap.add_argument("--selection", type=Path, default=None)
+    ap.add_argument("--options", action="store_true", help="list what can be selected and exit")
+    ap.add_argument("--expect-sha256", default=None, help="write only if the Markdown is exactly the previewed one")
     ap.add_argument("--researcher", default=None)
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
@@ -428,15 +507,28 @@ def main(argv: list[str] | None = None) -> int:
         vault, pdir = a.vault.resolve(), a.project_dir.resolve()
         if not (pdir / "_hub.md").is_file():
             raise Refused(f"{pdir} is not a project folder (no _hub.md)")
+        if a.options:
+            print(json.dumps({"tool": TOOL, **options(pdir)}, ensure_ascii=False))
+            return 0
+        if a.selection is None:
+            raise Refused("--selection is required")
         sel = json.loads(a.selection.read_text(encoding="utf-8"))
         rep = build(vault, pdir, sel, a.researcher)
         title = re.search(r"^# (.+)$", rep["markdown"], re.MULTILINE).group(1)
         page = to_html(rep["markdown"], title)
         blocking = scan(vault, pdir, {"informe.md": rep["markdown"], "informe.html": page}, set(rep["allowed"]))
         result = {"tool": TOOL, "ok": not blocking, "blocking": blocking, "excluded": rep["excluded"],
-                  "hypotheses": rep["hypotheses"], "experiments": rep["experiments"], "sections": rep["sections"]}
+                  "hypotheses": rep["hypotheses"], "experiments": rep["experiments"], "sections": rep["sections"],
+                  "unpublished": rep["unpublished"], "preview_sha256": sha256(rep["markdown"]),
+                  "html_sha256": sha256(page)}
         if a.dry_run or blocking:
             result["preview"] = rep["markdown"]
+        stale = bool(a.expect_sha256) and a.expect_sha256 != result["preview_sha256"]
+        if not a.dry_run and not blocking and stale:
+            result.update(ok=False, stale_preview=True, preview=rep["markdown"],
+                          error="el contenido cambió desde la vista previa: vuelve a previsualizar")
+            print(json.dumps(result, ensure_ascii=False))
+            return 4
         if not a.dry_run and not blocking:
             md_path, html_path = out_paths(pdir)
             md_path.parent.mkdir(parents=True, exist_ok=True)

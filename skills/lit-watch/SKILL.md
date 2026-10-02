@@ -73,11 +73,22 @@ per hypothesis.
    (same effect, same kind of system, same direction), or reports a result
    that makes the claim no longer new. A shared topic is not a threat.
 4. When it is a threat, pick the abstract sentence that shows it and copy it
-   exactly. Then:
+   exactly. It must come from the abstract: not the title, not your summary.
+   A candidate with no abstract cannot carry a threat; say so in its triage
+   line instead.
+5. Give it a severity:
+   - `crítico`: the abstract reports the same claim (same effect, same kind
+     of system, same direction). The hypothesis may no longer be new.
+   - `importante`: a close result that narrows what is new (the same effect
+     in a nearby system, or part of the claim).
+   - `menor`: adjacent work to cite; the novelty stands.
+
+   Then:
 
 ```
 python <plugin>/scripts/watch/lit_watch.py threat --vault <vault> --project-dir <dir> --run <run file> \
   --key <key> --hypothesis H-XXXX --sentence "<exact words from the abstract>" \
+  --severity crítico|importante|menor \
   --judgement "<one line: why this may take the novelty, and what would tell>" --model <your model id>
 ```
 
@@ -86,13 +97,24 @@ from the abstract. Never paraphrase it to make it pass.
 
 ### 4. Commit and report
 
+First check the run is complete:
+
+```
+python <plugin>/scripts/watch/lit_watch.py check --project-dir <dir> --run <run file>
+```
+
+Exit 3 lists what is missing: a triaged candidate without its line, or a
+threat without a severity or with a sentence that is not in the abstract. Fix
+each one with `triage` / `threat`, then check again. Do not commit an
+incomplete run.
+
 - Commit the run file, `_hub.md` (`last_watch`) and any hypothesis that got a
   Revisión de vigencia line, together:
   `Vigilancia de literatura <PROJ>: <n> nuevos, <m> alertas`.
 - Report in a few lines:
   - the window;
   - candidates, strong and triaged;
-  - each threat, as hypothesis + paper + the quoted sentence;
+  - each threat, as severity + hypothesis + paper + the quoted sentence;
   - the lost queries.
 - End with: "Las alertas son juicios de un modelo; decide tú en la bandeja."
 

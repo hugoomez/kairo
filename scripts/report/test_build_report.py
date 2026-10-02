@@ -180,5 +180,82 @@ class TestBuildReport(unittest.TestCase):
         self.assertNotIn("unselected_id", [b["kind"] for b in res["blocking"]], res["blocking"])
 
 
+    # --- unpublished hypotheses («sin publicar») ---------------------------------
+
+    def set_status(self, hid: str, status: str | None):
+        f = self.p / "Hipotesis" / f"{hid}.md"
+        t = f.read_text(encoding="utf-8")
+        t = t.replace("status: apoyada" + chr(10), f"status: {status}" + chr(10) if status else "", 1)
+        f.write_text(t, encoding="utf-8")
+
+    def test_unpublished_needs_an_explicit_tick(self):
+        for status in ("propuesta", "en_cola", "descartada", None):
+            self.set_status("H-0952", status)
+            code, res = self.run_cli({"sections": ["hipotesis"], "hypotheses": ["H-0952"]}, "--dry-run")
+            self.assertEqual(code, 0, res)
+            self.assertNotIn("OTRA-HIPOTESIS", res["preview"], status)
+            self.assertEqual(res["unpublished"], [])
+            self.assertEqual(res["excluded"][0]["id"], "H-0952")
+            self.assertIn("sin publicar", res["excluded"][0]["reason"])
+            (self.p / "Hipotesis" / "H-0952.md").write_text(hyp("H-0952", "OTRA-HIPOTESIS-NO-ELEGIDA."),
+                                                            encoding="utf-8")
+
+    def test_unpublished_with_the_tick_is_labelled(self):
+        self.set_status("H-0952", "descartada")
+        code, res = self.run_cli({"sections": ["hipotesis"], "hypotheses": ["H-0951", "H-0952"],
+                                  "unpublished": ["H-0952"]}, "--dry-run")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["unpublished"], ["H-0952"])
+        self.assertIn("### H-0952 · sin publicar", res["preview"])
+        self.assertIn("| H-0952 | descartada — sin publicar |", res["preview"])
+        self.assertIn("### H-0951" + chr(10), res["preview"])
+        self.assertNotIn("H-0951 · sin publicar", res["preview"])
+
+    def test_a_tick_alone_selects_nothing(self):
+        self.set_status("H-0952", "propuesta")
+        _, res = self.run_cli({"sections": ["hipotesis"], "unpublished": ["H-0952"]}, "--dry-run")
+        self.assertNotIn("H-0952", res["preview"])
+
+    def test_options_group_unpublished_apart_and_never_hides_text(self):
+        self.set_status("H-0952", "propuesta")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = build_report.main(["--options", "--vault", str(self.vault), "--project-dir", str(self.p)])
+        self.assertEqual(code, 0)
+        opts = json.loads(buf.getvalue())
+        self.assertEqual([h["id"] for h in opts["hypotheses"]], ["H-0951"])
+        self.assertEqual([h["id"] for h in opts["unpublished"]], ["H-0952"])
+        self.assertEqual(opts["never"], ["H-0953"])
+        self.assertNotIn("SECRETO", buf.getvalue())
+        self.assertEqual(opts["experiments"][0]["id"], "E-0951")
+
+    # --- preview before export -------------------------------------------------
+
+    def test_export_only_of_the_previewed_content(self):
+        sel = {"sections": ["hipotesis"], "hypotheses": ["H-0951"]}
+        _, prev = self.run_cli(sel, "--dry-run")
+        self.assertRegex(prev["preview_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(prev["html_sha256"], r"^[0-9a-f]{64}$")
+        # the note changed after the preview: nothing is written
+        (self.p / "Hipotesis" / "H-0951.md").write_text(hyp("H-0951", "Texto cambiado después."), encoding="utf-8")
+        code, res = self.run_cli(sel, "--expect-sha256", prev["preview_sha256"])
+        self.assertEqual(code, 4)
+        self.assertTrue(res["stale_preview"])
+        self.assertFalse((self.p / "Informes").exists())
+        _, prev2 = self.run_cli(sel, "--dry-run")
+        code, res = self.run_cli(sel, "--expect-sha256", prev2["preview_sha256"])
+        self.assertEqual(code, 0, res)
+        md, page = self.written(res)
+        self.assertEqual(build_report.sha256(md), prev2["preview_sha256"])
+        self.assertEqual(build_report.sha256(page), res["html_sha256"])
+
+    def test_scan_runs_before_the_preview_check_and_findings_are_critical(self):
+        code, res = self.run_cli({"intro": "Como dice H-0952."}, "--expect-sha256", "0" * 64)
+        self.assertEqual(code, 3)
+        self.assertTrue(res["blocking"])
+        self.assertTrue(all(b["severity"] == "crítico" for b in res["blocking"]))
+        self.assertFalse((self.p / "Informes").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
