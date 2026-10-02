@@ -257,6 +257,26 @@ this machine doesn't have — Kaggle, Colab, a rented box:
   frozen `## Manifiesto de entorno`, that difference is a `## Enmiendas` entry,
   not a silent adjustment.
 
+**Where it runs: `runtime: local | kaggle | slurm`.** The preregistration
+fixes the compute target in the experiment note's frontmatter (`runtime:`,
+or `environment.runtime:`), frozen with everything else:
+
+- `local` — this machine, in this session, after the researcher's approval.
+- `kaggle` — Kaggle GPU through the Kairo backend (below).
+- `slurm` — the researcher's HPC cluster through the Kairo backend: the
+  backend uploads the bundle by SSH, submits it with `sbatch`, polls
+  `squeue` / `sacct`, downloads, verifies and archives. Same two modes as
+  Kaggle, same bundle, same `bundle_contract.py check`; set `accelerator` to
+  `none` unless the frozen manifest names one of the listed accelerators.
+  You never run `ssh`, `scp`, `sbatch` or `scancel`, and cluster credentials
+  are not available to you.
+
+Running on a target other than the declared one is not a switch: it changes
+the environment manifest, so it is a `## Enmiendas` entry decided by the
+researcher. When an older preregistration declares no runtime, record in
+`## Resultado` where it ran (**importante** if missing). Compute targets and
+how to add one: `docs/compute-targets.md`.
+
 **Kaggle through the Kairo backend (two modes).** When the Kairo interface
 drives a Kaggle run, this skill is invoked twice, and the backend does the
 part in between: upload, push, polling, download. Credentials never enter
