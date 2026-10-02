@@ -63,6 +63,43 @@ frozen manifest depends on (then a new `code_repo@commit` in a new
 preregistration, never a silent change)? is there a test? Report findings
 located by file and line.
 
+Every finding carries exactly one severity:
+
+- **crítico** — breaks correctness, a frozen experiment's behaviour, a
+  guarantee the project relies on, or leaks vault content / a secret;
+- **importante** — must be fixed soon (missing test for changed behaviour, a
+  cited hypothesis the change does not actually serve, an undocumented
+  structural choice that deserves an ADR);
+- **menor** — worth doing, can wait.
+
+Check the change against the hub's goals (`## Propósito` and the goals the hub
+lists) and against each hypothesis its commits cite in `Motivated-By:`
+trailers: read each cited hypothesis note (skip any `send: never` note — name
+its id only) and say whether the change serves it. A change that cites no
+hypothesis is reported as such (**menor**, or **importante** when it touches
+experiment code).
+
+**Draft-only mode (Kairo interface, «Revisar cambios»).** The prompt gives
+the repository, the exact commit range, the commits with their trailers, the
+cited hypotheses and a file with the diff (prepared by the backend outside
+the vault). In this mode you only read — Read, Grep, Glob; no command, no
+file written, nothing in the repository touched. Return the review as one
+JSON object between a line `<<<REVISION` and a line `REVISION>>>`:
+
+```json
+{"resumen": "<two or three sentences>",
+ "objetivos": "<how the change fits the hub's goals>",
+ "hipotesis": [{"id": "H-XXXX", "sirve": true, "como": "<one sentence>"}],
+ "hallazgos": [{"severidad": "crítico|importante|menor", "archivo": "<path or null>",
+                "linea": <int or null>, "titulo": "<short>", "detalle": "<what and why>",
+                "sugerencia": "<the fix>"}]}
+```
+
+The backend validates it (severity, ids, files in the diff), writes
+`Projects/<slug>/Producto/revisiones/RV-<date>-<target>.md` (`citable:
+false`, written by a model) and commits it. Never quote vault notes in the
+review; reference ids only.
+
 ### Architecture decisions
 
 When a change fixes a structural choice (a data format, a framework, an
