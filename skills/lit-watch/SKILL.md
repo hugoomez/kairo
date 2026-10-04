@@ -72,7 +72,7 @@ The judgement is not yours: it runs on the policy's hard-task model
 (`config/models.toml`, task `novelty_judge`).
 
 1. For each (hypothesis, candidate) pair, dispatch one `novelty-judge`
-   subagent, all in the same turn. Give it the hypothesis's `## Claim` and
+   subagent, all in the same turn (one at a time if the prompt says memory is low). Give it the hypothesis's `## Claim` and
    nothing else of it (not its justification, Génesis or reviews), and the
    candidate's title and abstract exactly as in the run file.
 2. It answers `threat: true|false`, the exact abstract sentence, a severity

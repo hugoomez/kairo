@@ -263,7 +263,7 @@ improvised per candidate.
 ### 2. Search each facet in parallel — via `facet-searcher` subagents
 
 **Dispatch one `facet-searcher` subagent per facet, all launched together in the
-same turn** (real parallelism — not one after another). Each subagent gets:
+same turn** (real parallelism — not one after another). (Exception: if the prompt says memory is low and subagents go **one at a time**, launch each, wait for its answer, then the next; the work is otherwise the same.) Each subagent gets:
 
 - its facet term + synonym list;
 - the sources to query: `vault`, `arxiv`, `semantic-scholar`, and

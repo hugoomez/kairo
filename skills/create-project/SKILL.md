@@ -317,7 +317,7 @@ paper listed under `sin_facetas` (exit 1) has no record: do not guess one —
 leave it out of the map and list it in the end-of-run message as `importante`
 (`P-XXXX sin faceta registrada — no entra en el Estado del arte`), so the
 researcher can add the entry with `--add`. Then **dispatch one `facet-summarizer` subagent per
-facet, all launched together in the same turn**, each given its facet + the
+facet, all launched together in the same turn** (exception: if the prompt says memory is low and subagents go **one at a time**, launch each and wait for its answer before the next), each given its facet + the
 explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
 `type`. **Never assign a `send: never` note** (check the candidate list with
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <paths…>`;
@@ -623,7 +623,8 @@ When a paper is already ingested for another project, only append this project's
 
 - **Starting without Propósito + Alcance.** Hard gate — ask first.
 - **Dispatching the `facet-summarizer` subagents sequentially (step 7 Map).**
-  Launch all facets in one turn; serial dispatch defeats the map-reduce.
+  Launch all facets in one turn; serial dispatch defeats the map-reduce —
+  unless the prompt says memory is low and subagents go one at a time.
 - **Re-deriving facet membership in step 7.** Read it from the notes with
   `facet_assignment.py` — don't recompute which paper belongs to which facet,
   and don't guess one for a paper that has no entry.
