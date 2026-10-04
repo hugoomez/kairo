@@ -42,14 +42,14 @@ beat ten padded ones.
 
 ```json
 {
-  "critic": "kairo/devils-advocate@1.0.0",
+  "critic": "kairo/devils-advocate@1.1.0",
   "target": "<id from the packet header>",
   "objections": [
     {
       "where": "<the exact sentence, assertion number, or locator it attacks>",
       "objection": "<what is wrong, concretely>",
       "would_settle_it": "<the observation, check or source that would resolve it>",
-      "severity": "alta | media | baja"
+      "severity": "crítico | importante | menor"
     }
   ],
   "alternative_explanations": ["<…>"],
@@ -59,6 +59,13 @@ beat ten padded ones.
   "cannot_assess": ["<anything the packet lacks that you needed>"]
 }
 ```
+
+Severity, on Kairo's one scale:
+- `crítico`: if the objection holds, the claim or decision fails or must change
+  before anything rests on it.
+- `importante`: it weakens the claim or decision; resolve it soon, but it does
+  not invalidate it alone.
+- `menor`: worth addressing; nothing depends on it.
 
 `objections` must hold at least one entry, each with a non-empty `where`.
 Lists you have nothing for are `[]`. Never output a verdict on truth, a

@@ -76,7 +76,7 @@ RESULT = {
     "critic": "kairo/devils-advocate@1.0.0",
     "target": "H-9001",
     "objections": [{"where": "Claim: «siempre»", "objection": "P-9001 §3 solo mide dos condiciones.",
-                    "would_settle_it": "Medir una tercera condición.", "severity": "alta"}],
+                    "would_settle_it": "Medir una tercera condición.", "severity": "crítico"}],
     "alternative_explanations": ["Los azules son más ligeros."],
     "auxiliary_assumptions": ["Mismo motor en ambos."],
     "weakest_link": "La generalización a «siempre».",
@@ -144,7 +144,7 @@ class TestWrite(Base):
         out = cn.write_note(self.vault, "H-9001", self.packet(), RESULT, "claude-test")
         self.assertEqual(out.relative_to(self.vault).as_posix(), "Projects/demo/Criticas/CR-0001.md")
         text = out.read_text(encoding="utf-8")
-        for s in ("citable: false", "escrito_por: modelo", "target: H-9001", "**[alta]**",
+        for s in ("citable: false", "escrito_por: modelo", "target: H-9001", "**[crítico]**",
                   "*Dónde:* Claim: «siempre»", "Los azules son más ligeros.", "packet_sha256: "):
             self.assertIn(s, text)
         self.assertEqual(cn.write_note(self.vault, "H-9001", self.packet(), RESULT, None).stem, "CR-0002")
@@ -156,6 +156,12 @@ class TestWrite(Base):
         self.assertIn("second_critic: no disponible — desactivado", text)
         self.assertIn("Segundo crítico (otra familia de modelos, DeepInfra): no disponible", text)
 
+    def test_old_scale_is_written_on_kairos_scale(self):
+        old = {**RESULT, "objections": [{**RESULT["objections"][0], "severity": "alta"}]}
+        text = cn.write_note(self.vault, "H-9001", self.packet(), old, None).read_text(encoding="utf-8")
+        self.assertIn("**[crítico]**", text)
+        self.assertNotIn("[alta]", text)
+
     def test_target_note_is_untouched(self):
         hyp = next((self.vault / "Projects/demo/Hipotesis").glob("H-9001*"))
         before = hyp.read_bytes()
@@ -165,7 +171,7 @@ class TestWrite(Base):
     def test_invalid_results_are_refused(self):
         bad = [
             {**RESULT, "objections": []},
-            {**RESULT, "objections": [{"where": "", "objection": "x", "severity": "alta"}]},
+            {**RESULT, "objections": [{"where": "", "objection": "x", "severity": "crítico"}]},
             {**RESULT, "objections": [{"where": "x", "objection": "x", "severity": "grave"}]},
             {**RESULT, "verdict": "refutada"},
             {**RESULT, "alternative_explanations": "una"},

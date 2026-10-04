@@ -82,7 +82,7 @@ Commit the new note alone:
 
 ### 5. Report
 
-The CR id, then the objections by severity (`alta` first), each with where it
+The CR id, then the objections by severity (`crítico` first, then `importante`, then `menor`), each with where it
 points. Keep it to what the note says. If an objection looks serious, say which
 existing step would address it (e.g. "Check 2 of hypothesis-cycle", "a
 `## Enmiendas` entry is not possible after freeze — a new experiment is"), and

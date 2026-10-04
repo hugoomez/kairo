@@ -44,9 +44,11 @@ sys.path.insert(0, str(HERE.parent / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 from verifier_packet import body_sections, split_frontmatter  # noqa: E402
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 CRITIC = "kairo/devils-advocate@1.0.0"
-SEVERITIES = ("alta", "media", "baja")
+SEVERITIES = ("crítico", "importante", "menor")
+# Older critics answered alta / media / baja: accepted and written on the current scale.
+LEGACY = {"alta": "crítico", "media": "importante", "baja": "menor", "critico": "crítico"}
 _ID = re.compile(r"^(H|E|C|ADR|F|EVO)-\d{3,4}$")
 # Sections that carry reasoning, critiques, verdicts or lessons: the critic
 # judges the artifact, not what was said about it.
@@ -134,6 +136,7 @@ def validate_result(r: dict) -> None:
         for k in ("where", "objection"):
             if not isinstance(o.get(k), str) or not o[k].strip():
                 raise Refused(f"objection {i}: `{k}` is required")
+        o["severity"] = LEGACY.get(str(o.get("severity", "")).strip().lower(), str(o.get("severity", "")).strip().lower())
         if o.get("severity") not in SEVERITIES:
             raise Refused(f"objection {i}: severity must be one of {SEVERITIES}")
     for k in ("alternative_explanations", "auxiliary_assumptions", "cannot_assess"):
