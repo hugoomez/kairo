@@ -642,3 +642,106 @@ class TestVerifications(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+ROMAN_PAPER = """---
+id: P-0903
+title: An invented paper numbered the physics way
+---
+
+## Resumen
+
+An invented abstract about toy lattices.
+
+## Texto completo
+
+### I Introduction
+
+Toy lattices are introduced here for the tests only.
+
+### II Local toy blockade
+
+Two toy atoms never excite together below a toy radius.
+
+#### II.1 Global toy drive
+
+The global toy drive sets one radius for every pair.
+
+**I. First enumerated toy item**
+
+Still inside section II.1, despite the bold Roman numeral.
+
+### III Toy embeddings
+
+#### A. Toy setup
+
+The lettered subsection under section III holds the toy setup.
+
+### V Conclusion and outlook
+
+The toy conclusion closes the invented paper.
+
+### Appendix A: Toy proofs
+
+#### A.1.2 Toy lemma
+
+The toy lemma lives in an appendix subsection.
+"""
+
+
+class TestRomanLocators(unittest.TestCase):
+    """Sections numbered in Roman numerals, lettered subsections, sections named by title."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self.tmp.name)
+        (self.vault / "Papers").mkdir()
+        (self.vault / "Papers" / "P-0903 Toy 2031.md").write_text(ROMAN_PAPER, encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def units(self, loc):
+        return vp.resolve_citation(str(self.vault), "P-0903", loc)["units"]
+
+    def test_roman_numerals(self):
+        self.assertEqual(vp.roman_to_int("XIV"), 14)
+        self.assertIsNone(vp.roman_to_int("IIII"))
+        self.assertEqual(vp.canon_sec("III.1"), "3.1")
+        self.assertEqual(vp.canon_sec("IV.B"), "4.B")
+        self.assertEqual(vp.locator_tokens("§III.1"), [("sec", "3.1")])
+        self.assertEqual(vp.locator_tokens("§IV.B"), [("sec", "4.B")])
+        self.assertEqual(vp.heading_num("II Local toy blockade"), "2")
+        self.assertEqual(vp.heading_num("I.2 Approximation quality"), "1.2")
+        self.assertEqual(vp.heading_num("C.2 Proof of Lemma 2"), "C.2")
+
+    def test_roman_sections_resolve_to_their_own_text(self):
+        u = self.units("§II")
+        self.assertTrue(any("never excite" in x for x in u))
+        self.assertTrue(any("global toy drive" in x for x in u))
+        self.assertFalse(any("introduced here" in x for x in u))
+        u = self.units("§II.1")
+        self.assertTrue(any("global toy drive" in x for x in u))
+        self.assertFalse(any("never excite" in x for x in u))
+
+    def test_bold_roman_enumeration_keeps_its_section(self):
+        self.assertTrue(any("despite the bold" in x for x in self.units("§II.1")))
+        self.assertFalse(any("despite the bold" in x for x in self.units("§I")))
+
+    def test_lettered_subsection(self):
+        u = self.units("§III.A")
+        self.assertEqual(len(u), 1)
+        self.assertIn("toy setup", u[0])
+
+    def test_section_named_by_title(self):
+        self.assertTrue(any("toy conclusion" in x for x in self.units("§Conclusion")))
+        self.assertTrue(any("introduced here" in x for x in self.units("§Introduction")))
+
+    def test_appendix_subsection_written_as_a_section(self):
+        self.assertEqual(vp.locator_tokens("§A.1.2"), [("app", "A.1.2")])
+        u = self.units("§A.1.2")
+        self.assertEqual(len(u), 1)
+        self.assertIn("toy lemma", u[0])
+
+    def test_a_one_letter_name_never_matches_free_text(self):
+        self.assertEqual(self.units("§Q"), [])

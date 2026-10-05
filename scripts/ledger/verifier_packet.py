@@ -246,6 +246,29 @@ LOCATOR_START_RE = re.compile(
 
 
 NUM = r"[A-Z]?\d+(?:\.\d+)*"
+# Physics papers number sections in Roman numerals, with lettered or numbered
+# subsections: "II", "III.1", "IV.B". Compared in canonical form ("3.1", "4.B").
+ROMAN_NUM = r"[IVXL]+(?:\.(?:\d+|[A-Z]))*"
+_ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50}
+
+
+def roman_to_int(r: str) -> int | None:
+    """A valid Roman numeral up to 89, as an int; None otherwise."""
+    if not r or not re.fullmatch(r"L?X{0,3}(?:IX|IV|V?I{0,3})", r):
+        return None
+    total, prev = 0, 0
+    for ch in reversed(r):
+        v = _ROMAN[ch]
+        total = total - v if v < prev else total + v
+        prev = max(prev, v)
+    return total or None
+
+
+def canon_sec(v: str) -> str:
+    """'III.1' -> '3.1', 'IV.B' -> '4.B'; anything else unchanged."""
+    head, _, rest = v.partition(".")
+    n = roman_to_int(head)
+    return (str(n) + ("." + rest if rest else "")) if n else v
 
 
 def _expand_range(a: str, b: str) -> list[str]:
@@ -269,6 +292,11 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
     # appendix first, so "App A.5" is not read as a section
     for m in re.finditer(r"\b(?:App(?:endix)?\.?|Apéndice)\s*([A-Z](?:\.\d+)*)", s):
         toks.append(("app", m.group(1)))
+    # "§A.1.2": an appendix subsection written as a section (not a Roman "§I.2")
+    for m in re.finditer(r"§\s*([A-Z](?:\.\d+)+)(?![\w.])", s):
+        if not roman_to_int(m.group(1).split(".")[0]):
+            toks.append(("app", m.group(1)))
+            s = s.replace(m.group(0), " ")
     s_noapp = re.sub(r"\b(?:App(?:endix)?\.?|Apéndice)\s*[A-Z](?:\.\d+)*", " ", s)
     for m in re.finditer(r"\b(?:Fig(?:ura|ure)?s?)\.?\s*(\d+)", s_noapp):
         toks.append(("fig", m.group(1)))
@@ -282,9 +310,17 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
             toks.extend(("sec", v) for v in _expand_range(m.group(1), m.group(2)))
         else:
             toks.append(("sec", m.group(1)))
+    # Roman section numbers: "§II", "§III.1", "§IV.B" (canonical "2", "3.1", "4.B")
+    romans = set()
+    for m in re.finditer(rf"§\s*({ROMAN_NUM})(?![\w])", s_noapp):
+        if roman_to_int(m.group(1).split(".")[0]):
+            toks.append(("sec", canon_sec(m.group(1))))
+            romans.add(m.group(1).split(".")[0])
     # bare continuation numbers after a § list: "§5.4, 9.2" is rare; skip.
     for m in re.finditer(r"§\s*([^\W\d][\w\s]*?)(?=[,;.)]|\s+(?:\*\*|vs\b|—|–)|$)", s_noapp):
         # "§Resumen." / "§Resumen)" / "§Setup." name the section without the punctuation
+        if m.group(1).strip() in romans:
+            continue
         toks.append(("named", m.group(1).strip()))
     seen, out = set(), []
     for t in toks:
@@ -301,6 +337,8 @@ def token_label(tok: tuple[str, str]) -> str:
 
 
 HEADING_NUM_RE = re.compile(r"^(?:§\s*)?(\d+(?:\.\d+)*)\.?(?:\s|$)")
+ROMAN_HEAD_RE = re.compile(r"^(?:§\s*)?([IVXL]+(?:\.(?:\d+|[A-Z]))*)[.:]?(?:\s|$)")
+LETTER_SUB_RE = re.compile(r"^([A-Z])[.)]\s")
 APPENDIX_HEAD_RE = re.compile(r"^(?:Appendix|Apéndice)\s+([A-Z])\b")
 APPENDIX_SUB_RE = re.compile(r"^([A-Z](?:\.\d+)+)\.?\s")
 
@@ -308,7 +346,14 @@ APPENDIX_SUB_RE = re.compile(r"^([A-Z](?:\.\d+)+)\.?\s")
 def heading_num(title: str) -> str | None:
     """Section number a heading sets: "3.2" for "3.2 Title", "A" for
     "Appendix A: Title", "A.5" for "A.5 Title"; None when unnumbered."""
-    for rx in (HEADING_NUM_RE, APPENDIX_HEAD_RE, APPENDIX_SUB_RE):
+    m = HEADING_NUM_RE.match(title)
+    if m:
+        return m.group(1)
+    # Roman before appendix letters: "I.2 Title" is section 1.2, not appendix I.2
+    m = ROMAN_HEAD_RE.match(title)
+    if m and roman_to_int(m.group(1).split(".")[0]):
+        return canon_sec(m.group(1))
+    for rx in (APPENDIX_HEAD_RE, APPENDIX_SUB_RE):
         m = rx.match(title)
         if m:
             return m.group(1)
@@ -323,7 +368,11 @@ def source_units(texto: str) -> list[dict]:
     """
     units: list[dict] = []
     heading_nums: dict[int, str | None] = {}
+    heading_titles: dict[int, str] = {}
     current: dict | None = None
+
+    def ctx_titles() -> list[str]:
+        return [heading_titles[lvl] for lvl in sorted(heading_titles)]
 
     def ctx_num() -> str | None:
         for lvl in sorted(heading_nums, reverse=True):
@@ -345,7 +394,9 @@ def source_units(texto: str) -> list[dict]:
         bm = re.match(r"^\*\*(.+?)\*\*\s*$", stripped)
         # a whole-line **bold** is a heading only when numbered ("**3. Title**");
         # an unnumbered one is a run-in paragraph title and keeps the context
-        if bm and not hm and not heading_num(bm.group(1).strip()):
+        # (a bold "**I. Modular arithmetic**" is an enumeration, not Roman section I)
+        bold = bm.group(1).strip() if bm else ""
+        if bm and not hm and (not heading_num(bold) or ROMAN_HEAD_RE.match(bold)):
             bm = None
         if hm or bm:
             close()
@@ -354,7 +405,15 @@ def source_units(texto: str) -> list[dict]:
             for lvl in list(heading_nums):
                 if lvl >= level:
                     del heading_nums[lvl]
-            heading_nums[level] = heading_num(title)
+            for lvl in list(heading_titles):
+                if lvl >= level:
+                    del heading_titles[lvl]
+            num = heading_num(title)
+            lm = LETTER_SUB_RE.match(title)
+            if num is None and lm and ctx_num() and not re.match(r"[A-Z]", ctx_num() or ""):
+                num = f"{ctx_num()}.{lm.group(1)}"
+            heading_nums[level] = num
+            heading_titles[level] = title
             continue
         if not stripped:
             close()
@@ -366,10 +425,10 @@ def source_units(texto: str) -> list[dict]:
             # "- 1. first point" is an enumeration inside the current section
             nm = re.match(r"^(\d+\.\d+(?:\.\d+)*)\.?\s", item)
             current = {"lines": [line.rstrip()],
-                       "num": nm.group(1) if nm else ctx_num()}
+                       "num": nm.group(1) if nm else ctx_num(), "titles": ctx_titles()}
             continue
         if current is None:
-            current = {"lines": [line.rstrip()], "num": ctx_num()}
+            current = {"lines": [line.rstrip()], "num": ctx_num(), "titles": ctx_titles()}
         else:
             current["lines"].append(line.rstrip())
     close()
@@ -403,6 +462,15 @@ def unit_matches(unit: dict, tok: tuple[str, str]) -> bool:
     if kind == "eq":
         return bool(re.search(rf"\b(?:Eq|Ec)\.?\s*{ev}(?![\d])", text))
     return False
+
+
+def _title_names(title: str, name: str) -> bool:
+    """Whether a heading is the section a locator names: "Conclusion" names
+    "V Conclusion and outlook" and "Conclusions"; short names need a whole word."""
+    t = re.sub(r"^[\W\dIVXL.]*\s", "", title.lower()) or title.lower()
+    if len(name) < 4:
+        return bool(re.search(rf"\b{re.escape(name)}\b", t))
+    return t.startswith(name) or name in t
 
 
 def find_paper(vault: str, pid: str) -> str | None:
@@ -445,7 +513,10 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
                     chosen.append("[## Resumen]\n" + txt)
                 continue
             for u in source_units(texto):
-                if name in u["text"].lower()[:80]:
+                under = any(_title_names(t, name) for t in u.get("titles", []))
+                # a one- or two-letter name counts only as a heading, never as text
+                in_text = len(name) >= 3 and name in u["text"].lower()[:80]
+                if (under or in_text) and u["text"] not in chosen:
                     chosen.append(u["text"])
             continue
         for u in source_units(texto):
