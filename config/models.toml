@@ -56,6 +56,11 @@ kind = "job"
 tier = "opus"
 label = "Adjudicar: auditoría de trampas y cambio de estado (update-confidence)"
 
+[tasks.literature_review]
+kind = "job"
+tier = "opus"
+label = "Revisión didáctica de la literatura"
+
 [tasks.create_project]
 kind = "job"
 tier = "sonnet"
