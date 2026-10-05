@@ -16,15 +16,19 @@
 `delta` (mechanical, network):
   - Re-runs the project's own recorded queries, restricted to the window:
     the latest `_busquedas/<run>/plan.json` written by lit_search.py (every
-    source it used: arXiv, Semantic Scholar, OpenAlex, DBLP; no anchor pass),
+    source it used — arXiv, Semantic Scholar, OpenAlex, Crossref, DBLP — and
+    its cross pass; no anchor pass),
     or, for projects searched before it existed, every row of the
     "Consultas (verbatim)" tables in `Estado-del-arte.md` (a `|` escaped or
     inside `code` stays in its cell; Semantic Scholar OR-groups become one
     plain-keyword query per alternative; anchor rows are not re-run).
-  - The window starts OVERLAP_DAYS before `last_watch` (arXiv lists, and
-    Semantic Scholar / OpenAlex index, papers days to weeks late); `--since`
-    sets it exactly. Every query is paged up to MAX_RESULTS; one with more
-    matches is `truncated`. `SEMANTIC_SCHOLAR_API_KEY` is used when set.
+  - Each query has its own window, kept in `_vigilancia/cursores.json`: it
+    starts OVERLAP_DAYS before the date that query last answered (before
+    `last_watch` for a query never run) — arXiv lists, and Semantic Scholar /
+    OpenAlex index, papers days to weeks late. `--since` sets every window
+    exactly. Every query is paged up to MAX_RESULTS by relevance; one with more
+    matches is `truncated` and reported. `SEMANTIC_SCHOLAR_API_KEY` is used
+    when set.
   - Drops papers already in `Papers/` (arXiv id, DOI or the published DOI of
     an ingested preprint, normalised title) and papers offered by an earlier
     watch of this project.
@@ -37,12 +41,15 @@
     `refutada`, not `descartada`, not `send: never`)
     `## Claim` and each candidate's title + abstract. Only ids and scores are
     stored — the claim text never leaves the note.
-  - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json` and sets the hub's
-    `last_watch:` only when every query answered in full. If some failed or
-    were truncated, the run is still saved but `last_watch` stays where it
-    was, so the next watch covers the same window again (papers already
-    offered are dropped, never repeated); if every query failed, nothing is
-    written and the run says so.
+  - Title and abstract are third-party text: a candidate whose text reads like
+    an instruction to a model carries `sospechoso` (the patterns found).
+  - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json`, moves the cursor
+    of every query that answered (a truncated one too: it is covered up to its
+    MAX_RESULTS most relevant hits, and says so) and the hub's `last_watch:`.
+    A lost query keeps its cursor, so its own window stays open (`open_windows`)
+    without holding the other queries back; papers already offered are dropped,
+    never repeated. If every query failed, nothing is written and the run says
+    so.
 
 `threat` records a novelty threat, which is a model's judgement and not
 evidence:
@@ -94,6 +101,7 @@ sys.path.insert(0, str(HERE.parent / "security"))
 sys.path.insert(0, str(HERE.parent / "search"))
 import net  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402
+from untrusted import suspicious  # noqa: E402
 from vaultnotes import (  # noqa: E402
     append_revision_line,
     fm_get,
@@ -103,7 +111,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.4.0"
+TOOL = "kairo/lit_watch@1.5.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -449,28 +457,74 @@ def run_path(pdir: Path, today: date) -> Path:
     return p
 
 
-def structured_delta(plan: dict, pdir: Path, query_from: date, today: date,
-                     fetch: Fetch) -> tuple[list, list[dict], set[str]]:
-    """Re-run a lit_search plan over the watch window with lit_search's own
-    query builders and pager (raw responses kept next to the run)."""
+CURSORS = "cursores.json"
+
+
+def load_cursors(pdir: Path) -> dict[str, str]:
+    """Per query: the last date up to which it answered (`_vigilancia/cursores.json`)."""
+    f = pdir / "_vigilancia" / CURSORS
+    try:
+        return dict(json.loads(f.read_text(encoding="utf-8")).get("queries") or {})
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+
+
+def save_cursors(pdir: Path, cursors: dict[str, str]) -> None:
+    f = pdir / "_vigilancia" / CURSORS
+    f.parent.mkdir(exist_ok=True)
+    f.write_text(json.dumps({"tool": TOOL, "queries": dict(sorted(cursors.items()))}, ensure_ascii=False, indent=2)
+                 + "\n", encoding="utf-8", newline="\n")
+
+
+def query_signature(q: dict) -> str:
+    """What identifies a query across watches, independent of its date window."""
+    if "terms" in q:                                   # a lit_search query
+        return "|".join([q["source"], str(q["facet"]), q.get("pass", ""), "||".join(q["terms"])])
+    return "|".join([q["source"], str(q["facet"]), q["query"]])
+
+
+def query_start(sig: str, cursors: dict[str, str], base: date, explicit: bool) -> date:
+    """Where one query's window starts: --since exactly, else OVERLAP_DAYS before
+    the date it last answered (or before the project's last watch)."""
+    if explicit:
+        return base
+    cur = cursors.get(sig)
+    last = date.fromisoformat(cur) if cur and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cur) else base
+    return last - timedelta(days=OVERLAP_DAYS)
+
+
+def _watch_plan(plan: dict, start: date, today: date) -> dict:
+    return {**plan, "from": start.isoformat(), "to": today.isoformat(), "anchors": 0, "per_query": MAX_RESULTS}
+
+
+def structured_signatures(plan: dict, today: date) -> list[str]:
     import lit_search
-    p = {**plan, "from": query_from.isoformat(), "to": today.isoformat(), "anchors": 0,
-         "per_query": MAX_RESULTS}
+    return [query_signature(q) for q in lit_search.build_queries(_watch_plan(plan, today, today), today.isoformat())]
+
+
+def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: date,
+                     fetch: Fetch) -> tuple[list, list[dict], set[str]]:
+    """Re-run a lit_search plan with lit_search's own query builders and pager
+    (raw responses kept next to the run), each query over its own window."""
+    import lit_search
     raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw.mkdir(parents=True, exist_ok=True)
     results, log = [], []
-    for q in lit_search.build_queries(p, today.isoformat()):
+    for sig in structured_signatures(plan, today):
+        p = _watch_plan(plan, starts[sig], today)
+        q = next(x for x in lit_search.build_queries(p, today.isoformat()) if query_signature(x) == sig)
         recs = lit_search.run_query(q, p, raw, fetch)
-        entry = {"id": q["id"], "facet": q["facet"], "source": q["source"], "query": q["query"],
-                 "hits": len(recs) if not q["error"] else None, "total": q["total"],
-                 "truncated": q.get("truncated", False), "error": q["error"]}
-        log.append(entry)
+        log.append({"id": q["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
+                    "query": q["query"], "signature": sig, "from": starts[sig].isoformat(),
+                    "hits": len(recs) if not q["error"] else None, "total": q["total"],
+                    "truncated": q.get("truncated", False), "error": q["error"]})
         if not q["error"]:
-            got = [{"arxiv": r.get("arxiv"), "doi": r.get("doi"), "s2": r.get("s2"), "title": r["title"],
+            for r in recs:                             # a cross hit carries its own facet (or none)
+                results.append(({"facet": r.get("facet"), "source": q["source"].replace("-anchor", "")}, [{
+                    "arxiv": r.get("arxiv"), "doi": r.get("doi"), "s2": r.get("s2"), "title": r["title"],
                     "abstract": r.get("abstract") or "", "authors": (r.get("authors") or [])[:8],
                     "date": r.get("date") or (str(r["year"]) if r.get("year") else None), "url": r.get("url"),
-                    "venue": r.get("venue"), "citations": r.get("citations")} for r in recs]
-            results.append(({"facet": q["facet"], "source": q["source"]}, got))
+                    "venue": r.get("venue"), "citations": r.get("citations")}]))
     return results, log, {f["id"] for f in plan["facets"]}
 
 
@@ -486,23 +540,27 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     if since is None:
         lw = (hub_field(pdir, "last_watch") or "").strip()
         since = date.fromisoformat(lw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lw) else today - timedelta(days=DEFAULT_LOOKBACK_DAYS)
-    # re-read OVERLAP_DAYS before the last watch: papers listed or indexed late
-    query_from = since if explicit else since - timedelta(days=OVERLAP_DAYS)
+    cursors = load_cursors(pdir)
+    sigs = structured_signatures(plan, today) if plan else [query_signature(q) for q in queries]
+    starts = {sig: query_start(sig, cursors, since, explicit) for sig in sigs}
+    query_from = min(starts.values())
     arx, dois, titles = known_papers(vault)
     seen_before = earlier_keys(pdir)
     merged: dict[str, dict] = {}
     by_title: dict[str, str] = {}
     log = []
     if plan:
-        results, log, facets_all = structured_delta(plan, pdir, query_from, today, fetch)
+        results, log, facets_all = structured_delta(plan, pdir, starts, today, fetch)
     else:
         facets_all = {q["facet"] for q in queries}
         results = []
         for q in queries:
-            entry = {**q, "hits": None, "error": None, "total": None, "truncated": False}
+            sig = query_signature(q)
+            entry = {**q, "signature": sig, "from": starts[sig].isoformat(),
+                     "hits": None, "error": None, "total": None, "truncated": False}
             try:
-                got = arxiv_delta(q["query"], query_from, today, fetch, entry) if q["source"] == "arxiv" \
-                    else s2_delta(q["query"], query_from, fetch, entry)
+                got = arxiv_delta(q["query"], starts[sig], today, fetch, entry) if q["source"] == "arxiv" \
+                    else s2_delta(q["query"], starts[sig], fetch, entry)
                 entry["hits"] = len(got)
                 results.append((q, got))
             except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
@@ -520,7 +578,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             for field in ("abstract", "doi", "arxiv", "url", "citations"):
                 if not cur.get(field) and c.get(field):
                     cur[field] = c[field]
-            if q["facet"] not in cur["facets"]:
+            if q["facet"] and q["facet"] != "*" and q["facet"] not in cur["facets"]:
                 cur["facets"].append(q["facet"])
             if q["source"] not in cur["sources"]:
                 cur["sources"].append(q["source"])
@@ -532,6 +590,9 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             continue
         c["strong"] = len(c["facets"]) >= 2 or len(facets_all) == 1
         c["abstract_sha256"] = sha256(c.get("abstract") or "") if c.get("abstract") else None
+        flags = suspicious(c["title"] + "\n" + (c.get("abstract") or ""))
+        if flags:
+            c["sospechoso"] = flags                 # third-party text that reads like an instruction
         cands.append(c)
     hyps = hypotheses(pdir)
     for c in cands:
@@ -550,31 +611,48 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         c["triage"] = c["strong"] and i < top
         c.update({"why": None, "decision": None})
     truncated = [x for x in log if x.get("truncated")]
+    lost = [x for x in log if x.get("error")]
     run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(),
            "queried_from": query_from.isoformat(), "until": today.isoformat(),
            "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)",
-           "degraded": any(x["error"] for x in log) or bool(truncated), "lost_all": lost_all,
+           "degraded": bool(lost) or bool(truncated), "lost_all": lost_all,
            "truncated": [f"{x.get('id', x['facet'])} {x['source']}: {x.get('hits')} de {x.get('total')}"
                          for x in truncated],
+           "lost": [f"{x.get('id', x['facet'])} {x['source']}: {x['error']}" for x in lost],
            "queries": log, "candidates": cands, "threats": []}
     out = None
     moved = False
     if not lost_all:
         out = run_path(pdir, today)
         save_run(out, run)
-        if not run["degraded"]:
-            # A window with lost or truncated queries was not covered: keep it open
-            # for the next watch (papers offered now are not offered again).
-            text, nl = read_text(hub_path(pdir))
-            write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
-            moved = True
+        # Coverage is kept per query. One that answered — in full, or capped at
+        # MAX_RESULTS by relevance (reported as truncated, never hidden) — is covered
+        # up to today; a lost one keeps its own start, so its window stays open
+        # without holding every other query back. With --since, a cursor moves only
+        # when the run reached back to it (no gap is skipped).
+        for x in log:
+            sig = x["signature"]
+            start = date.fromisoformat(x["from"])
+            prev = cursors.get(sig)
+            if x.get("error"):
+                if not prev:
+                    cursors[sig] = since.isoformat()
+                continue
+            if not explicit or not prev or start <= date.fromisoformat(prev):
+                cursors[sig] = today.isoformat()
+        save_cursors(pdir, cursors)
+        text, nl = read_text(hub_path(pdir))
+        write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
+        moved = True
     return {"run": out.relative_to(vault).as_posix() if out else None, "since": run["since"],
             "queried_from": run["queried_from"], "until": run["until"],
-            "queries": len(log), "lost": sum(1 for x in log if x["error"]), "lost_all": lost_all,
-            "truncated": run["truncated"], "last_watch_moved": moved,
+            "queries": len(log), "lost": len(lost), "lost_all": lost_all,
+            "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
+            "open_windows": sorted({x["from"] for x in lost}),
             "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
             "to_triage": sum(c["triage"] for c in cands),
-            "novelty_candidates": sum(1 for c in cands if c["novelty"])}
+            "novelty_candidates": sum(1 for c in cands if c["novelty"]),
+            "suspicious": sum(1 for c in cands if c.get("sospechoso"))}
 
 
 # --------------------------------------------------------------------------

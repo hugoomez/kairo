@@ -49,7 +49,7 @@ HOST_SPACING = {
     "arxiv.org": 3.0,
     "api.semanticscholar.org": 1.0,
     "api.crossref.org": 0.2,
-    "api.openalex.org": 0.02,
+    "api.openalex.org": 0.1,         # OpenAlex asks for at most 10 requests per second
     "dblp.org": 1.0,
 }
 BACKOFF = (5.0, 15.0)            # waits before attempt 2 and 3

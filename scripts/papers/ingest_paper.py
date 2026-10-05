@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Ingest one paper into a vault's Papers/ — mechanically, end to end.
 
-    ingest_paper.py add     --vault <vault> --project PROJ-XXX (--arxiv ID | --doi DOI)
-                            [--version vN] [--pdf-text FILE --source-url URL]
+    ingest_paper.py add     --vault <vault> --project PROJ-XXX (--arxiv ID | --doi DOI | --openalex W…)
+                            [--version vN] [--pdf-text FILE --source-url URL] [--keep-doi-anchor]
                             [--facet A --matched "<term>"] [--source arxiv|semantic-scholar|manual]
                             [--no-fulltext] [--dry-run]
     ingest_paper.py rebuild --vault <vault> --only P-XXXX [P-YYYY …]
@@ -13,13 +13,25 @@ A paper note's source fields — the frontmatter metadata, `## Referencia`,
 `## Resumen`, `## Texto completo` — are never typed by a model. `add` fetches
 them and writes the whole note itself:
 
-  - metadata: the arXiv API entry (arXiv id given) or the Crossref record (DOI
-    given); OpenAlex for the abstract when neither has one, and for the
-    published version of a preprint;
+  - metadata: the arXiv API entry (arXiv id given), the Crossref record (DOI
+    given) or the OpenAlex work (`--openalex W…`, for a paper with neither a
+    DOI nor an arXiv id — e.g. many USENIX papers); OpenAlex for the abstract
+    when the record has none, and for the published version of a preprint;
+    the published version's type, volume, issue and pages from Crossref;
+  - a DOI whose OpenAlex work lists an arXiv preprint is anchored on that
+    preprint (its open text), with the DOI kept as `published_doi`, unless
+    `--keep-doi-anchor`;
   - `## Resumen`: the abstract exactly as the record holds it (whitespace
     collapsed), with its `> Fuente:` line;
   - `## Texto completo`: verbatim_fulltext.py's output (arXiv HTML → ar5iv →
-    PDF), or `--pdf-text` for an open-access PDF that is not on arXiv.
+    PDF), or `--pdf-text` for a PDF the researcher supplies, or — not on
+    arXiv — the open-access PDF OpenAlex names (`best_oa_location`), fetched
+    only when the server hands a script a real PDF: an HTML page, a 403 or a
+    bot check is a no, never worked around.
+
+Ingestion holds a per-vault lock (`Papers/_fuentes/.ingest.lock`): parallel
+`add` / `rebuild` runs wait for each other, so two papers never get the same
+P-id and the per-host request spacing holds across them.
 
 Every byte fetched is kept in `Papers/_fuentes/<P-id>/` with a manifest
 (`fuentes.json`: file, URL, sha256, date, converter version). `verify`
@@ -41,12 +53,14 @@ Standard library only (plus `pdftotext` for PDFs).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import hashlib
 import json
 import os
 import re
 import sys
+import time
 import unicodedata
 import urllib.parse
 from pathlib import Path
@@ -64,11 +78,14 @@ import verbatim_fulltext as vf  # noqa: E402
 from fill_abstract import from_inverted_index, from_jats  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/ingest_paper@1.0.0"
+TOOL = "kairo/ingest_paper@1.1.0"
 FUENTES_DIR = "_fuentes"
 NO_ABSTRACT = "No disponible — ningún abstract recuperado"
 NO_FULLTEXT = "No disponible — solo abstract."
 SECTIONS = ("Referencia", "Resumen", "Texto completo")
+LOCK_NAME = ".ingest.lock"
+LOCK_WAIT_S = 900.0                 # longer than any single ingestion
+LOCK_STALE_S = 1800.0               # a lock this old was left by a crashed run
 
 Fetch = Callable[[str, dict], bytes]
 
@@ -125,7 +142,9 @@ def from_crossref(raw: bytes) -> dict | None:
         authors.append(f"{fam}, {giv}" if fam and giv else (fam or a.get("name") or ""))
     return {"title": ws((msg.get("title") or [""])[0]), "authors": [a for a in authors if a], "year": year,
             "venue": ws((msg.get("container-title") or [""])[0]) or msg.get("type") or "",
-            "abstract": from_jats(msg.get("abstract")), "doi": retraction.normalize_doi(msg.get("DOI")) or ""}
+            "abstract": from_jats(msg.get("abstract")), "doi": retraction.normalize_doi(msg.get("DOI")) or "",
+            "venue_type": msg.get("type") or "", "volume": str(msg.get("volume") or ""),
+            "issue": str(msg.get("issue") or ""), "pages": str(msg.get("page") or "").replace("-", "--")}
 
 
 def from_openalex(raw: bytes) -> dict | None:
@@ -140,8 +159,29 @@ def from_openalex(raw: bytes) -> dict | None:
             published = {"venue": src["display_name"], "doi": retraction.normalize_doi(w.get("doi")) or "",
                          "year": w.get("publication_year")}
             break
+    arxiv = None
+    for loc in [w.get("primary_location") or {}] + list(w.get("locations") or []):
+        m = re.search(r"arxiv\.org/(?:abs|pdf)/([^\s?#]+?)(?:v\d+)?(?:\.pdf)?$", loc.get("landing_page_url") or "")
+        if m:
+            arxiv = retraction.normalize_arxiv(m.group(1))
+            break
+    best = w.get("best_oa_location") or {}
+    oa_pdf = best.get("pdf_url") or ((w.get("open_access") or {}).get("oa_url") or "")
+    if oa_pdf and not re.search(r"\.pdf(?:$|[?#])|/pdf/", oa_pdf, re.I) and not best.get("pdf_url"):
+        oa_pdf = ""                     # a landing page, not a PDF
+    src = ((w.get("primary_location") or {}).get("source") or {})
+    biblio = w.get("biblio") or {}
+    pages = "--".join(x for x in (biblio.get("first_page"), biblio.get("last_page")) if x)
     return {"abstract": from_inverted_index(w.get("abstract_inverted_index")), "published": published,
-            "openalex_id": (w.get("id") or "").rsplit("/", 1)[-1]}
+            "openalex_id": (w.get("id") or "").rsplit("/", 1)[-1], "arxiv": arxiv, "oa_pdf": oa_pdf or "",
+            "title": ws(w.get("title") or w.get("display_name") or ""),
+            "authors": [ws((a.get("author") or {}).get("display_name")) for a in w.get("authorships") or []
+                        if (a.get("author") or {}).get("display_name")],
+            "year": str(w.get("publication_year") or "") or None,
+            "venue": ws(src.get("display_name") or ""), "venue_type": (src.get("type") or ""),
+            "landing": (w.get("primary_location") or {}).get("landing_page_url") or "",
+            "doi": retraction.normalize_doi(w.get("doi")) or "",
+            "volume": str(biblio.get("volume") or ""), "issue": str(biblio.get("issue") or ""), "pages": pages}
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +196,8 @@ def referencia(meta: dict) -> str:
         ids.append(f"DOI: {meta['doi']}")
     if meta.get("arxiv"):
         ids.append(f"arXiv: {meta['arxiv']}{meta.get('version') or ''}")
+    if not ids and meta.get("openalex_id"):
+        ids.append(f"OpenAlex: {meta['openalex_id']}")
     parts = [f"{who} ({meta.get('year') or 's. f.'}). {meta.get('title') or 'Sin título'}."]
     if meta.get("venue"):
         parts.append(f"{meta['venue']}.")
@@ -212,10 +254,14 @@ def next_id(vault: Path) -> str:
     return f"P-{(max(nums) + 1 if nums else 1):04d}"
 
 
-def find_existing(vault: Path, arxiv: str, doi: str, title: str) -> Path | None:
+def find_existing(vault: Path, arxiv: str, doi: str, title: str, published_doi: str = "") -> Path | None:
     """By file content for normal notes; a send: never note is matched only by
-    what the guard lets through (its file name's title), never opened here."""
+    what the guard lets through (its file name's title), never opened here.
+    A DOI matches a note's `doi` or its `published_doi` (the journal version of
+    an ingested preprint is not a new paper), and the incoming preprint's
+    declared published DOI matches a note anchored on that DOI."""
     t = norm_title(title)
+    dois = {d for d in (doi, published_doi) if d}
     for p in paper_notes(vault):
         if is_flagged(p):
             if t and t[:40] and t[:40] in norm_title(p.stem):
@@ -224,11 +270,43 @@ def find_existing(vault: Path, arxiv: str, doi: str, title: str) -> Path | None:
         fm = (vn.split_frontmatter(p.read_text(encoding="utf-8")) or ([], ""))[0]
         if arxiv and retraction.normalize_arxiv(vn.fm_get(fm, "arxiv")) == arxiv:
             return p
-        if doi and retraction.normalize_doi(vn.fm_get(fm, "doi")) == doi:
+        have = {retraction.normalize_doi(vn.fm_get(fm, k)) for k in ("doi", "published_doi")} - {None, ""}
+        if dois & have:
             return p
         if t and norm_title(vn.fm_get(fm, "title") or "") == t:
             return p
     return None
+
+
+@contextlib.contextmanager
+def vault_lock(vault: Path, wait: float = LOCK_WAIT_S):
+    """One ingestion at a time per vault (see the module doc)."""
+    d = vault / "Papers" / FUENTES_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    lock = d / LOCK_NAME
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()} {_dt.datetime.now().isoformat(timespec='seconds')}".encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > LOCK_STALE_S:
+                    lock.unlink()
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() > deadline:
+                raise Refused(f"otra ingesta tiene el vault bloqueado ({lock}); si no hay ninguna en marcha, "
+                              "borra ese archivo") from None
+            time.sleep(0.5)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            lock.unlink()
 
 
 def find_note(vault: Path, pid: str) -> Path:
@@ -291,10 +369,26 @@ def _oa(url_path: str) -> str:
     return f"https://api.openalex.org/{url_path}" + (("?api_key=" + urllib.parse.quote(key)) if key else "")
 
 
-def gather(store: Store, arxiv: str, doi: str, fetch: Fetch) -> tuple[dict, list[str]]:
+def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "") -> tuple[dict, list[str]]:
     """Fetch the metadata records into `store`; return (meta, warnings)."""
     warn: list[str] = []
     meta: dict = {}
+    if openalex and not arxiv and not doi:
+        url = _oa(f"works/{urllib.parse.quote(openalex)}")
+        try:
+            raw = fetch(url, {})
+        except net.HttpError as e:
+            raise Refused(f"OpenAlex has no work {openalex} ({e})") from None
+        rec = from_openalex(raw)
+        if not rec or not rec.get("title"):
+            raise Refused(f"OpenAlex has no work {openalex}")
+        if rec.get("doi") or rec.get("arxiv"):
+            raise Refused(f"{openalex} has an identifier ({'DOI ' + rec['doi'] if rec.get('doi') else 'arXiv ' + rec['arxiv']}): "
+                          "ingest it with --doi / --arxiv")
+        store.keep("metadata-openalex.json", "metadata", _oa(f"works/{openalex}"), raw, parser="openalex-work")
+        meta = {**rec, "arxiv": "", "doi": "", "version": "", "abstract_file": "metadata-openalex.json",
+                "abstract_url": f"https://api.openalex.org/works/{rec['openalex_id']}"}
+        return meta, warn
     if arxiv:
         url = retraction.ARXIV_QUERY.format(urllib.parse.quote(arxiv, safe="/"), 1)
         raw = fetch(url, {"Accept": "application/atom+xml"})
@@ -329,6 +423,7 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch) -> tuple[dict, list
                 meta["abstract_file"] = "metadata-openalex.json"
             if arxiv and oa["published"]:
                 meta.setdefault("published_venue", oa["published"]["venue"])
+            meta["oa_pdf"] = oa.get("oa_pdf") or ""
     except net.HttpError as e:
         if e.not_found:
             warn.append(f"OpenAlex no tiene registro para {oa_id}")
@@ -348,11 +443,32 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch) -> tuple[dict, list
                 if pub.get("venue"):
                     meta["published_venue"] = pub["venue"]
                 meta["published_year"] = pub.get("year") or ""
+                for k in ("venue_type", "volume", "issue", "pages"):
+                    meta[k] = pub.get(k) or ""
         except (net.HttpError, ValueError) as e:
             warn.append(f"Crossref no dio el registro de la versión publicada {pdoi} ({net.redact(str(e))[:80]})")
     if arxiv and (pdoi or meta.get("journal_ref")):
         meta.setdefault("published_venue", meta.get("journal_ref") or "")
     return meta, warn
+
+
+def open_pdf(store: Store, url: str, fetch: Fetch) -> tuple[str | None, str | None]:
+    """(Texto completo block, None) from an open-access PDF, or (None, why not).
+    Only a real PDF handed to a script counts: a landing page, a 403 or a bot
+    check is a no — never worked around."""
+    if not url:
+        return None, None
+    try:
+        data = fetch(url, {"Accept": "application/pdf"})
+    except net.HttpError as e:
+        return None, f"el PDF abierto ({net.redact(url)}) no se sirvió a un script ({e.code or 'red'}): no se fuerza"
+    if data[:4] != b"%PDF":
+        return None, f"{net.redact(url)} no devolvió un PDF (página o comprobación anti-bot): no se fuerza"
+    block = vf.build("pdf", url, "publicada (PDF de acceso abierto)", data, store.date)
+    if not block:
+        return None, "PDF abierto descargado, pero sin texto extraíble (¿pdftotext instalado?)"
+    store.keep("texto.pdf", "fulltext", url, data, kind="pdf", version="publicada (PDF de acceso abierto)")
+    return block, None
 
 
 def fulltext(store: Store, arxiv: str, version: str, pdf_text: Path | None, source_url: str | None,
@@ -388,16 +504,42 @@ def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: 
         raise Refused("--project must be a PROJ-XXX id")
     arxiv = retraction.normalize_arxiv(a.arxiv) or ""
     doi = retraction.normalize_doi(a.doi) or ""
-    if bool(arxiv) == bool(doi):
-        raise Refused("give exactly one of --arxiv or --doi (a preprint is anchored on its arXiv id)")
+    openalex = (a.openalex or "").strip().rsplit("/", 1)[-1]
+    if openalex and not re.fullmatch(r"W\d+", openalex):
+        raise Refused("--openalex must be a work id, e.g. W2741809807")
+    if sum(map(bool, (arxiv, doi, openalex))) != 1:
+        raise Refused("give exactly one of --arxiv, --doi or --openalex (a preprint is anchored on its arXiv id)")
     if retraction.is_arxiv_doi(doi):
         arxiv, doi = retraction.arxiv_from_doi(doi), ""
+    with vault_lock(vault):
+        return _add(a, vault, arxiv, doi, openalex, fetch, fetch_arxiv, today)
+
+
+def _preprint_of(doi: str, fetch: Fetch) -> str:
+    """The arXiv preprint OpenAlex lists among the DOI's work's locations, if any."""
+    try:
+        oa = from_openalex(fetch(_oa(f"works/{urllib.parse.quote('doi:' + doi, safe=':/')}"), {}))
+    except (net.HttpError, ValueError):
+        return ""
+    return (oa or {}).get("arxiv") or ""
+
+
+def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetch_arxiv, today) -> dict:
     date = today or _dt.date.today().isoformat()
+    switched = ""
+    if doi and not a.keep_doi_anchor and not a.pdf_text:
+        pre = _preprint_of(doi, fetch)
+        if pre:
+            switched, arxiv, doi = doi, pre, ""
     pid = next_id(vault)
     store = Store(vault, pid, date)
-    meta, warn = gather(store, arxiv, doi, fetch)
+    meta, warn = gather(store, arxiv, doi, fetch, openalex)
+    if switched:
+        meta["published_doi"] = meta.get("published_doi") or switched
+        warn.append(f"el DOI {switched} tiene preprint en arXiv ({arxiv}) según OpenAlex: la nota se ancla en el "
+                    "preprint (texto abierto) y guarda el DOI como published_doi (--keep-doi-anchor lo evita)")
 
-    existing = find_existing(vault, arxiv, doi, meta.get("title", ""))
+    existing = find_existing(vault, arxiv, doi, meta.get("title", ""), meta.get("published_doi") or "")
     if existing:
         if is_flagged(existing):
             raise Refused(f"ya está en el vault como {existing.name.split(' ')[0]}, marcada send: never: "
@@ -414,6 +556,11 @@ def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: 
     tried = [store.files[0]["url"]] if store.files else []
     block, kind = (None, "") if a.no_fulltext else fulltext(
         store, arxiv, a.version or "", a.pdf_text, a.source_url, fetch_arxiv)
+    if not block and not a.no_fulltext and not arxiv:
+        block, why = open_pdf(store, meta.get("oa_pdf") or "", fetch)
+        kind = "pdf-oa" if block else kind
+        if why:
+            warn.append(why)
     if not block and not a.no_fulltext:
         warn.append("sin texto completo abierto: la nota queda abstract-only (añade el PDF con --pdf-text)")
     meta_out = {**meta, "version": (a.version or meta.get("version") or "")}
@@ -421,16 +568,22 @@ def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: 
         ("id", pid), ("title", meta.get("title")), ("authors", meta.get("authors") or []),
         ("year", meta.get("year")), ("venue", meta.get("venue")), ("doi", doi), ("arxiv", arxiv),
         ("arxiv_version", meta_out["version"] if arxiv else ""),
-        ("url", f"https://arxiv.org/abs/{arxiv}" if arxiv else f"https://doi.org/{doi}"),
-        ("pdf", f"https://arxiv.org/pdf/{arxiv}{meta_out['version']}" if arxiv else (a.source_url or "")),
+        ("url", f"https://arxiv.org/abs/{arxiv}" if arxiv else f"https://doi.org/{doi}" if doi
+         else meta.get("landing") or f"https://openalex.org/{meta.get('openalex_id')}"),
+        ("pdf", f"https://arxiv.org/pdf/{arxiv}{meta_out['version']}" if arxiv
+         else (a.source_url or (meta.get("oa_pdf") if kind == "pdf-oa" else "") or "")),
         ("projects", [a.project]), ("added", date), ("source", a.source),
         ("fulltext", "full" if block else "abstract-only"),
     ]
+    if openalex:
+        fields.append(("openalex", meta.get("openalex_id") or openalex))
     if arxiv and (meta.get("published_doi") or meta.get("published_venue")):
         fields += [("published_doi", meta.get("published_doi") or ""),
                    ("published_venue", meta.get("published_venue") or ""),
                    ("published_year", meta.get("published_year") or ""),
                    ("journal_ref", meta.get("journal_ref") or "")]
+    # the published version's kind and place (Crossref / OpenAlex), for the bibliography
+    fields += [(k, meta.get(k)) for k in ("venue_type", "volume", "issue", "pages") if meta.get(k)]
     fields += [("ingested_by", TOOL), ("fuentes", f"{store.rel}/fuentes.json")]
     body = (f"## Referencia\n\n{referencia({**meta, 'doi': doi, 'arxiv': arxiv, 'version': meta_out['version']})}\n\n"
             f"## Resumen\n\n{resumen(meta.get('abstract', ''), meta.get('abstract_url', ''), date, tried)}\n\n"
@@ -483,8 +636,10 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
             meta = {**(from_arxiv_feed(data, vn.fm_get(fm, "arxiv") or "") or {}), **meta}
         elif f["parser"] == "crossref":
             meta = {**(from_crossref(data) or {}), **meta}
+        elif f["parser"] == "openalex-work":
+            meta = {**(from_openalex(data) or {}), **meta}
         if f.get("abstract"):
-            ab = (from_openalex(data) or {}).get("abstract") if f["parser"] == "openalex" else \
+            ab = (from_openalex(data) or {}).get("abstract") if f["parser"] in ("openalex", "openalex-work") else \
                 (from_arxiv_feed(data, vn.fm_get(fm, "arxiv") or "") or {}).get("abstract") if f["parser"] == "arxiv" \
                 else (from_crossref(data) or {}).get("abstract")
             exp["Resumen"] = ab or ""
@@ -553,6 +708,11 @@ def cmd_verify(a) -> dict:
 
 def cmd_rebuild(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: str | None = None) -> dict:
     vault = a.vault.resolve()
+    with vault_lock(vault):
+        return _rebuild(a, vault, fetch, fetch_arxiv, today)
+
+
+def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> dict:
     date = today or _dt.date.today().isoformat()
     out = []
     for pid in a.only:
@@ -575,6 +735,11 @@ def cmd_rebuild(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, tod
             continue
         version = vn.fm_get(fm, "arxiv_version") or ""
         block, kind = fulltext(store, arxiv, version, None, None, fetch_arxiv)
+        if not block and not arxiv:
+            block, why = open_pdf(store, meta.get("oa_pdf") or "", fetch)
+            kind = "pdf-oa" if block else kind
+            if why:
+                warn.append(why)
         for f in store.files:
             if f["file"] == meta.get("abstract_file"):
                 f["abstract"] = True
@@ -619,6 +784,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
     ad.add_argument("--project", required=True)
     ad.add_argument("--arxiv")
     ad.add_argument("--doi")
+    ad.add_argument("--openalex", help="OpenAlex work id (W…) of a paper with no DOI and no arXiv id")
+    ad.add_argument("--keep-doi-anchor", action="store_true",
+                    help="anchor on the DOI even when OpenAlex lists an arXiv preprint for it")
     ad.add_argument("--version", help="pin an arXiv version, e.g. v2 (default: the latest)")
     ad.add_argument("--pdf-text", type=Path, help="pdftotext output of an open-access PDF not on arXiv")
     ad.add_argument("--source-url", help="where --pdf-text came from")

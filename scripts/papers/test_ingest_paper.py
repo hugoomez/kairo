@@ -210,6 +210,100 @@ class Rebuild(Base):
         self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
 
 
+PDF_TEXT = ("1 Introduction\n\nWe study invented toy decoders on made-up hardware in this open paper.\n\n"
+            "2 Results\n\nThe toy decoder reaches an invented threshold of 1.7% on imaginary codes.\n")
+
+
+class Beyond(Base):
+    """Papers not on arXiv: open-access PDFs, OpenAlex-only works, preprint switch, published DOI dedup."""
+
+    def setUp(self):
+        super().setUp()
+        self.orig_pdf = ip.vf.pdf_bytes_to_text
+        ip.vf.pdf_bytes_to_text = lambda data: PDF_TEXT if data.startswith(b"%PDF") else None
+
+    def tearDown(self):
+        ip.vf.pdf_bytes_to_text = self.orig_pdf
+        super().tearDown()
+
+    def fetch_with(self, work: dict, pdf: bytes = b"%PDF-1.4 invented"):
+        def fetch(url, headers):
+            if "api.openalex.org" in url:
+                return json.dumps(work).encode()
+            if "api.crossref.org" in url:
+                msg = {**CROSSREF["message"], "type": "journal-article", "volume": "12", "issue": "3",
+                       "page": "101-117"}
+                return json.dumps({"message": msg}).encode()
+            if url == "https://example.invalid/paper.pdf":
+                return pdf
+            return make_fetch()(url, headers)
+        return fetch
+
+    def test_an_open_access_pdf_gives_the_full_text_and_verifies(self):
+        work = {**OPENALEX, "best_oa_location": {"pdf_url": "https://example.invalid/paper.pdf"}}
+        code, out = self.add("--doi", "10.0000/toy.2031.7", fetch=self.fetch_with(work))
+        self.assertEqual((code, out["fulltext"]), (0, "pdf-oa"), out)
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("fulltext: full", text)
+        self.assertIn("invented threshold of 1.7%", text)
+        self.assertIn("venue_type: journal-article", text)
+        self.assertIn("pages: 101--117", text)
+        self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
+
+    def test_a_publisher_page_instead_of_a_pdf_is_never_forced(self):
+        work = {**OPENALEX, "best_oa_location": {"pdf_url": "https://example.invalid/paper.pdf"}}
+        code, out = self.add("--doi", "10.0000/toy.2031.7",
+                             fetch=self.fetch_with(work, pdf=b"<!doctype html><title>Checking your browser</title>"))
+        self.assertEqual((code, out["fulltext"]), (0, "abstract-only"))
+        self.assertTrue(any("no se fuerza" in w for w in out["warnings"]), out["warnings"])
+
+    def test_a_doi_with_an_arxiv_preprint_is_anchored_on_the_preprint(self):
+        work = {**OPENALEX, "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.11111"}]}
+        code, out = self.add("--doi", "10.0000/toy.2031.7", fetch=self.fetch_with(work))
+        self.assertEqual((code, out["fulltext"]), (0, "arxiv-html"), out)
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("arxiv: 0000.11111", text)
+        self.assertIn('published_doi: "10.0000/toy.2031.7"', text)
+        # the journal version is the same paper: asking for it again finds the note
+        code, out = self.add("--doi", "10.0000/toy.2031.7", "--keep-doi-anchor", fetch=self.fetch_with(work))
+        self.assertEqual((code, out["status"], out["id"]), (0, "exists", "P-0001"))
+
+    def test_a_paper_with_no_doi_and_no_arxiv_id_is_ingested_from_openalex(self):
+        work = {"id": "https://openalex.org/W0042", "title": "Toy Scheduling at Invented Scale",
+                "publication_year": 2031, "authorships": [{"author": {"display_name": "Li Wu"}}],
+                "primary_location": {"landing_page_url": "https://example.invalid/toy",
+                                     "source": {"display_name": "Invented Symposium", "type": "conference"}},
+                "abstract_inverted_index": {"Toy": [0], "scheduling.": [1]}, "locations": []}
+        code, out = self.add("--openalex", "W0042", fetch=self.fetch_with(work))
+        self.assertEqual(code, 0, out)
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("openalex: W0042", text)
+        self.assertRegex(text, r"(?m)^url: \"?https://example\.invalid/toy\"?$")
+        self.assertIn("Li Wu (2031). Toy Scheduling at Invented Scale. Invented Symposium. OpenAlex: W0042.", text)
+        self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
+        self.assertEqual(self.add("--openalex", "W0042", "--doi", "10.0000/x")[0], 2)
+        with_doi = {**work, "doi": "https://doi.org/10.0000/x"}
+        shutil.rmtree(self.vault / "Papers")
+        (self.vault / "Papers").mkdir()
+        code, out = self.add("--openalex", "W0042", fetch=self.fetch_with(with_doi))
+        self.assertEqual(code, 2)
+        self.assertIn("--doi", out["refused"])
+
+    def test_one_ingestion_at_a_time(self):
+        lock = self.vault / "Papers" / "_fuentes" / ip.LOCK_NAME
+        lock.parent.mkdir(parents=True)
+        lock.write_text("1 busy", encoding="utf-8")
+        with self.assertRaises(ip.Refused):
+            with ip.vault_lock(self.vault, wait=0.01):
+                pass
+        import os
+        old = lock.stat().st_mtime - ip.LOCK_STALE_S - 10
+        os.utime(lock, (old, old))                                  # a crashed run's lock
+        with ip.vault_lock(self.vault, wait=0.01):
+            self.assertTrue(lock.exists())
+        self.assertFalse(lock.exists())
+
+
 class FillAbstract(Base):
     def test_fill_abstract_leaves_script_ingested_notes_alone(self):
         import fill_abstract

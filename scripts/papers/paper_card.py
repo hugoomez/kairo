@@ -231,6 +231,11 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             "published_year": (pub or {}).get("year", "") if arxiv else "",
             "arxiv_version": card["versions"][-1]["version"] if card["versions"] else "", "id": "",
             "status": (card["retraction"] or {}).get("status", ""), "source": ""}
+    if crossref_msg and (pub or {}).get("source", "").startswith("Crossref ("):
+        # the publisher's own record: its registered type, volume, issue and pages
+        meta.update(venue_type=crossref_msg.get("type") or "", volume=str(crossref_msg.get("volume") or ""),
+                    issue=str(crossref_msg.get("issue") or ""),
+                    pages=str(crossref_msg.get("page") or "").replace("-", "--"))
     card["bibtex"] = export_bib.bibtex_entry(meta, export_bib.base_key(meta)).replace("  keywords = {kairo:},\n", "")
     card["raw"] = c.kept
     return card

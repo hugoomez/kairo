@@ -38,6 +38,30 @@ class ExportBib(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.vault, ignore_errors=True)
 
+    def test_entry_type_follows_the_registered_type_then_the_venue(self):
+        base = {"title": "T", "authors": ["Jane Doe"], "year": "2031", "doi": "10.0000/x"}
+        cases = [({"venue": "Proceedings of the National Academy of Invented Sciences"}, "article"),
+                 ({"venue": "Proceedings of the IEEE"}, "article"),
+                 ({"venue": "PNAS Nexus"}, "article"),
+                 ({"venue": "Advances in Neural Information Processing Systems"}, "inproceedings"),
+                 ({"venue": "Invented Letters", "venue_type": "proceedings-article"}, "inproceedings"),
+                 ({"venue": "Proceedings of the Invented SC Conference", "venue_type": "journal-article"}, "article"),
+                 ({"venue": "Invented Book of Toys", "venue_type": "book-chapter"}, "incollection")]
+        for extra, kind in cases:
+            self.assertEqual(eb.entry_type({**base, **extra})[0], kind, extra)
+
+    def test_math_titles_volume_and_pages(self):
+        m = {"title": "A $[[144,12,12]]$ toy code & a \\textit-free decoder", "authors": ["Jane Doe"],
+             "year": "2031", "venue": "Invented Journal", "venue_type": "journal-article", "doi": "10.0000/y",
+             "volume": "7", "issue": "2", "pages": "11--19"}
+        bib = eb.bibtex_entry(m, "doe2031toy")
+        self.assertIn("{$[[144,12,12]]$}", bib)               # math untouched
+        self.assertIn("\\&", bib)                              # text still escaped
+        self.assertIn("volume = {7}", bib)
+        self.assertIn("number = {2}", bib)
+        self.assertIn("pages = {11--19}", bib)
+        self.assertEqual(eb.csl_item({**m, "id": "P-1"}, "k")["page"], "11-19")
+
     def run_cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

@@ -60,6 +60,18 @@ class TestCheckQuotes(unittest.TestCase):
         bad = self.check("C.\n\n> follows a power law … The precursor rises\n> — P-0901 §3.1\n")
         self.assertEqual(bad["quotes_ok"], 0)
 
+    def test_an_elision_cannot_drop_a_negation_or_join_distant_text(self):
+        unit = ("The toy decoder does not reach the threshold on invented codes. " + "Filler words here. " * 30
+                + "It reaches the threshold on toy codes after tuning.")
+        ep = check_quotes.elision_problem
+        self.assertIsNone(ep(unit, ["The toy decoder does not reach", "on invented codes"]))
+        self.assertIn("omite «not»", ep(unit, ["The toy decoder does", "reach the threshold on invented codes"]))
+        self.assertIn("salta", ep(unit, ["The toy decoder does not reach", "on toy codes after tuning"]))
+        self.assertIn("no aparece", ep(unit, ["on toy codes after tuning", "The toy decoder does"]))
+        # a short fragment around «…» is refused before any lookup
+        r = self.check("C.\n\n> The precursor rises […] law\n> — P-0901 §3.1\n")
+        self.assertIn("al menos", r["removed"][0]["reason"])
+
     def test_claim_without_quote_is_removed(self):
         r = self.check("Una afirmación sin respaldo.\n\n" + GOOD)
         self.assertEqual(len(r["claims"]), 1)

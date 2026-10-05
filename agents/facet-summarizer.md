@@ -3,7 +3,7 @@ name: facet-summarizer
 description: Reads the ingested Papers/ notes assigned to ONE Estado-del-arte facet and returns a compact, citation-grounded contribution (paper id + section/table/figure for every claim) to whichever of the canonical Estado-del-arte sections those papers actually support. It does not address every section. create-project step 7 (Map phase) dispatches one of these per facet, all launched together in the same turn.
 tools: Read, Grep, Glob
 model: claude-sonnet-5-5
-maxTurns: 14
+maxTurns: 20
 color: green
 ---
 
@@ -15,7 +15,8 @@ observations for the Reduce pass to merge.
 
 - **Facet** — a term (+ synonyms) and the project `type` (`ciencia` /
   `producto` / `hibrido`).
-- **Assigned papers** — an explicit list of `Papers/P-XXXX ….md` note paths.
+- **Assigned papers** — an explicit list of at most 6 `Papers/P-XXXX ….md` note
+  paths (a larger facet is split across several of you).
   These are the notes whose `facets:` entry (the `matched:` record from
   ranking, persisted in the note) ties them to this facet. **Read only these.** Do not scan the rest of `Papers/`, do not open
   other projects, do not pull new sources.

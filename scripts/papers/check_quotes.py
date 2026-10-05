@@ -19,7 +19,11 @@ locator (`§3.2`, `Tabla 2`, `§Resumen` for the abstract). The locator is resol
 (`verifier_packet.resolve_citation`): the quote must be an exact substring of
 the units it points at, after collapsing whitespace — nothing else is
 normalised. An ellipsis (`…`, `...`, `[…]`) splits a quote into fragments that
-must all appear, in order, in the same unit.
+must all appear, in order, in the same unit; each fragment needs at least
+MIN_FRAGMENT_WORDS words, and each elided stretch must be short
+(MAX_ELISION_CHARS) and must not contain a negation or restriction (`not`,
+`never`, `without`, `only`, `except`, …) — an ellipsis shortens a sentence,
+it never joins distant ones or turns it into its opposite.
 
 A claim is kept only when it has at least one quote and every one of its
 quotes passes. A claim without a quote, or with any failing quote, is removed
@@ -52,6 +56,11 @@ from send_guard import is_flagged, is_model_notes  # noqa: E402, I001  (path set
 TOOL = "kairo/check_quotes@1.0.0"
 NOT_FOUND = "**No está en el corpus.**"
 MIN_WORDS = 4
+MIN_FRAGMENT_WORDS = 3          # with an ellipsis, each piece must say something on its own
+MAX_ELISION_CHARS = 300         # an ellipsis shortens a sentence; it does not join distant ones
+_NEGATION = re.compile(r"\b(?:not|no|never|neither|nor|cannot|without|fails?|failed|unlike|except|only|"
+                       r"unless|hardly|barely|no\s+longer|\w+n't|ni|nunca|sin|salvo|excepto|solo|sólo)\b",
+                       re.IGNORECASE)
 _ATTR = re.compile(r"^[—–-]{1,2}\s*\[{0,2}(P-\d{3,5})\]{0,2}\s+(.+?)\s*$")
 _ELLIPSIS = re.compile(r"\s*(?:\[\s*(?:…|\.\.\.)\s*\]|…|\.\.\.)\s*")
 _OPEN_CLOSE = "\"“”«»'‘’"
@@ -137,13 +146,38 @@ def list_papers(vault: str, project: str | None) -> list[dict]:
 
 
 def fragments_in(unit: str, frags: list[str]) -> bool:
-    pos = 0
-    for f in frags:
-        i = unit.find(f, pos)
+    return elision_problem(unit, frags) is None
+
+
+def elision_problem(unit: str, frags: list[str]) -> str | None:
+    """None when the fragments appear in order in `unit` and every elision is
+    honest: short (≤ MAX_ELISION_CHARS) and not dropping a negation or a
+    restriction, which would turn the paper's sentence into its opposite.
+    Otherwise the reason. Each placement of the first fragment is tried."""
+    if not frags:
+        return "cita vacía"
+    first, reason = 0, "el texto citado no aparece literalmente"
+    while True:
+        i = unit.find(frags[0], first)
         if i < 0:
-            return False
-        pos = i + len(f)
-    return True
+            return reason
+        pos, why = i + len(frags[0]), None
+        for f in frags[1:]:
+            j = unit.find(f, pos)
+            if j < 0:
+                why = why or "el texto citado no aparece literalmente"
+                break
+            gap = unit[pos:j]
+            if len(gap) > MAX_ELISION_CHARS:
+                why = f"la elisión «…» salta {len(gap)} caracteres (máximo {MAX_ELISION_CHARS})"
+                break
+            if _NEGATION.search(gap):
+                why = f"la elisión «…» omite «{_NEGATION.search(gap).group(0)}»: invierte o restringe el sentido"
+                break
+            pos = j + len(f)
+        if why is None:
+            return None
+        reason, first = why, i + 1
 
 
 def check_quote(vault: str, q: dict, project: str | None) -> dict:
@@ -152,6 +186,8 @@ def check_quote(vault: str, q: dict, project: str | None) -> dict:
     frags = [ws(f) for f in _ELLIPSIS.split(q["quote"]) if ws(f)]
     if sum(len(f.split()) for f in frags) < MIN_WORDS:
         return {**q, "ok": False, "reason": f"cita demasiado corta (menos de {MIN_WORDS} palabras)"}
+    if len(frags) > 1 and any(len(f.split()) < MIN_FRAGMENT_WORDS for f in frags):
+        return {**q, "ok": False, "reason": f"con «…», cada fragmento necesita al menos {MIN_FRAGMENT_WORDS} palabras"}
     res = resolve_citation(vault, q["paper"], q["locator"])
     if not res["source"]:
         return {**q, "ok": False, "reason": res["note"] or "paper no disponible"}
@@ -161,10 +197,16 @@ def check_quote(vault: str, q: dict, project: str | None) -> dict:
         return {**q, "ok": False, "reason": "el texto fuente no es del paper: " + "; ".join(res["provenance"])}
     if not res["units"]:
         return {**q, "ok": False, "reason": res["note"] or "el localizador no señala ningún texto"}
+    why = None
     for unit in res["units"]:
-        if fragments_in(ws(unit.removeprefix("[## Resumen]\n")), frags):
+        problem = elision_problem(ws(unit.removeprefix("[## Resumen]\n")), frags)
+        if problem is None:
             return {**q, "ok": True, "reason": None, "source": res["source"]}
-    return {**q, "ok": False, "reason": f"el texto citado no aparece literalmente en {q['paper']} {q['locator']}"}
+        if "no aparece" not in problem:
+            why = problem                       # found, but the elision is not honest: say how
+    return {**q, "ok": False,
+            "reason": f"{why} ({q['paper']} {q['locator']})" if why else
+            f"el texto citado no aparece literalmente en {q['paper']} {q['locator']}"}
 
 
 def check(vault: str, answer: str, project: str | None) -> dict:

@@ -23,8 +23,24 @@ section numbers and the locators themselves are not numbers to check. A
 number that is in none of the cited texts is the fingerprint of a figure
 moved from one paper to another, or invented.
 
+A multiplier (`3×`, `8x`) is a number to check whatever its size, and must
+appear in the cited text as a multiplier (`3×`, `3x`, `3 times`, `3-fold`).
+
+Tables are checked too. A row that cites (`P-0007 Tabla 2`) is checked like a
+sentence. In a table whose header names papers (`| concepto | P-0007 | P-0012 |`,
+the *Matriz de conceptos*), each cell is checked against its column's paper:
+every number in it must appear in that paper's text, and a cell with content
+but no locator of its own is listed as without locator.
+
 A citation without a locator (`P-0007` alone) is listed, not failed: the rule
 is "a locator where possible".
+
+None of this checks that a sentence says what its source says — only that its
+locators and figures are real. `--packet FILE [--section "<heading>"]` writes
+the fresh-verifier packet for that: every cited sentence (or row) of the
+document, or of one `##` section, as an `Afirmación` followed by the verbatim
+text its locators point at, built by the verifier's own renderer. The
+fresh-verifier then hunts the sentences the source does not support.
 
 With `--write`, each failing citation / number is marked in place with a
 visible «⚠ …» after it; nothing is removed. Prints a JSON report.
@@ -44,13 +60,26 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "ledger"))
 from check_quotes import paper_projects  # noqa: E402
-from verifier_packet import find_paper, fm_scalar, read_text, resolve_citation, split_frontmatter  # noqa: E402
+from send_guard import is_flagged, is_model_notes  # noqa: E402, I001  (path set by verifier_packet)
+from verifier_packet import (  # noqa: E402
+    TOOL_ID as VERIFIER_PACKET_ID,
+    body_sections,
+    find_paper,
+    fm_scalar,
+    read_text,
+    render_justification,
+    resolve_citation,
+    split_frontmatter,
+)
 
-TOOL = "kairo/check_sota@1.0.0"
+TOOL = "kairo/check_sota@1.1.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
-NUMBER = re.compile(r"(?<![\w.§-])[-−]?\d[\d,.]*(?:\s*%|\s*×\s*10\^?[-−]?\d+|e[-−]?\d+)?(?![\w])")
+NUMBER = re.compile(r"(?<![\w.§-])[-−]?\d[\d,.]*"
+                    r"(?:\s*%|\s*×\s*10\^?[-−]?\d+|e[-−]?\d+|\s*[×x](?![\w\d]))?(?![\w])")
+MULT = re.compile(r"\s*[×x]$")
+HEADER_PAPER = re.compile(r"^\[{0,2}(P-\d{4,5})\]{0,2}$")
 BAD_STATUS = {"mismatch": "referencia en conflicto (resolution_status: mismatch)",
               "retracted": "paper retractado", "withdrawn": "paper retirado"}
 
@@ -75,8 +104,11 @@ def numbers(sentence: str) -> list[str]:
     out = []
     for m in NUMBER.finditer(s):
         tok = m.group(0).strip().rstrip(".,")
-        digits = re.sub(r"[^\d.]", "", tok.split("×")[0]).strip(".")
+        digits = re.sub(r"[^\d.]", "", re.split(r"[×x]", tok)[0]).strip(".")
         if not digits:
+            continue
+        if MULT.search(tok):
+            out.append(tok)                   # a multiplier is a result whatever its size
             continue
         is_int = "." not in digits and "%" not in tok and "×" not in tok and "e" not in tok.lower()
         if is_int and (int(digits.replace(".", "") or 0) < 10 or re.fullmatch(r"(?:19|20)\d{2}", digits)):
@@ -93,6 +125,10 @@ def _canon(tok: str) -> str:
 
 def number_in(tok: str, texts: list[str]) -> bool:
     want = _canon(tok)
+    if MULT.search(tok):
+        core = re.sub(r"[^\d.]", "", MULT.sub("", tok))
+        rx = re.compile(rf"(?<![\d.]){re.escape(core)}\s*(?:×|x\b|times\b|-?fold\b|veces\b)", re.IGNORECASE)
+        return any(rx.search(re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)) for t in texts)
     core = re.sub(r"[^\d.]", "", want.split("×")[0])
     for t in texts:
         canon = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t.replace("−", "-")).replace(" ", "").replace(" ", "")
@@ -101,49 +137,160 @@ def number_in(tok: str, texts: list[str]) -> bool:
     return False
 
 
-def check(vault: str, project: str | None, text: str) -> dict:
-    report = {"tool": TOOL, "citations": 0, "without_locator": [], "problems": [], "numbers_checked": 0}
-    for start, end, block in blocks(text):
-        cites = list(CITE.finditer(block))
-        if not cites:
+def tables(text: str) -> list[dict]:
+    """Every Markdown table body row: its span, cells and the header's cells."""
+    out = []
+    lines = text.splitlines(keepends=True)
+    starts, pos = [], 0
+    for ln in lines:
+        starts.append(pos)
+        pos += len(ln)
+    i = 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith("|") and i + 1 < len(lines) \
+                and re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lines[i + 1]) and "-" in lines[i + 1]:
+            header = _cells(lines[i])
+            j = i + 2
+            while j < len(lines) and lines[j].lstrip().startswith("|"):
+                row = lines[j].rstrip("\r\n")
+                out.append({"start": starts[j], "end": starts[j] + len(row), "row": row,
+                            "cells": _cells(row), "header": header})
+                j += 1
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _cells(row: str) -> list[str]:
+    s = row.strip()
+    s = s[1:] if s.startswith("|") else s
+    s = s[:-1] if s.endswith("|") else s
+    return [c.strip() for c in re.split(r"(?<!\\)\|", s)]
+
+
+def paper_text(vault: str, pid: str) -> list[str] | None:
+    """The paper's own text (## Resumen + ## Texto completo), or None if it may not be read."""
+    path = find_paper(vault, pid)
+    if not path or is_model_notes(Path(path).resolve()) or is_flagged(Path(path)):
+        return None
+    secs = dict(body_sections(split_frontmatter(read_text(path))[1]))
+    return [secs.get("Resumen", ""), secs.get("Texto completo", "")]
+
+
+def cited_units(vault: str, project: str | None, block: str, start: int, report: dict) -> tuple[list, list[str]]:
+    """Check every citation in `block`; return (its matches, the text they point at)."""
+    cites = list(CITE.finditer(block))
+    units: list[str] = []
+    for m in cites:
+        pid, span = m.group(1), m.group(2).strip(" ,;")
+        report["citations"] += 1
+        where = {"citation": m.group(0).strip(), "offset": start + m.end()}
+        path = find_paper(vault, pid)
+        if not path:
+            report["problems"].append({**where, "severity": "crítico", "reason": f"{pid} no existe en Papers/"})
             continue
-        units: list[str] = []
-        for m in cites:
-            pid, span = m.group(1), m.group(2).strip(" ,;")
-            report["citations"] += 1
-            where = {"citation": m.group(0).strip(), "offset": start + m.end()}
-            path = find_paper(vault, pid)
-            if not path:
-                report["problems"].append({**where, "severity": "crítico", "reason": f"{pid} no existe en Papers/"})
-                continue
-            fm, _ = split_frontmatter(read_text(path))
-            if project and project not in paper_projects(vault, pid):
-                report["problems"].append({**where, "severity": "importante",
-                                           "reason": f"{pid} no es un paper del proyecto {project}"})
-            status = (fm_scalar(fm, "resolution_status") or "").strip()
-            if status in BAD_STATUS:
-                report["problems"].append({**where, "severity": "crítico", "reason": BAD_STATUS[status]})
-            if not span:
-                report["without_locator"].append(pid)
-                res = resolve_citation(vault, pid, "§Resumen")
-                units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
-                continue
-            res = resolve_citation(vault, pid, span)
-            if res["note"] and not res["units"]:
-                report["problems"].append({**where, "severity": "crítico",
-                                           "reason": f"el localizador no señala texto: {res['note']}"})
-            if res["provenance"]:
-                report["problems"].append({**where, "severity": "crítico",
-                                           "reason": "el texto citado no es del paper: " + "; ".join(res["provenance"])})
+        fm, _ = split_frontmatter(read_text(path))
+        if project and project not in paper_projects(vault, pid):
+            report["problems"].append({**where, "severity": "importante",
+                                       "reason": f"{pid} no es un paper del proyecto {project}"})
+        status = (fm_scalar(fm, "resolution_status") or "").strip()
+        if status in BAD_STATUS:
+            report["problems"].append({**where, "severity": "crítico", "reason": BAD_STATUS[status]})
+        if not span:
+            report["without_locator"].append(pid)
+            res = resolve_citation(vault, pid, "§Resumen")
             units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
-        for tok in numbers(block):
-            report["numbers_checked"] += 1
-            if not number_in(tok, units):
-                report["problems"].append({"citation": ", ".join(c.group(0).strip() for c in cites),
-                                           "offset": end, "severity": "importante", "number": tok,
-                                           "reason": f"la cifra «{tok}» no aparece en el texto citado"})
+            continue
+        res = resolve_citation(vault, pid, span)
+        if res["note"] and not res["units"]:
+            report["problems"].append({**where, "severity": "crítico",
+                                       "reason": f"el localizador no señala texto: {res['note']}"})
+        if res["provenance"]:
+            report["problems"].append({**where, "severity": "crítico",
+                                       "reason": "el texto citado no es del paper: " + "; ".join(res["provenance"])})
+        units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
+    return cites, units
+
+
+def check_numbers(block: str, units: list[str], citation: str, offset: int, report: dict) -> None:
+    for tok in numbers(block):
+        report["numbers_checked"] += 1
+        if not number_in(tok, units):
+            report["problems"].append({"citation": citation, "offset": offset, "severity": "importante",
+                                       "number": tok, "reason": f"la cifra «{tok}» no aparece en el texto citado"})
+
+
+def check_tables(vault: str, project: str | None, text: str, report: dict) -> None:
+    for t in tables(text):
+        cols = {i: m.group(1) for i, h in enumerate(t["header"]) if (m := HEADER_PAPER.match(h))}
+        if CITE.search(t["row"]):
+            cites, units = cited_units(vault, project, t["row"], t["start"], report)
+            check_numbers(t["row"], units, ", ".join(c.group(0).strip() for c in cites), t["end"], report)
+            report["table_rows_checked"] += 1
+            continue
+        if not cols:
+            continue                      # a table that cites nothing is not a claim about papers
+        report["table_rows_checked"] += 1
+        for i, pid in cols.items():
+            cell = t["cells"][i] if i < len(t["cells"]) else ""
+            if not cell or cell in ("—", "-", "–"):
+                continue
+            report["without_locator"].append(pid)
+            src = paper_text(vault, pid)
+            if src is None:
+                report["problems"].append({"citation": pid, "offset": t["end"], "severity": "crítico",
+                                           "reason": f"{pid} (columna de la tabla) no existe o no se puede leer"})
+                continue
+            check_numbers(cell, src, f"{pid} (columna)", t["end"], report)
+
+
+def check(vault: str, project: str | None, text: str) -> dict:
+    report = {"tool": TOOL, "citations": 0, "without_locator": [], "problems": [], "numbers_checked": 0,
+              "table_rows_checked": 0}
+    for start, end, block in blocks(text):
+        if not CITE.search(block):
+            continue
+        cites, units = cited_units(vault, project, block, start, report)
+        check_numbers(block, units, ", ".join(c.group(0).strip() for c in cites), end, report)
+    check_tables(vault, project, text, report)
     report["without_locator"] = sorted(set(report["without_locator"]))
     return report
+
+
+def section_text(text: str, heading: str | None) -> str:
+    """The document (frontmatter dropped), or one `## heading` section of it."""
+    m = re.match(r"^---\n.*?\n---\n", text, re.S)
+    body = text[m.end():] if m else text
+    if heading is None:
+        return body
+    parts = re.split(r"(?m)^## ", body)
+    for part in parts[1:]:
+        title, _, rest = part.partition("\n")
+        if title.strip() == heading.strip():
+            return rest
+    raise ValueError(f"no '## {heading}' section")
+
+
+def support_packet(vault: str, text: str, label: str, heading: str | None) -> tuple[str, dict]:
+    """The fresh-verifier packet for a synthesis: every cited sentence or table row
+    as an Afirmación, each followed by the verbatim text its locators point at."""
+    body = section_text(text, heading)
+    claims = [" ".join(b.split()) for _, _, b in blocks(body) if CITE.search(b)]
+    claims += [t["row"].strip() for t in tables(body) if CITE.search(t["row"])]
+    manifest: dict = {"tool": VERIFIER_PACKET_ID, "built_by": TOOL,
+                      "scope": f"section:{heading}" if heading else "note",
+                      "sources": [{"path": label, "role": "note"}], "citations": [], "analysis_outputs": []}
+    out = [f"# Paquete de verificación ({VERIFIER_PACKET_ID})", "",
+           f"- Nota verificada: {label}", f"- Alcance: {manifest['scope']}",
+           "- Contenido: solo las frases citadas de una síntesis del estado del arte, cada una con el texto "
+           "fuente que su localizador señala. Busca frases que su fuente no respalda (atribución, dirección, "
+           "condiciones, cifras, fuerza de la afirmación).", "",
+           f"## Nota: {label}", "", "### Justificación (evidencia citada)", ""]
+    text_claims = "\n".join("- " + c.lstrip("-* ").strip() for c in claims)
+    out += render_justification(vault, text_claims, manifest) if claims else ["(ninguna frase citada)", ""]
+    manifest["assertions"] = len(claims)
+    return "\n".join(out).rstrip() + "\n", manifest
 
 
 def mark(text: str, problems: list[dict]) -> str:
@@ -163,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--project-dir", required=True)
     ap.add_argument("--file", default="Estado-del-arte.md")
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--packet", help="write the fresh-verifier support packet here instead of checking")
+    ap.add_argument("--section", help="with --packet: only this ## section (heading text, without '## ')")
     a = ap.parse_args(argv)
     pdir = Path(a.vault, a.project_dir)
     f = pdir / a.file if not Path(a.file).is_absolute() else Path(a.file)
@@ -171,6 +320,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     hub = pdir / "_hub.md"
     project = fm_scalar(split_frontmatter(read_text(str(hub)))[0], "id") if hub.is_file() else None
+    if a.packet:
+        try:
+            packet, manifest = support_packet(a.vault, f.read_text(encoding="utf-8"),
+                                              f"{Path(a.project_dir).name}/{f.name}", a.section)
+        except (OSError, ValueError) as e:
+            print(json.dumps({"tool": TOOL, "error": str(e)}, ensure_ascii=False))
+            return 2
+        Path(a.packet).write_text(packet, encoding="utf-8", newline="\n")
+        print(json.dumps({"tool": TOOL, "packet": a.packet, "assertions": manifest["assertions"],
+                          "citations": len(manifest["citations"])}, ensure_ascii=False, indent=2))
+        return 0
     try:
         text = f.read_text(encoding="utf-8")
         report = check(a.vault, project, text)

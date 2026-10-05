@@ -152,7 +152,7 @@ table the letters in the notes refer to). Never retype any of them.
 | `paper_ingestion` | Behavior |
 |---|---|
 | `manual` | Present the full ranked list with the one-sentence justification per candidate. **Wait** for the user to pick which to ingest. Ingest nothing until they answer. |
-| `autonomo` | **Auto-accept** candidates that clear the strong-match bar *and* whose similarity to Propósito is high (default ≈ 0.8). Ingest those. For every remaining candidate, list it with its justification as a notification — do **not** block, do **not** ingest it. |
+| `autonomo` | **Auto-accept** exactly the candidates that `screened.json` shows as included with `relevance: alta` **and** whose `facets` record names every facet of the plan — a rule anyone can re-apply to the file, never a similarity you estimate. Ingest those. For every remaining included candidate, list it with its justification as a notification — do **not** block, do **not** ingest it. |
 
 The confirmed set = user picks (`manual`) or auto-accepted set (`autonomo`).
 
@@ -196,14 +196,22 @@ records, **never typed or pasted by the model**. For each confirmed paper:
 2. **More facets.** `--facet` records one facet; for each other facet in the
    candidate's `facets` record (from `screened.json`) run
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py" --vault <vault> --add <P-id> --project <PROJ-XXX> --facet <letter> --matched "<term>"`.
-3. **Not on arXiv, open-access PDF.** Download it (never through a site's
-   bot protection — a 403 from a publisher is a no: the researcher adds that
-   PDF by hand), run `pdftotext -enc UTF-8 <pdf> <txt>`, and ingest with
-   `--doi <doi> --pdf-text <txt> --source-url <pdf url>`. No open full text
-   at all → the script writes `No disponible — solo abstract.` and
-   `fulltext: abstract-only`; list it in the creation report as «sin texto:
-   hace falta el PDF». An abstract no source returned stays
-   `No disponible — ningún abstract recuperado (…)`.
+3. **Not on arXiv.** `--doi` does two things on its own: a DOI whose OpenAlex
+   work lists an arXiv preprint is anchored on that preprint (its open text;
+   the DOI is kept as `published_doi` — `--keep-doi-anchor` prevents it), and
+   otherwise the open-access PDF OpenAlex names is fetched and converted when
+   the server hands a script a real PDF (a landing page, a 403 or a bot check
+   is a no, never worked around). When neither works but the researcher has
+   the PDF, run `pdftotext -enc UTF-8 <pdf> <txt>` and ingest with
+   `--doi <doi> --pdf-text <txt> --source-url <pdf url>`. **A paper with no
+   DOI and no arXiv id** (many USENIX / workshop papers) is ingested from its
+   OpenAlex work: `--openalex W…` (the candidate's `url` in `screened.json`
+   holds it when OpenAlex found it). No open full text at all → the script
+   writes `No disponible — solo abstract.` and `fulltext: abstract-only`; list
+   it in the creation report as «sin texto: hace falta el PDF». An abstract no
+   source returned stays `No disponible — ningún abstract recuperado (…)`.
+   Ingestion takes a per-vault lock, so papers may be ingested one after the
+   other or in parallel calls: they never share a P-id.
 4. **Zotero (optional).** When Zotero is reachable (see the plugin README →
    "Zotero"), add the item from the script's own `csl` output (never from
    anything you wrote): Better BibTeX `item.search` by DOI / arXiv id / title
@@ -318,7 +326,10 @@ leave it out of the map and list it in the end-of-run message as `importante`
 researcher can add the entry with `--add`. Then **dispatch one `facet-summarizer` subagent per
 facet, all launched together in the same turn** (exception: if the prompt says memory is low and subagents go **one at a time**, launch each and wait for its answer before the next), each given its facet + the
 explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
-`type`. **Never assign a `send: never` note** (check the candidate list with
+`type`. **A facet with more than 6 papers is split:** one `facet-summarizer` per
+chunk of at most 6 of its papers (same facet, disjoint lists), so every paper
+is actually read within one subagent's turns; the Reduce pass merges chunks of
+a facet like any two contributions. **Never assign a `send: never` note** (check the candidate list with
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <paths…>`;
 exit 3 names the flagged ones): it stays in `Papers/` but contributes nothing to
 the map, and the end-of-run message lists it as `menor` (`P-XXXX omitida del
@@ -368,8 +379,10 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/check_sota.py" --vault <vault> --pr
 ```
 
 It resolves every `P-XXXX <locator>` with the fresh-verifier's resolver and
-checks every number in a cited sentence against the text the locators point
-at. Exit 0 = clean. Exit 3 = problems: for each one, re-open the cited
+checks every number in a cited sentence — and in every table: a row that
+cites, and each cell of a table whose header names papers (the *Matriz de
+conceptos*) against its column's paper — against the text the locators point
+at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: for each one, re-open the cited
 heading in the paper note and either fix the locator / figure to what the
 paper says or drop the sentence; then run it again. If a problem cannot be
 resolved (the paper does not say it anywhere you can find), drop the
@@ -377,6 +390,23 @@ sentence — never leave a figure the cited text does not contain. Only as a
 last resort, `--write` marks the remaining ones «⚠ …» in place, and the
 end-of-run message lists them as `importante`. Citations without a locator
 are listed, not failed; prefer adding one.
+
+**Then check that each sentence says what its source says (a gate too).**
+`check_sota.py` proves locators and figures are real, not that a paraphrase is
+faithful. For each `##` section with citations, build the support packet and
+dispatch one `fresh-verifier` per section, all in the same turn:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/check_sota.py" --vault <vault> --project-dir Projects/<slug> \
+  --packet <tmp>/sota-<n>.md --section "<heading>"
+```
+
+Pass the verifier the packet file's content and nothing else. Every
+`errors_found` finding names an `Afirmación`: re-open its source and fix the
+sentence to what the text says, or drop it, then re-run `check_sota.py`. A
+`cannot_assess` is listed in the end-of-run message as `importante`. Record
+the verdicts in the frontmatter's `verifications:` list (one entry per section,
+`scope: section:<heading>`).
 
 **The Búsqueda ejecutada block** is the run's `busqueda.md`, appended
 unchanged (never retyped). **If it starts with `## ⚠️ Cobertura degradada`**
@@ -423,8 +453,10 @@ applies to merging subagent contributions.
 **Optional appendix — `## Matriz de conceptos`.** When the ingested set is large
 enough to be hard to hold in the head (roughly **> 15 papers**), add a concept ×
 paper table: concepts (the recurring claims / mechanisms / definitions) as rows,
-paper ids as columns, each cell = one phrase for what that paper says about that
-concept (blank = doesn't address it). Skip this appendix entirely for smaller
+paper ids as columns (the header cells are bare ids, `| concepto | P-0007 | P-0012 |`),
+each cell = one phrase for what that paper says about that concept plus its
+locator (`… — §4.2`), blank = doesn't address it. `check_sota.py` checks every
+number in a cell against that column's paper. Skip this appendix entirely for smaller
 sets — a 6-paper matrix is noise, not signal.
 
 Also append the **Búsqueda ejecutada** block — step 4's `busqueda.md`,
@@ -668,8 +700,10 @@ When a paper is already ingested for another project, only append this project's
   cited text does not contain is dropped or corrected, never kept.
 - **Running the patent facet for a `ciencia` project.** Only `producto`/`hibrido`.
 - **Ingesting papers in `manual` mode before the user answers.** Wait.
-- **In `autonomo` mode, silently dropping the low-similarity tail.** Auto-accept
-  the strong matches, but still *list* the rest as a notification.
+- **In `autonomo` mode, silently dropping the rest.** Auto-accept only the
+  `alta` + every-facet candidates, but still *list* the rest as a notification.
+- **Inventing a threshold.** A cut-off the session estimates ("similarity ≈
+  0.8") is not reproducible; use the rule in step 5, which reads the file.
 - **Uncited claims in `Estado-del-arte.md`.** Every claim needs a paper id +
   location. Drop it or find the source.
 - **Citing a section from memory of a similar earlier citation instead of

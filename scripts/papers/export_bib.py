@@ -12,7 +12,13 @@ filled from the fetched records (never typed by a model). One entry per note:
   - a preprint with a known published version (`published_doi`,
     `published_venue`) is exported as that version, with the arXiv id kept as
     `eprint` — cite what was peer-reviewed, keep the link to the text you read;
-  - `keywords = {kairo:P-XXXX}` ties each entry back to its note.
+  - `keywords = {kairo:P-XXXX}` ties each entry back to its note;
+  - the entry type follows the type the publisher registered (`venue_type`:
+    Crossref `journal-article` / `proceedings-article` / …, OpenAlex source
+    `journal` / `conference`); only a note without one falls back to reading
+    the venue's name (PNAS, Proceedings of the IEEE and the like are journals);
+  - `volume`, `number` and `pages` come with the published record when it has
+    them; math in a title (`$[[n,k,d]]$`) is kept as LaTeX, never escaped.
 
 A `send: never` note is never read: it is reported by id only. A note whose
 reference is in conflict, retracted or withdrawn (`resolution_status`) is
@@ -36,11 +42,23 @@ sys.path.insert(0, str(HERE.parent / "security"))
 import vaultnotes as vn  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/export_bib@1.0.0"
+TOOL = "kairo/export_bib@1.1.0"
 WARN = {"mismatch": "ATENCIÓN: referencia en conflicto en Kairo (resolution_status: mismatch); no citar sin revisar",
         "retracted": "ATENCIÓN: paper RETRACTADO", "withdrawn": "ATENCIÓN: preprint RETIRADO por sus autores"}
 PROCEEDINGS = re.compile(r"\b(proc(?:eedings)?|conference|symposium|workshop|SC\d*|IPDPS|ISC|NeurIPS|ICML|ICLR|"
-                         r"MLSys|OSDI|NSDI|SOSP|PPoPP|HPDC|ICS|QCE|QIP|CVPR|ACL|EMNLP|AAAI)\b", re.I)
+                         r"MLSys|OSDI|NSDI|SOSP|PPoPP|HPDC|ICS|QCE|QIP|CVPR|ACL|EMNLP|AAAI|"
+                         r"Advances in Neural Information Processing Systems)\b", re.I)
+# venues named "Proceedings …" that are journals
+JOURNAL_PROCEEDINGS = re.compile(r"\b(?:Proc(?:eedings|\.)?\s+(?:of\s+)?(?:the\s+)?(?:National Academy|IEEE\b|"
+                                 r"(?:the\s+)?Royal Society|R\.\s*Soc|Natl\.?\s*Acad|Japan Academy|"
+                                 r"the American Mathematical Society|Amer\.?\s*Math)|PNAS\b)", re.I)
+TYPE_ENTRY = {"journal-article": "article", "journal": "article", "article": "article",
+              "proceedings-article": "inproceedings", "conference": "inproceedings",
+              "book-chapter": "incollection", "book-section": "incollection", "book": "book",
+              "monograph": "book", "dissertation": "phdthesis", "report": "techreport",
+              "posted-content": "misc", "repository": "misc"}
+VENUE_FIELD = {"article": "journal", "inproceedings": "booktitle", "incollection": "booktitle",
+               "book": "publisher", "phdthesis": "school", "techreport": "institution"}
 
 
 def _latex(s: str) -> str:
@@ -51,8 +69,15 @@ def _latex(s: str) -> str:
 
 
 def _protect(title: str) -> str:
-    """Keep acronyms and capitalised technical words (qLDPC, GPU, BP-OSD) as written."""
-    return re.sub(r"\b(\w*[A-Z]\w*[A-Z0-9]\w*|[A-Z][a-z]*\d\w*)\b", r"{\1}", _latex(title))
+    """Keep acronyms and capitalised technical words (qLDPC, GPU, BP-OSD) as written;
+    `$…$` math is passed through untouched (it is already LaTeX)."""
+    out = []
+    for i, part in enumerate(re.split(r"(\$[^$]+\$)", title)):
+        if i % 2:
+            out.append("{" + part + "}")
+        else:
+            out.append(re.sub(r"\b(\w*[A-Z]\w*[A-Z0-9]\w*|[A-Z][a-z]*\d\w*)\b", r"{\1}", _latex(part)))
+    return "".join(out)
 
 
 def _surname(author: str) -> str:
@@ -73,7 +98,8 @@ def note_meta(fm: list[str]) -> dict:
             "year": g("year"), "venue": g("venue"), "doi": g("doi"), "arxiv": g("arxiv"),
             "arxiv_version": g("arxiv_version"), "url": g("url"), "published_doi": g("published_doi"),
             "published_venue": g("published_venue"), "published_year": g("published_year"),
-            "zotero_key": g("zotero_key"),
+            "zotero_key": g("zotero_key"), "venue_type": g("venue_type"), "volume": g("volume"),
+            "issue": g("issue"), "pages": g("pages"), "openalex": g("openalex"),
             "status": g("resolution_status"), "source": g("source")}
 
 
@@ -83,6 +109,11 @@ def entry_type(m: dict) -> tuple[str, str | None]:
         return "patent", None
     if not venue:
         return "misc", None
+    kind = TYPE_ENTRY.get((m.get("venue_type") or "").lower())
+    if kind and kind != "misc":
+        return kind, VENUE_FIELD.get(kind)
+    if JOURNAL_PROCEEDINGS.search(venue):
+        return "article", "journal"
     return ("inproceedings", "booktitle") if PROCEEDINGS.search(venue) else ("article", "journal")
 
 
@@ -104,6 +135,9 @@ def bibtex_entry(m: dict, key: str) -> str:
               ("year", "{" + str(year) + "}")]
     if venue_field and venue:
         fields.append((venue_field, "{" + _latex(venue) + "}"))
+    for src, dst in (("volume", "volume"), ("issue", "number"), ("pages", "pages")):
+        if m.get(src) and kind != "misc":
+            fields.append((dst, "{" + _latex(m[src]) + "}"))
     if doi:
         fields.append(("doi", "{" + doi + "}"))
     if m.get("arxiv"):
@@ -123,7 +157,8 @@ def bibtex_entry(m: dict, key: str) -> str:
 def csl_item(m: dict, key: str) -> dict:
     kind, _ = entry_type(m)
     item = {"id": key, "type": {"article": "article-journal", "inproceedings": "paper-conference",
-                                "misc": "article", "patent": "patent"}[kind],
+                                "incollection": "chapter", "book": "book", "phdthesis": "thesis",
+                                "techreport": "report", "misc": "article", "patent": "patent"}[kind],
             "title": m.get("title"),
             "author": [{"family": _surname(a), "given": (a.split(",", 1)[1].strip() if "," in a
                                                          else " ".join(a.split()[:-1]))} for a in m.get("authors") or []]}
@@ -136,6 +171,9 @@ def csl_item(m: dict, key: str) -> dict:
         item["container-title"] = venue
     if m.get("published_doi") or m.get("doi"):
         item["DOI"] = m.get("published_doi") or m.get("doi")
+    for src, dst in (("volume", "volume"), ("issue", "issue"), ("pages", "page")):
+        if m.get(src) and kind != "misc":
+            item[dst] = m[src].replace("--", "-")
     if m.get("arxiv"):
         item["number"] = f"arXiv:{m['arxiv']}"
     if m.get("status") in WARN:

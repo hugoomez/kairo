@@ -28,7 +28,7 @@ OPENALEX = {"id": "https://openalex.org/W444", "doi": "https://doi.org/10.0000/s
 
 CROSSREF = {"message": {"DOI": "10.0000/sc.444", "type": "proceedings-article", "title": ["Distributed Toy..."],
                         "container-title": ["Proceedings of the Invented SC Conference"],
-                        "issued": {"date-parts": [[2030, 11]]},
+                        "issued": {"date-parts": [[2030, 11]]}, "page": "1-12",
                         "relation": {"has-preprint": [{"id": "10.48550/arXiv.0000.44444", "id-type": "doi"}]}}}
 
 
@@ -83,6 +83,7 @@ class PaperCard(unittest.TestCase):
         # the publisher's record (Crossref) names the venue, before OpenAlex or arXiv
         self.assertIn("booktitle = {Proceedings of the Invented SC Conference}", card["bibtex"])
         self.assertIn("eprint = {0000.44444}", card["bibtex"])
+        self.assertIn("pages = {1--12}", card["bibtex"])           # from the publisher's record
 
     def test_markdown_names_a_failed_source(self):
         code, out = self.run_cli("--arxiv", "0000.44444", fetch=web(fail=("api.crossref.org",)))

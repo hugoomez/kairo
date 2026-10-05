@@ -83,7 +83,9 @@ format:
   `§3.2`, `Tabla 2`, `Fig 3`, `App. B`, `§Resumen` for the abstract.
 - Copy the quote exactly. Do not fix typos or translate. Use `[…]` for an
   omission; every fragment must still appear, in order, in the same section.
-  A quote needs at least four words.
+  A quote needs at least four words; with `[…]`, each fragment needs three, an
+  omission stays under 300 characters and never drops a negation or
+  restriction (`not`, `only`, `without`, `except`…) — the check refuses it.
 - Claims say only what the quotes say. When papers disagree, show both with
   their quotes, and do not pick a winner.
 - When the listed papers do not answer the question, the whole draft is:
