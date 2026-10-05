@@ -32,6 +32,13 @@ class TestPolicy(unittest.TestCase):
     def test_every_agent_and_tool_agrees_with_the_policy(self):
         self.assertEqual(mp.check(), [])
 
+    def test_agents_that_see_untrusted_paper_text_alone_are_isolated(self):
+        raw = mp.load()["tasks"]
+        for k in ("fresh_verifier", "devils_advocate", "novelty_judge"):
+            self.assertIs(raw[k].get("isolated"), True, k)
+            tools = mp._frontmatter_tools((ROOT / raw[k]["file"]).read_text(encoding="utf-8"))
+            self.assertTrue(tools and set(tools) <= mp.ISOLATED_TOOLS, k)
+
     def test_no_kairo_component_uses_haiku(self):
         for t in self.r["tasks"].values():
             self.assertNotIn("haiku", t["model"])
@@ -44,7 +51,7 @@ class TestPolicy(unittest.TestCase):
                   "adjudicate", "fresh_verifier", "devils_advocate", "sota_synthesizer", "novelty_judge"):
             self.assertEqual(tier[k], "opus", k)
         for k in ("create_project", "lit_watch", "project_chat", "ask_corpus", "digest", "run_local", "kaggle_prepare",
-                  "slurm_prepare", "run_analysis", "repo_health", "facet_searcher", "facet_summarizer", "second_critic",
+                  "slurm_prepare", "run_analysis", "repo_health", "facet_summarizer", "second_critic",
                   "evolve_program"):
             self.assertEqual(tier[k], "sonnet", k)
 
@@ -102,6 +109,27 @@ class TestSetTier(unittest.TestCase):
         f = self.root / "agents/fresh-verifier.md"
         f.write_text(f.read_text(encoding="utf-8").replace("model: claude-opus-5-5", "model: opus"), encoding="utf-8")
         self.assertTrue(any("fresh_verifier" in p for p in mp.check(self.root)))
+
+    def test_an_empty_tools_line_fails_the_check(self):
+        # `tools: ""` reads as "no tools" but Claude Code gives the agent every tool.
+        f = self.root / "agents/facet-summarizer.md"
+        f.write_text(f.read_text(encoding="utf-8").replace("tools: Read, Grep, Glob", 'tools: ""'), encoding="utf-8")
+        self.assertTrue(any("facet_summarizer" in p and "inherits every tool" in p for p in mp.check(self.root)))
+
+    def test_an_isolated_agent_with_a_file_or_shell_tool_fails_the_check(self):
+        for tools in ("CronList, Read", "Bash", "TaskList, WebFetch"):
+            f = self.root / "agents/fresh-verifier.md"
+            text = (ROOT / "agents/fresh-verifier.md").read_text(encoding="utf-8")
+            f.write_text(text.replace("tools: CronList, TaskList", f"tools: {tools}"), encoding="utf-8")
+            self.assertTrue(any("fresh_verifier" in p and "isolated" in p for p in mp.check(self.root)), tools)
+
+    def test_isolated_is_an_agent_flag(self):
+        toml = self.root / "config/models.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace(
+            'label = "Abogado del diablo (crítica)"', 'label = "Abogado del diablo (crítica)"\nisolated = true'),
+            encoding="utf-8")
+        with self.assertRaises(mp.Refused):
+            mp.load(toml)
 
     def test_cli(self):
         code = mp.main(["--root", str(self.root), "set", "--task", "critique", "--tier", "sonnet"])

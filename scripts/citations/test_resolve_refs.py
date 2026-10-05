@@ -692,3 +692,45 @@ class TestVersionsLinkedByArxiv(unittest.TestCase):
         records, oa = self.recs(cr_author="Ngozi Okafor")
         r = self.decide(records, oa)
         self.assertEqual(r.status, "mismatch")
+
+    def test_openalex_listing_the_preprint_as_a_location_links_the_versions(self):
+        # arXiv's record does NOT declare the DOI (most authors never add it),
+        # but OpenAlex merged the preprint into the published work
+        records, oa = self.recs(declare=False)
+        oa.raw["locations"] = [{"landing_page_url": "https://arxiv.org/abs/9999.00042v3"}]
+        self.assertTrue(rr.versions_linked(self.note, records))
+        r = self.decide(records, oa)
+        self.assertEqual((r.status, r.resolved), ("resolved", True))
+        self.assertTrue(any("OpenAlex lists the arXiv preprint" in f["message"] for f in r.flags))
+        oa.raw["locations"] = [{"landing_page_url": "https://arxiv.org/abs/9999.00999"}]   # another preprint
+        self.assertEqual(self.decide(records, oa).status, "mismatch")
+
+
+class TestPublishedVersion(unittest.TestCase):
+    """A note anchored on an arXiv preprint learns where the work was published."""
+
+    note = {**X, "id": "P-0060", "prev_status": None, "doi": None, "arxiv": "9999.00061"}
+
+    def test_from_arxiv_journal_ref_and_doi(self):
+        ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2021, id_key="arxiv:9999.00061",
+                 raw={"doi": "10.9999/jour.5", "journal_ref": "Invented Journal 12, 34 (2022)"})
+        self.assertEqual(rr.published_version(self.note, [ax]),
+                         {"doi": "10.9999/jour.5", "venue": "Invented Journal 12, 34 (2022)", "source": "arXiv"})
+
+    def test_from_an_openalex_journal_location(self):
+        oa = rec("openalex", X["title"], ["Marta Alvarez"], 2021, openalex_id="W61", found_by="arxiv-doi",
+                 id_key="arxiv:9999.00061",
+                 raw={"doi": "https://doi.org/10.9999/conf.61",
+                      "locations": [{"source": {"type": "repository", "display_name": "arXiv"}},
+                                    {"source": {"type": "conference", "display_name": "Invented Conf 2022"}}]})
+        self.assertEqual(rr.published_version(self.note, [oa])["venue"], "Invented Conf 2022")
+        r = rr.decide(self.note, [oa], oa, False, "clear", [], False, trace("openalex"))
+        r.published = rr.published_version(self.note, [oa])
+        f = rr.fields_for(r, "2031-01-01")
+        self.assertEqual((f["published_doi"], f["published_venue"]), ("10.9999/conf.61", "Invented Conf 2022"))
+
+    def test_a_note_with_its_own_doi_or_an_unpublished_preprint_gets_nothing(self):
+        ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2021, id_key="arxiv:9999.00061", raw={})
+        self.assertIsNone(rr.published_version(self.note, [ax]))
+        self.assertIsNone(rr.published_version({**self.note, "doi": "10.9999/own"},
+                                               [rec("arxiv", "t", [], 2021, raw={"doi": "10.9999/x"})]))

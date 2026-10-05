@@ -72,7 +72,8 @@ class Html(unittest.TestCase):
 
     def test_verbatim_math_footnote_and_damage(self):
         self.assertIn("We train on $50\\%$ of the data", self.body)
-        self.assertIn("[nota al pie: A footnote.]", self.body)
+        self.assertIn("of the data [nota al pie: A footnote.] and", self.body)   # marked once
+        self.assertNotIn("[nota al pie: [nota al pie:", self.body)
         self.assertIn("and [extracción dañada] here.", self.body)       # math with no LaTeX
         self.assertIn("$$ $t\\sim 1/\\lambda_{3}$ $$ (4)", self.body)
 
@@ -113,6 +114,92 @@ class Pdf(unittest.TestCase):
         for gone in ("ABSTRACTTEXT", "BIBENTRY", "arXiv:0000"):
             self.assertNotIn(gone, self.body)
         self.assertNotIn("\n\n7\n\n", self.body)
+
+
+# Physics / IEEE layout (invented text): Roman sections, lettered subsections,
+# "FIG." / "TABLE II." captions, upper-case REFERENCES, a table caption above its rows.
+PDF_ROMAN = """Invented Title For A Toy Code
+Some Author
+I. INTRODUCTION
+Toy stabilizer codes are introduced here in a sentence that is long enough to count as prose.
+II. TOY MODEL
+A. Definitions
+We define the toy check matrix with a sentence that is long enough to count as prose text.
+B. Decoder
+The toy decoder is a sentence-length description that counts as prose for this extractor.
+TABLE I. Logical error rates of the toy decoder.
+distance rate
+3 0.012
+5 0.004
+The table shows that the toy rate falls with the distance in this invented example text.
+FIG. 2. Threshold crossing of the toy curves.
+C. Not a heading because it ends with a period.
+III. CONCLUSION
+The toy conclusion is written as a full sentence that counts as prose in the extractor.
+REFERENCES
+[1] BIBENTRY.
+"""
+
+
+class PdfPhysicsStyle(unittest.TestCase):
+    def setUp(self):
+        self.body = vf.pdftext_to_body(PDF_ROMAN)
+
+    def test_roman_sections_and_lettered_subsections(self):
+        heads = [l for l in self.body.splitlines() if l.startswith("#")]
+        self.assertEqual(heads, ["### I. INTRODUCTION", "### II. TOY MODEL", "#### A. Definitions",
+                                 "#### B. Decoder", "### III. CONCLUSION"])
+        self.assertNotIn("Invented Title", self.body)            # front matter left out
+        self.assertNotIn("BIBENTRY", self.body)                  # upper-case REFERENCES cut
+
+    def test_table_rows_stay_under_their_caption(self):
+        self.assertIn("**Table 1 (TABLE I):** Logical error rates of the toy decoder.\n"
+                      + vf._PDF_TABLE_NOTE + "\ndistance rate\n3 0.012\n5 0.004", self.body)
+        self.assertIn("\n\nThe table shows that the toy rate falls", self.body)   # prose not glued on
+        self.assertIn("**Figure 2 (FIG. 2):** Threshold crossing of the toy curves.", self.body)
+
+    def test_the_resolver_reaches_roman_subsections_and_table_numbers(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
+        import verifier_packet as vp
+        units = vp.source_units(self.body)
+        dec = [u for u in units if vp.unit_matches(u, ("sec", "2.B"))]
+        self.assertTrue(dec and "toy decoder is a sentence" in dec[0]["text"])
+        tab = [u for u in units if vp.unit_matches(u, ("table", "1"))]
+        self.assertTrue(tab and "5 0.004" in tab[0]["text"])
+
+    def test_dotted_numbering_and_enumerations(self):
+        body = vf.pdftext_to_body("1. Introduction\nAn invented opening sentence that is long enough to be "
+                                  "prose.\n2. Methods\nAn invented methods sentence that is long enough to "
+                                  "be prose.\n2.1. Setup\nAn invented setup sentence that is long enough to "
+                                  "be prose here.\n7. Not a heading\n")
+        heads = [l for l in body.splitlines() if l.startswith("#")]
+        self.assertEqual(heads, ["### 1 Introduction", "### 2 Methods", "#### 2.1 Setup"])
+
+
+class Fetch(unittest.TestCase):
+    def test_ar5iv_text_is_never_given_the_latest_arxiv_version(self):
+        html = HTML.encode("utf-8")
+        calls = []
+
+        def fake(url):
+            calls.append(url)
+            if "/abs/" in url:
+                return 200, b"<a>[v1]</a> <a>[v3]</a>"
+            if "ar5iv" in url:
+                return 200, html
+            return 404, b""
+        orig = vf._get
+        vf._get = fake
+        try:
+            got = vf.fetch_arxiv("0000.00000", pause=0)
+            self.assertEqual(got["kind"], "ar5iv")
+            self.assertTrue(got["version"].startswith("desconocida"))
+            self.assertIn("v3", got["version"])
+            pinned = vf.fetch_arxiv("0000.00000", pause=0, version="v2")
+            self.assertIsNone(pinned)                 # v2 has no HTML/PDF here; ar5iv is skipped
+            self.assertTrue(all("ar5iv" not in u for u in calls[-2:]))
+        finally:
+            vf._get = orig
 
 
 class Build(unittest.TestCase):

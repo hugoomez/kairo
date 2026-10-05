@@ -141,8 +141,10 @@ silently as if the tool had run.
   would count against the claim? Unfalsifiable as written → *refinable*; if it
   can't be made falsifiable at all → clear fail.
 - **Novelty** (only if falsifiable): scope `literature-search` to the claim —
-  include the **patent facet only if the project `type` is `producto` or
-  `hibrido`**. If the claim is already established in the vault or the literature
+  a small plan (the claim's 1–3 facets, run directory in a temp folder, a
+  recent `from` if the claim is about recent work), screened only for "does
+  this report the same claim?"; include the **patent facet only if the
+  project `type` is `producto` or `hibrido`**. If the claim is already established in the vault or the literature
   (or already patented, for producto/hibrido) → clear fail. Adjacent-but-distinct
   → pass, and record the neighbours for the `Justificación`.
 

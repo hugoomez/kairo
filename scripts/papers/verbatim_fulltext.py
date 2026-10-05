@@ -15,10 +15,18 @@ Nothing is paraphrased or reconstructed:
     `[nota al pie: …]`. Math with no LaTeX, and LaTeXML error nodes, become
     `[extracción dañada]`. The abstract (already in `## Resumen`), front
     matter, navigation and bibliography are left out.
-  - PDF: prose lines as extracted (ligature glyphs → plain letters). A prose
-    line with garbled inline math keeps its words and gets
-    `[extracción dañada: fórmulas en línea]`; a run of symbol lines (equations,
-    figure-internal labels) becomes one `[extracción dañada] (…)`.
+  - PDF: prose lines as extracted (ligature glyphs → plain letters). Headings
+    numbered "3.2", "3.2.", Roman "II." with lettered "A." subsections, and
+    appendices; the text starts at the introduction and stops at
+    References / REFERENCES. A table's rows stay under its caption, verbatim
+    in pdftotext's reading order (columns not verified). A prose line with
+    garbled inline math keeps its words and gets
+    `[extracción dañada: fórmulas en línea]`; a run of other symbol lines
+    (equations, figure-internal labels) becomes one `[extracción dañada] (…)`.
+
+Every fetch goes through scripts/citations/net.py (per-host spacing, retries).
+ar5iv serves one snapshot with no version number: its text is recorded as of
+an unknown version, never as the latest arXiv version.
 
 The output starts with a `> Fuente:` line: URL, arXiv version, retrieval
 date, the sha256 of the exact bytes fetched, and the conversion rules.
@@ -44,12 +52,13 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-__version__ = "1.0.0"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
+import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
+
+__version__ = "1.1.0"   # 1.1.0: Roman/lettered PDF headings, PDF table rows, one footnote mark, net.py
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
@@ -123,6 +132,12 @@ def text_of(n) -> str:
         return ""
     if n.has("ltx_note_outer") or n.has("ltx_note"):
         inner = norm("".join(text_of(c) for c in n.children))
+        # LaTeXML nests ltx_note_outer inside ltx_note: mark the footnote once
+        p = n.parent
+        while p is not None and not (hasattr(p, "has") and (p.has("ltx_note") or p.has("ltx_note_outer"))):
+            p = getattr(p, "parent", None)
+        if p is not None:
+            return inner
         return f" [nota al pie: {inner}]" if inner else ""
     if n.tag == "img" or n.has("ltx_graphics"):
         return ""
@@ -293,6 +308,16 @@ def html_to_body(html_text: str) -> str:
 
 _LIG = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"}
 _PDF_HEAD = re.compile(r"^((?:\d+(?:\.\d+)*)|(?:[A-Z](?:\.\d+)*))\s+([A-Z][^.]{2,85})$")
+# "1. Introduction": the same numbering with a period after the number
+_PDF_HEAD_DOT = re.compile(r"^(\d+(?:\.\d+)*)\.\s+([A-Z][^.]{2,85})$")
+# Physics / IEEE style: "II. METHODS", lettered subsections "A. Decoders"
+_PDF_ROMAN = re.compile(r"^((?:X{0,3})(?:IX|IV|V?I{1,3}|V))\.\s+([A-Z][^.]{2,85})$")
+_PDF_LETTER = re.compile(r"^([A-Z])\.\s+([A-Z][^.]{2,85})$")
+_PDF_INTRO = re.compile(r"^(?:(?:1|I)\.?\s+)?INTRODUCTION$", re.IGNORECASE)
+_PDF_REFS = re.compile(r"^(?:References|Bibliography|REFERENCES|BIBLIOGRAPHY)$")
+_PDF_TABLE_NOTE = "[filas de la tabla tal como las extrae pdftotext, en su orden; columnas no verificadas]"
+_ROMANS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV",
+           "XVI", "XVII", "XVIII", "XIX", "XX"]
 
 
 def _lig(s: str) -> str:
@@ -315,42 +340,125 @@ def _title_ok(title: str) -> bool:
     return len(re.findall(r"[A-Za-z]{4,}", title)) >= 1
 
 
-def pdftext_to_body(txt: str, start: str = "1 Introduction") -> str:
+def _num_heading(num: str, title: str) -> str:
+    return ("###", "####", "#####", "#####")[min(num.count("."), 3)] + f" {num} {title}"
+
+
+def _pdf_heading(s: str, st: dict) -> str | None:
+    """The `###` heading a pdftotext line opens, or None. Numbered ("3.2 Title",
+    "3.2. Title"), Roman ("II. METHODS") with lettered subsections ("A. Decoders"),
+    and appendices ("A Title", "Appendix A: Title"); Roman, lettered and dotted
+    numbers must follow on from the previous one, so an enumeration is not a heading."""
+    if s.endswith(".") or len(s) >= 95:
+        return None
+    m = re.match(r"^(?:APPENDIX|Appendix)\s+([A-Z])(?:[:.]\s*|\s+)(.*)$", s)
+    if m and (not st["app"] or m.group(1) >= st["app"]):
+        st.update(app=m.group(1), roman=st["roman"], in_roman=False)
+        return f"### Appendix {m.group(1)}: {m.group(2)}".rstrip(": ")
+    m = _PDF_ROMAN.match(s)
+    if m and _title_ok(m.group(2)) and st["roman"] < len(_ROMANS) and m.group(1) == _ROMANS[st["roman"]]:
+        st["roman"] += 1
+        st.update(letter="", in_roman=True)
+        return f"### {m.group(1)}. {m.group(2)}"
+    if st["in_roman"]:
+        m = _PDF_LETTER.match(s)
+        nxt = chr(ord(st["letter"]) + 1) if st["letter"] else "A"
+        if m and _title_ok(m.group(2)) and m.group(1) == nxt:
+            st["letter"] = nxt
+            return f"#### {nxt}. {m.group(2)}"
+    m = _PDF_HEAD_DOT.match(s)
+    if m and _title_ok(m.group(2)):
+        parts = m.group(1).split(".")
+        top = int(parts[0])
+        if (len(parts) == 1 and top == st["top"] + 1) or (len(parts) > 1 and top == st["top"]):
+            st["top"] = top
+            return _num_heading(m.group(1), m.group(2))
+    m = _PDF_HEAD.match(s)
+    if m and m.group(1)[0].isalpha() and st["app"] and m.group(1)[0] < st["app"]:
+        m = None                                   # appendix letters only move forward
+    if m and _title_ok(m.group(2)):
+        num, title = m.group(1), m.group(2)
+        if num[0].isalpha():
+            st.update(app=num[0], in_roman=False)
+            if re.fullmatch(r"[A-Z]", num):
+                return f"### Appendix {num}: {title}"
+        else:
+            st["top"] = int(num.split(".")[0])
+        return _num_heading(num, title)
+    return None
+
+
+def _caption(s: str) -> tuple[str, str] | None:
+    """(kind, label line) for a figure / table caption. "FIG. 2." and "TABLE II."
+    (physics style) keep their own label next to the arabic number locators use."""
+    m = re.match(r"^(Figure|Fig\.|FIG\.|Table|TABLE)\s+(\d+|[IVX]+)[:.]\s*(.*)$", s)
+    if not m:
+        return None
+    word, num, rest = m.groups()
+    kind = "Table" if word.lower().startswith("tab") else "Figure"
+    if num.isdigit():
+        n, own = num, ("" if word in ("Figure", "Table") else f" ({word} {num})")
+    elif num in _ROMANS:
+        n, own = str(_ROMANS.index(num) + 1), f" ({word} {num})"
+    else:
+        return None
+    return kind, f"**{kind} {n}{own}:** {rest}"
+
+
+def pdftext_to_body(txt: str, start: str | None = None) -> str:
+    """pdftotext output → verbatim body. The text starts at the introduction:
+    `start` names its exact line, else the first "1 Introduction" /
+    "1. Introduction" / "I. INTRODUCTION" / "Introduction" line, else the top."""
     lines = [_lig(l.rstrip()) for l in txt.replace("\f", "\n").split("\n")]
-    i0 = next((i for i, l in enumerate(lines) if l.strip() == start), 0)
+    if start is not None:
+        i0 = next((i for i, l in enumerate(lines) if l.strip() == start), 0)
+    else:
+        i0 = next((i for i, l in enumerate(lines) if _PDF_INTRO.match(l.strip())), 0)
     out: list[str] = []
     damaged_run = in_refs = False
-    last_app = ""
+    st = {"app": "", "roman": 0, "letter": "", "in_roman": False, "top": 0}
+    table_rows = -1                                  # -1: not inside a table; else rows kept
     for l in lines[i0:]:
         s = l.strip()
         if not s or re.fullmatch(r"\d{1,3}", s) or s.startswith("arXiv:"):
             continue
-        if re.fullmatch(r"References|Bibliography", s):
+        if _PDF_REFS.fullmatch(s):
             in_refs = True
+            table_rows = -1
             continue
-        h = _PDF_HEAD.match(s)
-        if h and h.group(1)[0].isalpha() and last_app and h.group(1)[0] < last_app:
-            h = None                                   # appendix letters only move forward
-        if h and not s.endswith(".") and len(s) < 95 and _title_ok(h.group(2)):
-            num, title = h.group(1), h.group(2)
+        if not in_refs and _PDF_INTRO.match(s) and not out:
+            # an unnumbered "Introduction" opens the body as its own heading
+            if not re.match(r"^(?:1|I)\.?\s", s):
+                out.append(f"### {s}")
+                continue
+        head = _pdf_heading(s, st)
+        if head:
             in_refs = False
-            if num[0].isalpha():
-                last_app = num[0]
-            if re.fullmatch(r"[A-Z]", num):
-                out.append(f"### Appendix {num}: {title}")
-            else:
-                out.append(("###", "####", "#####", "#####")[min(num.count("."), 3)] + f" {num} {title}")
+            table_rows = -1
+            out.append(head)
             damaged_run = False
             continue
         if in_refs:
             continue
-        m = re.match(r"^(Figure|Table)\s+(\d+):\s*(.*)$", s)
-        if m:
-            out.append(f"**{m.group(1)} {m.group(2)}:** {m.group(3)}")
+        cap = _caption(s)
+        if cap:
+            out.append(cap[1])
+            table_rows = 0 if cap[0] == "Table" else -1
             damaged_run = False
-        elif _is_prose(s):
+            continue
+        prose = _is_prose(s)
+        if table_rows >= 0 and not prose and table_rows < 80:
+            # the rows of a table, kept verbatim in pdftotext's reading order under
+            # its caption, so a "Tabla N" locator reaches its numbers
+            out[-1] += ("\n" + _PDF_TABLE_NOTE if table_rows == 0 else "") + "\n" + s
+            table_rows += 1
+            continue
+        in_table_text = table_rows > 0
+        table_rows = -1
+        if prose:
             prev = out[-1] if out else ""
-            if (prev and not prev.startswith("#") and not prev.startswith(DAMAGED)
+            if (prev and not prev.startswith("#") and not prev.startswith(DAMAGED) and not in_table_text
+                    and _PDF_TABLE_NOTE not in prev
                     and prev.rstrip()[-1:] not in ".?!" and s[:1].islower()):
                 out[-1] = prev.rstrip() + " " + s      # the same paragraph / caption, wrapped
             else:
@@ -369,30 +477,49 @@ def pdftext_to_body(txt: str, start: str = "1 Introduction") -> str:
 # Fetching and the Fuente line
 # --------------------------------------------------------------------------
 
+MAX_SOURCE_BYTES = 80 * 1024 * 1024
+
+
 def _get(url: str) -> tuple[int | None, bytes]:
+    """(status, body) through the shared HTTP helper: per-host spacing, 3 attempts
+    on 406/429/5xx with backoff, curl fallback for arXiv. A final failure is
+    (code or None, b"")."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=90) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
+        return 200, net.get(url, headers={"User-Agent": UA["User-Agent"]}, timeout=90,
+                            max_bytes=MAX_SOURCE_BYTES)
+    except net.HttpError as e:
         return e.code, b""
-    except Exception:
-        return None, b""
 
 
-def fetch_arxiv(aid: str, pause: float = 3.0) -> dict | None:
-    """First source that yields real text: arXiv HTML, ar5iv, PDF."""
-    st, abs_page = _get(f"https://arxiv.org/abs/{aid}")
+def latest_version(abs_page: bytes) -> str:
     vs = re.findall(rb"\[v(\d+)\]", abs_page)
-    ver = f"v{max(int(x) for x in vs)}" if vs else ""
+    return f"v{max(int(x) for x in vs)}" if vs else ""
+
+
+def fetch_arxiv(aid: str, pause: float = 3.0, version: str = "") -> dict | None:
+    """First source that yields real text: arXiv HTML, ar5iv, PDF — of `version`
+    when given ("v2"), else of the latest version. ar5iv serves one snapshot
+    with no version number, so its text is recorded as of an unknown version."""
+    ver = version
+    if not ver:
+        _, abs_page = _get(f"https://arxiv.org/abs/{aid}")
+        ver = latest_version(abs_page)
     for kind, url in (("arxiv-html", f"https://arxiv.org/html/{aid}{ver}"),
                       ("ar5iv", f"https://ar5iv.labs.arxiv.org/html/{aid}"),
                       ("pdf", f"https://arxiv.org/pdf/{aid}{ver}")):
+        if kind == "ar5iv" and version:
+            continue                     # a pinned version cannot come from ar5iv's snapshot
         time.sleep(pause)
         st, body = _get(url)
         if st != 200:
             continue
         if kind == "pdf" and body[:4] == b"%PDF" or kind != "pdf" and b"ltx_section" in body:
-            return {"kind": kind, "url": url, "version": ver or "?", "bytes": body}
+            if kind == "ar5iv":
+                shown = (f"desconocida: ar5iv no indica qué versión convirtió (la última en arXiv es {ver})"
+                         if ver else "desconocida: ar5iv no indica qué versión convirtió")
+            else:
+                shown = ver or "?"
+            return {"kind": kind, "url": url, "version": shown, "bytes": body}
     return None
 
 
@@ -411,12 +538,14 @@ def pdf_bytes_to_text(data: bytes) -> str | None:
 
 def fuente_line(url: str, version: str, kind: str, sha: str, date: str) -> str:
     how = {"arxiv-html": "HTML de arXiv (LaTeXML)", "ar5iv": "HTML de ar5iv (LaTeXML)",
-           "pdf": "PDF de arXiv, texto extraído con pdftotext"}.get(kind, kind)
+           "pdf": ("PDF de arXiv" if "arxiv.org" in url else "PDF") + ", texto extraído con pdftotext"
+           }.get(kind, kind)
     rules = ("ecuaciones como su LaTeX fuente ($…$); tablas como filas «| … |»; notas al pie "
              "en línea; se omiten el abstract (en ## Resumen) y la bibliografía"
              if kind != "pdf" else
-             "ligaduras tipográficas normalizadas a letras; se omiten el abstract (en "
-             "## Resumen) y la bibliografía")
+             "ligaduras tipográficas normalizadas a letras; las filas de cada tabla, tal como "
+             "las extrae pdftotext, bajo su pie; se omiten el abstract (en ## Resumen) y la "
+             "bibliografía")
     return (f"> Fuente: {url} ({how}, versión {version}), obtenido {date}; sha256 del "
             f"archivo descargado: {sha}.\n> Texto verbatim generado por {TOOL_ID}: {rules}; "
             f"«{DAMAGED}» marca lo que no se pudo extraer, sin reconstruirlo.")

@@ -84,7 +84,16 @@ Fields written with --write (never without it), per docs/v3-interfaces.md §1c:
   resolution_status: resolved|unresolved|mismatch|retracted|withdrawn
   resolution_match: exact|close|mismatch  (empty when no record matched)
   resolution_evidence: "<one line: which sources, what differed/flagged>"
+  published_doi / published_venue  for a note anchored on an arXiv preprint (no
+                             DOI of its own): the published version, from the
+                             DOI / journal_ref arXiv declares, else a journal or
+                             conference location OpenAlex lists for the work.
   send: never notes are never written.
+
+Versions of one work: a note whose DOI and arXiv id differ only in year /
+title (same first author) is one work when arXiv's record declares the DOI,
+or when OpenAlex's work for the DOI lists the arXiv preprint among its
+locations; otherwise the difference stays a `mismatch`.
   OpenAlex LOST (unreachable / budget): resolved, openalex_id and
   resolution_checked are NOT written -- previous values stay, or stay absent
   on a never-checked note (§1c: false means "checked and not found"). Nor is
@@ -138,7 +147,8 @@ import vaultnotes as vn  # noqa: E402
 __version__ = "1.0.0"
 
 OPENALEX = "https://api.openalex.org"
-OPENALEX_SELECT = "id,doi,display_name,title,publication_year,authorships,is_retracted,ids,type"
+OPENALEX_SELECT = ("id,doi,display_name,title,publication_year,authorships,is_retracted,ids,type,"
+                   "primary_location,locations")
 S2 = "https://api.semanticscholar.org/graph/v1"
 S2_FIELDS = "title,year,authors,externalIds,venue"
 KEY_HELP = ("get a free OpenAlex API key at https://openalex.org/settings/api and export "
@@ -392,6 +402,55 @@ def registrar_links_ids(note: dict, records: list[SourceRecord]) -> bool:
                for rec in records)
 
 
+def openalex_links_ids(note: dict, records: list[SourceRecord]) -> bool:
+    """OpenAlex's work for the note's DOI lists the note's arXiv preprint among
+    its own locations (arxiv.org/abs/<id>): OpenAlex merged the two as one work.
+    Most authors never add the journal DOI to their arXiv record, so this is the
+    usual evidence that a preprint and its published version are one work."""
+    mine = note_keys(note)
+    if "doi" not in mine or "arxiv" not in mine:
+        return False
+    aid = mine["arxiv"].split(":", 1)[1]
+    for rec in records:
+        raw = rec.raw or {}
+        if rec.source != "openalex" or key_for_doi(raw.get("doi")) != mine["doi"]:
+            continue
+        for loc in [raw.get("primary_location") or {}] + list(raw.get("locations") or []):
+            m = re.search(r"arxiv\.org/(?:abs|pdf)/([^\s?#]+?)(?:v\d+)?(?:\.pdf)?$", loc.get("landing_page_url") or "")
+            if m and (retraction.normalize_arxiv(m.group(1)) or "").lower() == aid:
+                return True
+    return False
+
+
+def versions_linked(note: dict, records: list[SourceRecord]) -> bool:
+    return registrar_links_ids(note, records) or openalex_links_ids(note, records)
+
+
+def published_version(note: dict, records: list[SourceRecord]) -> dict | None:
+    """For a note anchored on an arXiv preprint (no journal DOI of its own): the
+    published version its records name — the DOI and journal_ref arXiv declares,
+    or a journal / conference location OpenAlex lists for the work."""
+    if note_keys(note).get("doi"):
+        return None
+    for rec in records:
+        raw = rec.raw or {}
+        if rec.source == "arxiv" and (raw.get("doi") or raw.get("journal_ref")):
+            d = retraction.normalize_doi(raw.get("doi"))
+            return {"doi": d if d and not retraction.is_arxiv_doi(d) else "", "venue": raw.get("journal_ref") or "",
+                    "source": "arXiv"}
+    for rec in records:
+        raw = rec.raw or {}
+        if rec.source != "openalex":
+            continue
+        for loc in [raw.get("primary_location") or {}] + list(raw.get("locations") or []):
+            src = loc.get("source") or {}
+            if (src.get("type") or "") in ("journal", "conference") and src.get("display_name"):
+                d = retraction.normalize_doi(raw.get("doi"))
+                return {"doi": d if d and not retraction.is_arxiv_doi(d) else "", "venue": src["display_name"],
+                        "source": "OpenAlex"}
+    return None
+
+
 def version_only(diff: list[dict]) -> bool:
     """Only the year and/or the title differ: what changes between a preprint and
     its published version. The first author must agree."""
@@ -426,7 +485,7 @@ def identifier_conflicts(note: dict, records: list[SourceRecord]) -> list[str]:
     dk, ak = mine.get("doi"), mine.get("arxiv")
     if dk in reps and ak in reps:
         lvl, diff = match_record(rec_as_note(reps[dk]), reps[ak])
-        if lvl == "mismatch" and registrar_links_ids(note, records) and version_only(diff):
+        if lvl == "mismatch" and versions_linked(note, records) and version_only(diff):
             lvl = "close"                  # two versions of one work, linked by arXiv itself
         if lvl == "mismatch":
             bad = ", ".join(d["field"] for d in diff if d["level"] == "differs")
@@ -475,7 +534,7 @@ def from_arxiv(entry: dict) -> SourceRecord:
     return SourceRecord("arxiv", title=entry.get("title", ""),
                         authors=[{"name": n} for n in entry.get("authors", [])],
                         year=int(y) if y.isdigit() else None, found_by="arxiv",
-                        raw={"doi": entry["doi"]} if entry.get("doi") else {})
+                        raw={k: entry[k] for k in ("doi", "journal_ref") if entry.get(k)})
 
 
 def from_s2(p: dict, found_by: str) -> SourceRecord:
@@ -592,6 +651,7 @@ class Result:
     openalex_lost: bool = False
     note_incomplete: bool = False            # note has no first author or no year -> cannot prove a match
     retraction_lost: list[str] = field(default_factory=list)   # checks that could not run
+    published: dict | None = None            # a preprint's published version: {doi, venue, source}
     newly_flagged: bool = False
     written: bool = False
 
@@ -607,7 +667,8 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
     registrar_ok = {rec.id_key: rec.source for rec, lvl, _ in per
                     if rec.source in REGISTRARS and lvl in ("exact", "close") and rec.id_key}
     levels = []
-    linked = registrar_links_ids(note, records)
+    linked = versions_linked(note, records)
+    by_openalex = linked and not registrar_links_ids(note, records)
     mine = note_keys(note)
     for rec, lvl, diff in per:
         # a record of the OTHER version of a work arXiv links to the note's DOI:
@@ -621,8 +682,10 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
                     d["level"] = "version"
             if not any("version" in f["message"] for f in r.flags):
                 r.flags.append({"severity": "menor",
-                                "message": "two versions of one work: the arXiv record declares the note's DOI "
-                                           "(preprint/postprint vs published); year or title differ between them"})
+                                "message": ("two versions of one work: OpenAlex lists the arXiv preprint as a "
+                                            "location of the DOI's work" if by_openalex else
+                                            "two versions of one work: the arXiv record declares the note's DOI")
+                                           + " (preprint/postprint vs published); year or title differ between them"})
         same_work = (sorted(({rec.id_key} | declared_keys(rec)) & set(registrar_ok))
                      if rec.source == "openalex" else [])
         if (same_work and lvl == "mismatch"
@@ -822,6 +885,10 @@ def resolve_note(note: dict, arxiv_entries: dict, arxiv_lost: dict) -> Result:
         status = "clear"
     lost_checks = [c.source for c in checks if c.state == "lost"]
     r = decide(note, records, oa_rec, oa_lost, status, ev, concern, traces, lost_checks)
+    r.published = published_version(note, records)
+    if r.published:
+        r.evidence.append(f"published version per {r.published['source']}: "
+                          + " · ".join(x for x in (r.published["venue"], r.published["doi"]) if x))
     if rejected and oa_rec is None:
         cand, cdiff = rejected
         what = ", ".join(f"{d['field']} {d['source']!r} vs note {d['note']!r}" for d in cdiff if d["level"] == "differs")
@@ -868,7 +935,7 @@ def fields_for(r: Result, today: str, prev_evidence: str | None = None) -> dict:
                     "resolution_evidence": _join_ev(ev, lost)}
         prev = _LOST_TAIL.sub("", prev_evidence or "").strip().rstrip(";").strip()
         return {"resolution_evidence": _join_ev(prev, lost)}
-    return {
+    out = {
         "resolved": r.resolved,
         "openalex_id": r.openalex_id or "",
         "resolution_checked": today,
@@ -876,6 +943,12 @@ def fields_for(r: Result, today: str, prev_evidence: str | None = None) -> dict:
         "resolution_match": r.match or "",
         "resolution_evidence": ev[:EVIDENCE_MAX],
     }
+    if r.published:
+        # the note stays anchored on the preprint text it holds; this only says
+        # where the work was published (cite that version, or re-anchor by hand)
+        out["published_doi"] = r.published["doi"]
+        out["published_venue"] = r.published["venue"]
+    return out
 
 
 def write_result(path: Path, r: Result, today: str) -> bool:

@@ -481,6 +481,24 @@ def find_paper(vault: str, pid: str) -> str | None:
     return hits[0] if hits else None
 
 
+_INTEGRITY_CACHE: dict[tuple[str, float], list[str]] = {}
+
+
+def _integrity(vault: str, path: str) -> list[str]:
+    """ingest_paper.integrity_problems, cached per (note, mtime) for one process."""
+    key = (os.path.abspath(path), os.path.getmtime(path))
+    if key not in _INTEGRITY_CACHE:
+        papers = str(Path(__file__).resolve().parent.parent / "papers")
+        if papers not in sys.path:
+            sys.path.insert(0, papers)
+        import ingest_paper
+        try:
+            _INTEGRITY_CACHE[key] = ingest_paper.integrity_problems(vault, path)
+        except (OSError, ValueError, KeyError) as e:
+            _INTEGRITY_CACHE[key] = [f"no se pudo recomprobar la fuente guardada ({e})"]
+    return _INTEGRITY_CACHE[key]
+
+
 def resolve_citation(vault: str, pid: str, span: str) -> dict:
     res = {"paper": pid, "locator": span, "tokens": [], "source": None,
            "title": None, "units": [], "note": None, "provenance": []}
@@ -521,9 +539,18 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
                 if (under or in_text) and u["text"] not in chosen:
                     chosen.append(u["text"])
             continue
-        for u in source_units(texto):
+        units = source_units(texto)
+        for i, u in enumerate(units):
             if unit_matches(u, tok) and u["text"] not in chosen:
                 chosen.append(u["text"])
+                if tok[0] == "table":
+                    # the rows of a table follow its caption as their own unit(s):
+                    # a "Tabla N" locator reaches its numbers, not only its caption
+                    j = i + 1
+                    while j < len(units) and units[j]["text"].lstrip().startswith("|"):
+                        if units[j]["text"] not in chosen:
+                            chosen.append(units[j]["text"])
+                        j += 1
     res["units"] = chosen
     if not chosen:
         res["note"] = ("ningún fragmento de ## Texto completo coincide con "
@@ -534,6 +561,10 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
             not u.startswith("[## Resumen]") for u in chosen):
         problems.append("la nota es fulltext: abstract-only, así que su ## Texto "
                         "completo no puede ser texto del paper")
+    if fm_scalar(fm, "fuentes"):
+        # ingested by ingest_paper.py: the sections must still be what its kept
+        # source bytes give — an edit after ingestion is not the paper's text
+        problems.extend(f"integridad: {p}" for p in _integrity(vault, path))
     res["provenance"] = problems
     return res
 

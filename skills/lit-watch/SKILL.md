@@ -7,11 +7,19 @@ description: Use for the periodic literature watch of one Kairo project ("vigila
 
 ## Overview
 
-A project's `Estado-del-arte.md` records every query its literature search
-ran, verbatim. This skill re-runs those queries each week, restricted to
-papers since the last watch. It surfaces only strong candidates, meaning
-papers found by the queries of two or more facets, each with one line of why.
-It also flags papers that may say what a hypothesis says.
+A project's literature search left its plan in `_busquedas/<run>/plan.json`
+(older projects: the verbatim *Consultas* table in `Estado-del-arte.md`). This
+skill re-runs those queries — every source the search used — restricted to a
+window that starts 14 days before the last watch (arXiv lists papers, and
+Semantic Scholar / OpenAlex index them, days to weeks late; papers already
+offered are never offered again). Every query is paged; one with more matches
+than the cap is `truncated` and keeps the window open. It surfaces strong
+candidates (found by the queries of two or more facets) with one line of why,
+and flags papers that may say what a hypothesis says.
+
+**Running it every week.** The `delta` step is a plain script with no model:
+schedule it with the OS (cron, Task Scheduler) or a Claude Code routine
+(`/schedule`), and run this skill on the run files it leaves for triage.
 
 **A novelty threat is not evidence.** It is your judgement that a new paper
 may already report the hypothesis's claim.
@@ -38,16 +46,19 @@ python <plugin>/scripts/watch/lit_watch.py delta --vault <vault> --project-dir <
 ```
 
 The JSON gives the run file (`_vigilancia/vigilancia-<date>.json`), the window
-(`since` → `until`), how many queries were lost, and the counts.
+(`since`, the `queried_from` actually used, `until`), how many queries were
+lost or truncated, and the counts.
 
 - `lost_all: true`: nothing was written and `last_watch` did not move. Report
   the failure (network, 429, Semantic Scholar key) and stop.
-- Some queries lost: continue, and say which ones in the report. `last_watch`
-  did not move (`last_watch_moved: false`): the next watch covers this window
-  again, so say that the window stays open — never call it "nothing new".
-- Refused because there are no recorded queries: the project has no
-  "Búsqueda ejecutada" block. Report that literature-search must run first,
-  then stop.
+- Some queries lost or `truncated`: continue, and name them in the report.
+  `last_watch` did not move (`last_watch_moved: false`): the next watch covers
+  this window again, so say that the window stays open — never call it
+  "nothing new". Repeated truncation means a query is too broad for a weekly
+  watch: suggest narrowing that facet in a new literature-search plan.
+- Refused because there are no recorded queries: the project has neither a
+  `_busquedas/<run>/plan.json` nor a "Búsqueda ejecutada" table. Report that
+  literature-search must run first, then stop.
 
 ### 2. Triage — one line per surfaced candidate
 
@@ -111,19 +122,20 @@ incomplete run.
   - the window;
   - candidates, strong and triaged;
   - each threat, as severity + hypothesis + paper + the quoted sentence;
-  - the lost queries.
+  - the lost and truncated queries (and that the window stays open).
 - End with: "Las alertas son juicios de un modelo; decide tú en la bandeja."
 
 ### 5. Ingest (mode ingest only)
 
 For each chosen candidate, follow **create-project step 6 ("Ingest each
-confirmed paper — via Zotero")** exactly:
-- the paper note format;
-- `projects:`, with the project id appended if the note exists;
-- the facet entries (`facet_assignment.py --add`, with the run file's
-  `facets` and a matched term you can point to in the title or abstract);
-- verbatim full text;
-- retraction and resolution checks.
+confirmed paper — mechanically, with `ingest_paper.py`")** exactly:
+- `ingest_paper.py add --arxiv <id> | --doi <doi> --project <PROJ>` writes the
+  note, its verbatim abstract and full text and keeps the source bytes (an
+  existing note only gets the project appended);
+- the facet entries (`--facet` / `facet_assignment.py --add`, with the run
+  file's `facets` and a matched term you can point to in the title or abstract);
+- `ingest_paper.py verify` must say `ok`;
+- `resolve_refs.py --only <P-id> --write` (existence, version, retraction).
 
 Then record the decision if the researcher has not:
 `lit_watch.py decide --decision ingerir`. Commit the new paper notes.

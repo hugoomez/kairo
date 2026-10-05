@@ -114,7 +114,7 @@ verify it after it is applied. Each block owns only its own `A-*` / `B-*` files.
 | `skills/paper-to-tool/**` | A |
 | `skills/run-experiment/**` (bundle-check wiring only; nothing else changes in v3) | A |
 | `skills/assemble-manuscript/**` (citation gate, AI disclosure) — **B2's wiring here is deferred** | A |
-| `agents/facet-searcher.md`, `agents/facet-summarizer.md` | A |
+| `agents/facet-summarizer.md` (`facet-searcher` retired in v1.9.0: `scripts/search/lit_search.py`) | A |
 | `templates/project-template.md`, `templates/tool-template.md` | A |
 | `docs/v3-pending/A-*.md` | A |
 | `agents/fresh-verifier.md` (new) | B |
