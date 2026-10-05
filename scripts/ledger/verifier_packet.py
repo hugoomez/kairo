@@ -300,7 +300,8 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
     s_noapp = re.sub(r"\b(?:App(?:endix)?\.?|Apéndice)\s*[A-Z](?:\.\d+)*", " ", s)
     for m in re.finditer(r"\b(?:Fig(?:ura|ure)?s?)\.?\s*(\d+)", s_noapp):
         toks.append(("fig", m.group(1)))
-    for m in re.finditer(r"\b(?:Tabla|Table)s?\.?\s*(\d+)", s_noapp):
+    # "Tabla 2", and the Roman "TABLE I" of APS / IEEE papers
+    for m in re.finditer(r"\b(?i:Tabla|Table)s?\.?\s*(\d+|[IVXL]+\b)", s_noapp):
         toks.append(("table", m.group(1)))
     for m in re.finditer(r"\b(?:Eq|Ec)\.?\s*(\d+)", s_noapp):
         toks.append(("eq", m.group(1)))
@@ -458,7 +459,8 @@ def unit_matches(unit: dict, tok: tuple[str, str]) -> bool:
     if kind == "fig":
         return bool(re.search(rf"\bFig(?:ura|ure)?s?\.?\s*{ev}(?![\d])", text))
     if kind == "table":
-        return bool(re.search(rf"\b(?:Tabla|Table)s?\.?\s*{ev}(?![\d])", text))
+        tail = r"(?![\d])" if v.isdigit() else r"(?![\w])"
+        return bool(re.search(rf"\b(?i:Tabla|Table)s?\.?\s*{ev}{tail}", text))
     if kind == "eq":
         return bool(re.search(rf"\b(?:Eq|Ec)\.?\s*{ev}(?![\d])", text))
     return False

@@ -745,3 +745,13 @@ class TestRomanLocators(unittest.TestCase):
 
     def test_a_one_letter_name_never_matches_free_text(self):
         self.assertEqual(self.units("§Q"), [])
+
+
+class TestRomanTables(unittest.TestCase):
+    def test_roman_table_numbers(self):
+        self.assertEqual(vp.locator_tokens("Tabla I"), [("table", "I")])
+        self.assertEqual(vp.locator_tokens("TABLE II"), [("table", "II")])
+        unit = {"text": "**TABLE I:** Invented toy architecture.", "num": None}
+        self.assertTrue(vp.unit_matches(unit, ("table", "I")))
+        self.assertFalse(vp.unit_matches({"text": "**TABLE II:** Other toy.", "num": None}, ("table", "I")))
+        self.assertTrue(vp.unit_matches({"text": "see Table 2 here", "num": None}, ("table", "2")))
