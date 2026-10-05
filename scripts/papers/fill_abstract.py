@@ -31,13 +31,13 @@ import html
 import json
 import re
 import sys
-import time
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "ledger"))
+sys.path.insert(0, str(HERE.parent / "citations"))
+import net  # noqa: E402  (shared HTTP helper)
 from verifier_packet import fm_scalar, split_frontmatter  # noqa: E402  (also puts security/ on the path)
 from send_guard import is_flagged  # noqa: E402, I001
 
@@ -68,24 +68,17 @@ def from_jats(s: str | None) -> str:
 
 
 def get_json(url: str) -> dict | None:
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return None
-            time.sleep(2 * (attempt + 1))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            time.sleep(2 * (attempt + 1))
-    return None
+    """Through the shared HTTP helper (per-host spacing, 3 attempts with backoff)."""
+    try:
+        return json.loads(net.get(url, headers=UA).decode("utf-8"))
+    except (net.HttpError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
 
 
 def get_text(url: str) -> str | None:
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
-            return r.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError):
+        return net.get(url, headers=UA).decode("utf-8", errors="replace")
+    except net.HttpError:
         return None
 
 
@@ -145,6 +138,11 @@ def process(path: Path, write: bool, today: str, fetcher=fetch) -> dict:
         return {"id": pid, "status": "skipped_send_never"}
     if not needs_abstract(text):
         return {"id": pid, "status": "has_abstract"}
+    if fm_scalar(fm, "ingested_by"):
+        # ingest_paper.py already asked OpenAlex, Crossref and arXiv and keeps their
+        # bytes; a section written here would no longer match them (verify fails)
+        return {"id": pid, "status": "ingested_by_script",
+                "note": "ya se consultaron OpenAlex, Crossref y arXiv al ingerirla; usa ingest_paper.py rebuild"}
     tried = []
     for label, url in candidates(fm):
         tried.append(label)

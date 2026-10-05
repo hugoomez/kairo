@@ -130,20 +130,22 @@ similarity cutoff (default ≈ 0.7 — tune, don't dump the whole list).
 
 ### 4. Literature search
 
-Invoke the **`literature-search`** skill. Input = **Propósito** +
-**Vocabulario conocido** + **Papers semilla** (as seed papers for snowballing) +
-the **`Alcance: Fuera`** clauses (so it can classify scope exclusions separately
-from low relevance — step 4d there).
+Invoke the **`literature-search`** skill with its run directory at
+`Projects/<slug>/_busquedas/<YYYY-MM-DD>/` (lit-watch later re-runs that plan).
+Input = **Propósito** + **Vocabulario conocido** + **Papers semilla** (seed
+keys for the snowball) + the **`Alcance: Fuera`** clauses verbatim (they go
+into the plan's `scope_out`, so scope exclusions stay separate from low
+relevance) + any recency the brief states (the plan's `from`).
 
-Include the **PatentsView / patent facet only if `type` is `producto` or
-`hibrido`** — otherwise omit it entirely (matches that skill's own gate).
+Include the **patent search only if `type` is `producto` or `hibrido`** —
+otherwise omit it entirely (matches that skill's own gate).
 
-Keep the facet table and the ranked, justified candidate list it returns — steps
-5 and 6 consume them. Each ranked candidate carries a **`facets:` record** (for
-each facet that hit it, the facet term/synonym that matched, from the
-`facet-searcher` output). Step 6 persists it into the paper note; step 7 reads it
-back from there and never re-derives membership. Save the facet table itself
-in the Búsqueda ejecutada block (the letters in the notes refer to it).
+What steps 5–7 consume, all written by `lit_search.py`: `ranked.md` (the
+screened, justified list), `screened.json` (each candidate's ids and its
+**`facets`** record — per facet, the term that matched it; step 6 persists it
+into the paper note and step 7 reads it back from there, never re-deriving
+membership) and `busqueda.md` (the Búsqueda ejecutada block with the facet
+table the letters in the notes refer to). Never retype any of them.
 
 ### 5. Confirm candidates — respect `autonomy_defaults.paper_ingestion`
 
@@ -159,92 +161,78 @@ show it to the user in both modes (it is never auto-ingested) — a relevant pap
 held out only by an `Alcance: Fuera` clause is a scope decision the researcher
 may want to revisit.
 
-### 6. Ingest each confirmed paper — via Zotero
+### 6. Ingest each confirmed paper — mechanically, with `ingest_paper.py`
 
-For each confirmed paper, add it to Zotero **first**, then generate the
-`Papers/` note from that Zotero entry. See the plugin README → "Zotero
-(reference manager)" for the endpoints and one-time setup this step assumes.
+A paper note's source fields — its frontmatter metadata, `## Referencia`,
+`## Resumen`, `## Texto completo` — are written by a script from fetched
+records, **never typed or pasted by the model**. For each confirmed paper:
 
-1. **PDF:** if openly available (Semantic Scholar `openAccessPdf`, arXiv PDF
-   link), download it. If not, skip the download — do not paywall-scrape.
-2. **Dedup, Zotero-side first:** Better BibTeX `item.search` for the DOI, then
-   the arXiv id, then title. A hit means this paper already has a Zotero
-   record (possibly from another project) — reuse it, don't create a second
-   one; add a `PROJ-XXX` tag to it via the same JSON-RPC item-update path
-   instead. No hit → create a new item.
-3. **Add to Zotero (new items only):** `POST
-   http://127.0.0.1:23119/connector/saveItems` with one item — `itemType`
-   `preprint` for an arXiv-only record, `journalArticle`/`conferencePaper` when
-   a venue is known, `patent` for PatentsView candidates; `title`, `creators`
-   (split `Last, First` into `firstName`/`lastName`), `date`, `DOI`, `url`,
-   `abstractNote`, and a `tags` entry for `PROJ-XXX`. If the PDF downloaded in
-   step 1, attach it in the same call so Zotero holds its own copy.
-4. **Read the record back:** Better BibTeX `item.citationkey` for the stable
-   key (→ note frontmatter `zotero_key`), `item.export` (format `CSL-JSON`) for
-   clean title/authors/date/DOI/abstract — these populate `## Referencia` and
-   `## Resumen` below, replacing what step 6 used to take straight from the
-   arXiv/Semantic Scholar/PatentsView response.
-5. **Full text:** extract from the downloaded PDF when you have it (same
-   process as before, independent of Zotero); otherwise fall back to the
-   Zotero/CSL-JSON abstract and mark the note `fulltext: abstract-only`.
-
-   **Source fields are never model-written.** `## Referencia`, `## Resumen` and
-   `## Texto completo` hold only text taken from a fetched document or record:
-   - `## Referencia`: built only from the fetched metadata (CSL-JSON, Crossref,
-     arXiv, OpenAlex). A field that no source returned is left out, never
-     filled in from memory.
-   - `## Resumen`: the abstract **verbatim**, preceded by a `> Fuente: <URL or
-     API>, obtenido <YYYY-MM-DD>` line. No source returned an abstract (null,
-     429, paywall) → write `No disponible — ningún abstract recuperado
-     (<sources tried>).` Never a summary, and never "from general knowledge".
-     Then, for every such note, run
-     `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/fill_abstract.py" --papers <vault>/Papers --only <P-ids> --write`:
-     it asks OpenAlex (its abstract index), Crossref and arXiv again and writes
-     the first verbatim abstract found, with its `> Fuente:` line. A note it
-     reports `still_missing` stays as it is: list it in the creation report as
-     «sin resumen ni texto: hace falta el PDF».
-   - `## Texto completo`: the paper's **verbatim** text, organised by its own
-     section / figure / table / appendix numbering, so locators can point at
-     it. Build it with
-     `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/verbatim_fulltext.py" --arxiv <id>`,
-     which tries arXiv HTML, then ar5iv, then the PDF via `pdftotext`. It
-     writes the `> Fuente:` line itself (URL, version, date, sha256 of the
-     fetched file) and marks anything it could not extract as
-     `[extracción dañada]` instead of reconstructing it. For a non-arXiv
-     open-access PDF, run `pdftotext` and pass the output with `--pdf-text`
-     and `--source-url`. A letter-format paper with no numbered sections is
-     kept whole under `### Texto (sin secciones numeradas en la fuente)`
-     (cite it by figure / table or as `§Texto`). Exit 1, or no open full text
-     at all → `No disponible — solo abstract.` and nothing else. Never
-     download through a site's bot protection (a 403 from a publisher is a
-     no): the researcher adds that PDF by hand.
-   - **No model-written text in the paper note at all.** A reading aid, if
-     you write one, goes in a separate file `Papers/_notas/<P-id>.md` (see
-     Paper note format), never in the paper note. No locator may point there;
-     no skill or agent reads it (the `send_guard` hook blocks the directory,
-     and the packet builder skips it in code).
-   A field left empty and marked unavailable is correct. A plausible field
-   written by the model is a fabricated source: every citation of it would be
-   unverifiable, and the fresh verifier flags it `crítico`.
-6. **Note:** dedup against existing `Papers/` notes by `zotero_key` first (a
-   paper already ingested for another project has one), then DOI → arXiv id →
-   title similarity, same as before.
-   - **New:** create `Papers/<P-id> <short-title>.md` (next `P-XXXX`, scan
-     `Papers/` frontmatter for the max), `projects: [<PROJ-XXX>]`.
-   - **Exists (from another project):** append `<PROJ-XXX>` to its `projects:`
-     list; refresh full text only if the note had none. If the existing note has
-     `send: never`, don't open it (dedup by file name / `send_guard.py check`
-     only): tell the researcher the paper is already in the vault but marked
-     not-to-send, and ask whether to add `<PROJ-XXX>` by hand — never edit or
-     re-derive it yourself.
-7. Include a short **bibliographic section** (see Paper note format below).
-   **Persist the facet match:** for each facet in the candidate's `facets:`
-   record, one frontmatter entry `{project: <PROJ-XXX>, facet: <letter>,
-   matched: "<term>"}` — for a new note and for an existing one alike
-   (`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py" --vault
-   <vault> --add <P-id> --project <PROJ-XXX> --facet <letter> --matched
-   "<term>"` writes it without touching anything else). Entries of other
-   projects stay as they are.
+1. **Ingest:**
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" add --vault <vault> --project <PROJ-XXX> \
+     --arxiv <id> | --doi <doi>   --facet <letter> --matched "<term>"   [--source <where it was found>]
+   ```
+   Use the arXiv id whenever the candidate has one (the note is anchored on
+   the text it holds; the published version is recorded beside it). The
+   script:
+   - deduplicates against `Papers/` (arXiv id, DOI, title). A paper already
+     ingested for another project gets `<PROJ-XXX>` appended to `projects:`
+     and nothing else; one marked `send: never` is **not opened**: the script
+     refuses (exit 2) and you tell the researcher it is already in the vault,
+     marked not-to-send, and ask whether to add the project by hand;
+   - assigns the next `P-XXXX` and writes `Papers/<P-id> <short-title>.md`;
+   - fetches the metadata (arXiv API or Crossref; OpenAlex for a missing
+     abstract), the abstract **verbatim** with its `> Fuente:` line, and the
+     full text through `verbatim_fulltext.py` (arXiv HTML → ar5iv → PDF via
+     `pdftotext`, organised by the paper's own section / figure / table /
+     appendix numbering, `[extracción dañada]` where extraction failed);
+   - records a preprint's **published version** (`published_doi`,
+     `published_venue`, `published_year`, `journal_ref`) from arXiv's
+     declaration and the publisher's Crossref record;
+   - keeps every fetched byte in `Papers/_fuentes/<P-id>/` with a manifest
+     (`fuentes.json`: URL, sha256, date, converter version).
+   Exit 2 = refused (read the reason); exit 1 = a source could not be reached
+   (re-run later). `--dry-run` shows what would be written.
+2. **More facets.** `--facet` records one facet; for each other facet in the
+   candidate's `facets` record (from `screened.json`) run
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py" --vault <vault> --add <P-id> --project <PROJ-XXX> --facet <letter> --matched "<term>"`.
+3. **Not on arXiv, open-access PDF.** Download it (never through a site's
+   bot protection — a 403 from a publisher is a no: the researcher adds that
+   PDF by hand), run `pdftotext -enc UTF-8 <pdf> <txt>`, and ingest with
+   `--doi <doi> --pdf-text <txt> --source-url <pdf url>`. No open full text
+   at all → the script writes `No disponible — solo abstract.` and
+   `fulltext: abstract-only`; list it in the creation report as «sin texto:
+   hace falta el PDF». An abstract no source returned stays
+   `No disponible — ningún abstract recuperado (…)`.
+4. **Zotero (optional).** When Zotero is reachable (see the plugin README →
+   "Zotero"), add the item from the script's own `csl` output (never from
+   anything you wrote): Better BibTeX `item.search` by DOI / arXiv id / title
+   first (reuse an existing item and tag it `PROJ-XXX`), else `POST
+   /connector/saveItems` with `itemType` (`preprint` / `journalArticle` /
+   `conferencePaper`), title, creators, date, DOI, url, abstractNote and the
+   tag. Read back `item.citationkey` and record it with
+   `ingest_paper.py zotero-key --vault <vault> --id <P-id> --key <citekey>`.
+   Zotero unreachable → say so once ("⚠️ Zotero unavailable — P-00NN ingested
+   without a Zotero record") and go on; `zotero_key` stays absent so a later
+   pass can find these notes. The vault exports BibTeX itself
+   (`scripts/papers/export_bib.py`), so nothing depends on Zotero.
+5. **Verify.** After the last paper:
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" verify --vault <vault> --only <P-ids>`
+   must report every note `ok` (exit 0). A note whose sections no longer match
+   their kept bytes is `integrity_problem`: never edit a source section by hand
+   — `ingest_paper.py rebuild --only <P-id>` regenerates it. The fresh
+   verifier, `check_quotes.py`, `check_review.py` and `check_sota.py` run the
+   same comparison and treat a mismatch as text that is not the paper's.
+6. **No model-written text in the paper note at all.** A reading aid, if you
+   write one, goes in `Papers/_notas/<P-id>.md` (see Paper note format), never
+   in the paper note. No locator may point there; no skill or agent reads it
+   (the `send_guard` hook blocks the directory, and the packet builder skips
+   it in code). Notes ingested before `ingest_paper.py` existed report
+   `legacy` in `verify`; `rebuild` replaces their source sections with the
+   fetched text and keeps their frontmatter.
+7. **Persisting the facet match** is done by steps 1–2: each
+   `{project: <PROJ-XXX>, facet: <letter>, matched: "<term>"}` entry is what
+   step 7 reads back. Entries of other projects stay as they are.
 8. **Code repository (`code_repo:`)** — record the paper's own public code
    repository when it is **confidently** identifiable; otherwise leave the
    field empty. This step only records a URL — it never clones, installs, or
@@ -294,12 +282,15 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    from the sources the script names; never "fix" it by trusting one source
    blindly (a `mismatch` also covers a DOI and arXiv id that point to two
    different works). Two versions of ONE work are not a mismatch: when the
-   arXiv record itself declares the note's DOI (a postprint posted years after
-   the proceedings, or a preprint later retitled), the script records the
-   year / title difference as `version` and resolves the note. When the DOI
-   and the arXiv id look like versions but arXiv declares no link, anchor the
-   note to the text you ingested (empty the other identifier) and keep it as
-   `posible_version_publicada: "<id> (<why>)"`. A note missing its first author or year stays
+   arXiv record itself declares the note's DOI, or OpenAlex's work for the DOI
+   lists the arXiv preprint among its locations (a postprint posted years
+   after the proceedings, or a preprint later retitled), the script records
+   the year / title difference as `version` and resolves the note. For a note
+   anchored on a preprint, `--write` also records its published version
+   (`published_doi`, `published_venue`) when arXiv or OpenAlex names one. When
+   the DOI and the arXiv id still look like versions but no source links them,
+   anchor the note to the text you ingested (empty the other identifier) and
+   keep it as `posible_version_publicada: "<id> (<why>)"`. A note missing its first author or year stays
    `unresolved` ("note lacks author/year — cannot prove match", `importante`)
    until they are added. A `send: never` note is skipped entirely (nothing is sent).
    **OpenAlex API key:** `OPENALEX_API_KEY` is optional — keyless OpenAlex
@@ -314,14 +305,6 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    `https://openalex.org/settings/api`, export `OPENALEX_API_KEY` in the
    environment that runs Claude Code (never commit it), and re-run the command
    above.
-
-**Zotero unreachable (not running, or "allow other applications" disabled):**
-don't silently skip it and don't block ingestion either — tell the researcher
-plainly (e.g. "⚠️ Zotero unavailable — P-00NN ingested without a Zotero
-record"), fall back to building the note directly from the
-arXiv/Semantic-Scholar/PatentsView response as before v1, and leave
-`zotero_key` out of that note's frontmatter (not empty-string — omitted, so a
-later retrofit pass can find these by the field's absence).
 
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
 
@@ -377,8 +360,27 @@ before writing either one; do not resolve the conflict by just picking
 whichever number was written down first. Never let the same fact carry two
 different section citations in the finished document.
 
-**If `literature-search` returned a `## ⚠️ Cobertura degradada` block** (a facet
-lost its anchor or relevance pass), reproduce it **verbatim at the very top of
+**Check it mechanically before writing anything else (a gate, not advice).**
+Write the merged document, then run
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/check_sota.py" --vault <vault> --project-dir Projects/<slug>
+```
+
+It resolves every `P-XXXX <locator>` with the fresh-verifier's resolver and
+checks every number in a cited sentence against the text the locators point
+at. Exit 0 = clean. Exit 3 = problems: for each one, re-open the cited
+heading in the paper note and either fix the locator / figure to what the
+paper says or drop the sentence; then run it again. If a problem cannot be
+resolved (the paper does not say it anywhere you can find), drop the
+sentence — never leave a figure the cited text does not contain. Only as a
+last resort, `--write` marks the remaining ones «⚠ …» in place, and the
+end-of-run message lists them as `importante`. Citations without a locator
+are listed, not failed; prefer adding one.
+
+**The Búsqueda ejecutada block** is the run's `busqueda.md`, appended
+unchanged (never retyped). **If it starts with `## ⚠️ Cobertura degradada`**
+(a query lost or truncated), reproduce that block **verbatim at the very top of
 `Estado-del-arte.md`**, directly under the frontmatter — not only inside the
 appended Búsqueda ejecutada block at the bottom. The reader must see, before the
 synthesis, that part of the literature was not covered. Also mention it in the
@@ -425,8 +427,10 @@ paper ids as columns, each cell = one phrase for what that paper says about that
 concept (blank = doesn't address it). Skip this appendix entirely for smaller
 sets — a 6-paper matrix is noise, not signal.
 
-Also append the **Búsqueda ejecutada** block from step 4 (the frozen queries +
-PRISMA counts) so the map's evidence base is auditable.
+Also append the **Búsqueda ejecutada** block — step 4's `busqueda.md`,
+unchanged (the frozen queries + PRISMA counts computed by the script) — plus
+one line naming its run directory (`_busquedas/<date>/`, raw responses and
+sha256 inside), so the map's evidence base is auditable and re-runnable.
 
 ### 8. Seed candidate hypotheses
 
@@ -536,22 +540,28 @@ For the `aplicado` template, in step 2, after the scaffold:
 | SOTA map | `Projects/<slug>/Estado-del-arte.md` |
 | Digest | `Projects/<slug>/_digest.md` |
 
-## Paper note format (v1, no template file exists)
+## Paper note format (written by `ingest_paper.py`; no template file exists)
 
 ```markdown
 ---
 id: P-XXXX
 title: <full title>
-authors: [<Last, First>, ...]
+authors: [<as the record gives them: "First Last" (arXiv) or "Last, First" (Crossref)>, ...]
 year: <YYYY>
 venue: <journal / conference / "arXiv preprint">
-doi: <10.xxxx/... or empty>
+doi: <10.xxxx/... or empty — empty for a note anchored on an arXiv preprint>
 arxiv: <id or empty>
+arxiv_version: <vN of the text ingested>
+published_doi / published_venue / published_year / journal_ref:
+  <a preprint's published version, from arXiv's declaration and the publisher's
+  record; absent when none is known>
+ingested_by: <kairo/ingest_paper@x.y.z>
+fuentes: <Papers/_fuentes/P-XXXX/fuentes.json — the kept source bytes and their sha256>
 url: <abstract/landing page>
 pdf: <local path or source URL or empty>
 projects: [<PROJ-XXX>]
 added: <YYYY-MM-DD>
-source: <arxiv | semantic-scholar | patentsview | manual>
+source: <arxiv | semantic-scholar | openalex | crossref | dblp | patentsview | manual>
 fulltext: <full | abstract-only>
 zotero_key: <Better BibTeX citekey, or Zotero's raw item key if BBT was
   unreachable — omit the field entirely if Zotero itself was unreachable>
@@ -648,10 +658,14 @@ When a paper is already ingested for another project, only append this project's
   step 7 has nothing to read; the ranked list is gone after the session.
 - **Writing model text into a paper note.** Reading aids go in
   `Papers/_notas/<P-id>.md`, never in the paper note.
-- **Letting a subagent's raw material back into the main context unfiltered.**
-  `facet-searcher` returns a compact list, `facet-summarizer` returns cited
-  bullets — never raw payloads or whole paper texts. The Reduce pass merges those
-  compact outputs.
+- **Letting raw material into the main context.** `lit_search.py` keeps the
+  API payloads on disk and prints compact lists; `facet-summarizer` returns
+  cited bullets — never raw payloads or whole paper texts. The Reduce pass
+  merges those compact outputs.
+- **Typing or pasting a paper note's source sections.** `ingest_paper.py`
+  writes them; `verify` must say `ok`. A hand-edited section is caught.
+- **Skipping `check_sota.py`, or keeping a figure it flags.** A number the
+  cited text does not contain is dropped or corrected, never kept.
 - **Running the patent facet for a `ciencia` project.** Only `producto`/`hibrido`.
 - **Ingesting papers in `manual` mode before the user answers.** Wait.
 - **In `autonomo` mode, silently dropping the low-similarity tail.** Auto-accept

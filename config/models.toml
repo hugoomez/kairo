@@ -11,6 +11,10 @@
 #                generated from this policy (check fails if it drifts)
 # kind = "tool"  a script that calls a model itself (evolve-program)
 #
+# isolated = true  (agents) the agent must not read the vault, run commands or
+#                reach the network; `check` refuses any tool beyond
+#                model_policy.ISOLATED_TOOLS. An empty `tools:` inherits every tool.
+#
 # Tasks with no model at all are not listed: «¿Dónde estaba?», the lab notebook,
 # the shareable report, idea capture, numerical checks, repo remote/push.
 # The second critic's own judgement runs on DeepSeek (DeepInfra), outside this
@@ -115,12 +119,14 @@ label = "Salud del repositorio de código"
 [tasks.fresh_verifier]
 kind = "agent"
 file = "agents/fresh-verifier.md"
+isolated = true          # sees only its packet: no file, shell or network tool
 tier = "opus"
 label = "Verificador independiente (fresh-verifier)"
 
 [tasks.devils_advocate]
 kind = "agent"
 file = "agents/devils-advocate.md"
+isolated = true          # sees only its packet: no file, shell or network tool
 tier = "opus"
 label = "Abogado del diablo (subagente)"
 
@@ -133,14 +139,9 @@ label = "Síntesis final del Estado del arte (escuelas, huecos)"
 [tasks.novelty_judge]
 kind = "agent"
 file = "agents/novelty-judge.md"
+isolated = true          # sees only its packet: no file, shell or network tool
 tier = "opus"
 label = "Confirmar una amenaza de novedad"
-
-[tasks.facet_searcher]
-kind = "agent"
-file = "agents/facet-searcher.md"
-tier = "sonnet"
-label = "Búsqueda de literatura por faceta"
 
 [tasks.facet_summarizer]
 kind = "agent"

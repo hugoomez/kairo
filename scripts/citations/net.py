@@ -50,6 +50,7 @@ HOST_SPACING = {
     "api.semanticscholar.org": 1.0,
     "api.crossref.org": 0.2,
     "api.openalex.org": 0.02,
+    "dblp.org": 1.0,
 }
 BACKOFF = (5.0, 15.0)            # waits before attempt 2 and 3
 RETRYABLE = (406, 429)            # plus every 5xx

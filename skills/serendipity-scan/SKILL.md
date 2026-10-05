@@ -223,8 +223,8 @@ lower the bar to fill the section.
   endpoints, auth, throttling) and the ingestion path this skill's
   candidates eventually go through if promoted; this skill borrows its
   plumbing, not its relevance-ranking pipeline.
-- `create-project` step 6 — the Zotero-first ingestion a promoted candidate
-  goes through to become a real `Papers/` note.
+- `create-project` step 6 — the mechanical ingestion (`ingest_paper.py`) a
+  promoted candidate goes through to become a real `Papers/` note.
 - `spawn-hypothesis` / `hypothesis-cycle` — where a promoted candidate goes if
   it motivates a new hypothesis rather than just supporting an existing one.
   `hypothesis-cycle`'s "Budget overflow" section is also this skill's one

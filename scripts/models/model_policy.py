@@ -29,6 +29,11 @@ POLICY = ROOT / "config" / "models.toml"
 KINDS = ("job", "agent", "tool")
 # A pinned Claude model id: family + version digits, no alias, no "latest".
 PINNED = re.compile(r"^claude-(opus|sonnet|haiku)-\d+(-\d+)*$")
+# An `isolated = true` agent must see only its packet: no file, shell or
+# network tool. Claude Code cannot launch an agent with zero tools, and an
+# empty `tools:` inherits all of them, so isolated agents list only these
+# session-bookkeeping tools, which read no file and reach no network.
+ISOLATED_TOOLS = frozenset({"CronList", "TaskList"})
 
 
 class Refused(Exception):
@@ -54,6 +59,8 @@ def load(path: Path = POLICY) -> dict:
             raise Refused(f"task {tid!r}: tier {t.get('tier')!r} is not one of {', '.join(tiers)}")
         if t["kind"] == "agent" and not t.get("file"):
             raise Refused(f"task {tid!r}: an agent task needs `file`")
+        if "isolated" in t and (t["kind"] != "agent" or not isinstance(t["isolated"], bool)):
+            raise Refused(f"task {tid!r}: `isolated` is a true/false flag of agent tasks only")
     return data
 
 
@@ -84,9 +91,24 @@ def _frontmatter_model(text: str) -> str | None:
     return hit.group(1) if hit else None
 
 
+def _frontmatter_tools(text: str) -> list[str] | None:
+    """The agent's `tools:` entries; None when the line is missing. An empty
+    `tools:` (or `tools: ""`) gives [] — which Claude Code reads as "inherit
+    every tool", the opposite of what an empty list looks like."""
+    m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.S)
+    if not m:
+        return None
+    hit = re.search(r"^tools:[ \t]*(.*?)[ \t]*$", m.group(1), re.M)
+    if not hit:
+        return None
+    raw = hit.group(1).strip().strip("[]").strip("\"'")
+    return [t.strip().strip("\"'") for t in raw.split(",") if t.strip().strip("\"'")]
+
+
 def check(root: Path = ROOT, path: Path | None = None) -> list[str]:
     """Everything that disagrees with the policy, as one line each."""
     r = resolve(load(path or root / "config" / "models.toml"))
+    raw_tasks = load(path or root / "config" / "models.toml")["tasks"]
     problems: list[str] = []
     listed = set()
     for tid, t in r["tasks"].items():
@@ -97,9 +119,19 @@ def check(root: Path = ROOT, path: Path | None = None) -> list[str]:
         if not f.exists():
             problems.append(f"{tid}: {t['file']} does not exist")
             continue
-        have = _frontmatter_model(f.read_text(encoding="utf-8"))
+        text = f.read_text(encoding="utf-8")
+        have = _frontmatter_model(text)
         if have != t["model"]:
             problems.append(f"{tid}: {t['file']} has model {have!r}, the policy says {t['model']!r}")
+        tools = _frontmatter_tools(text)
+        if not tools:
+            problems.append(f"{tid}: {t['file']} has no explicit `tools:` list — an absent or empty "
+                            "list inherits every tool (shell, files, network)")
+        elif raw_tasks[tid].get("isolated"):
+            extra = [x for x in tools if x not in ISOLATED_TOOLS]
+            if extra:
+                problems.append(f"{tid}: {t['file']} is isolated but has {', '.join(extra)}; "
+                                f"only {', '.join(sorted(ISOLATED_TOOLS))} are allowed")
     for f in sorted((root / "agents").glob("*.md")):
         if f.resolve() not in listed:
             problems.append(f"{f.relative_to(root).as_posix()}: a subagent with no task in the model policy")

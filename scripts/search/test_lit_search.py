@@ -1,0 +1,267 @@
+"""Tests for lit_search.py (invented papers, no network)."""
+
+import contextlib
+import io
+import json
+import shutil
+import sys
+import tempfile
+import unittest
+import urllib.parse
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import lit_search as ls  # noqa: E402
+
+PLAN = {"description": "Toy decoders for invented codes, last two years",
+        "facets": [{"id": "A", "term": "toy code", "synonyms": ["invented code"]},
+                   {"id": "B", "term": "toy decoder", "synonyms": []}],
+        "sources": ["arxiv", "s2", "openalex", "crossref", "dblp"], "from": "2030-01-01", "per_query": 150,
+        "anchors": 2,
+        "include": ["reports a decoder result"], "exclude": ["survey only"], "scope_out": ["hardware papers"]}
+
+
+def atom(entries, total):
+    body = "".join(
+        f"<entry><id>http://arxiv.org/abs/{aid}v1</id><published>{date}T00:00:00Z</published>"
+        f"<title>{title}</title><summary>{abstract}</summary><author><name>Jane Doe</name></author></entry>"
+        for aid, title, abstract, date in entries)
+    return (f'<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">'
+            f"<opensearch:totalResults>{total}</opensearch:totalResults>{body}</feed>").encode()
+
+
+class FakeWeb:
+    """Answers by host; records every URL."""
+
+    def __init__(self, fail_hosts=(), dblp_bot=False):
+        self.urls = []
+        self.fail = fail_hosts
+        self.dblp_bot = dblp_bot
+
+    def __call__(self, url, headers):
+        self.urls.append(url)
+        host = urllib.parse.urlsplit(url).netloc
+        if host in self.fail:
+            raise ls.net.HttpError(url, 429, "Too Many Requests")
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        if host == "export.arxiv.org":
+            start = int(qs["start"][0])
+            if start == 0:
+                ents = [(f"0000.{i:05d}", f"Toy code paper number {i} with toy decoder",
+                         "We study a toy code and a toy decoder.", "2030-05-01") for i in range(100)]
+            else:
+                ents = [("0000.99999", "Old toy code paper outside the window", "toy code", "2020-01-01")]
+            return atom(ents, 300)
+        if host == "api.semanticscholar.org":
+            if "/references" in url or "/citations" in url:
+                return json.dumps({"data": [{"citedPaper": {
+                    "paperId": "s9", "title": "A snowballed toy code paper about the toy decoder",
+                    "abstract": "toy code toy decoder", "year": 2031, "externalIds": {"DOI": "10.0000/snow"},
+                    "authors": [{"name": "Ana Poe"}]}}]}).encode()
+            if "/bulk" in url:
+                return json.dumps({"total": 5000, "data": [
+                    {"paperId": "s1", "title": "The Foundational Toy Code Paper Everyone Cites", "year": 2030,
+                     "externalIds": {"DOI": "10.0000/found"}, "citationCount": 900,
+                     "authors": [{"name": "Rui Roe"}]}]}).encode()
+            return json.dumps({"total": 1, "data": [
+                {"paperId": "s2", "title": "Toy code paper number 3 with toy decoder", "year": 2030,
+                 "publicationDate": "2030-05-01", "externalIds": {"ArXiv": "0000.00003"},
+                 "citationCount": 4, "authors": [{"name": "Jane Doe"}]}]}).encode()
+        if host == "api.openalex.org":
+            return json.dumps({"meta": {"count": 1}, "results": [
+                {"id": "https://openalex.org/W1", "doi": "https://doi.org/10.0000/pub.3",
+                 "title": "Toy code paper number 3 with toy decoder", "publication_year": 2031,
+                 "publication_date": "2031-02-01",
+                 "primary_location": {"source": {"display_name": "Invented Journal", "type": "journal"}},
+                 "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.00003"}],
+                 "authorships": [{"author": {"display_name": "Jane Doe"}}], "cited_by_count": 7}]}).encode()
+        if host == "api.crossref.org":
+            return json.dumps({"message": {"total-results": 1, "items": [
+                {"DOI": "10.0000/QCE.7", "title": ["Toy decoder on invented hardware"],
+                 "author": [{"given": "Ana", "family": "Poe"}], "issued": {"date-parts": [[2031, 3, 2]]},
+                 "container-title": ["Proceedings of the Invented QCE"], "type": "proceedings-article",
+                 "abstract": "<jats:title>Abstract</jats:title><jats:p>A toy decoder.</jats:p>",
+                 "is-referenced-by-count": 2}]}}).encode()
+        if host == "dblp.org" and self.dblp_bot:
+            return b'<!doctype html><html><head><title>Making sure you&#39;re not a bot!</title></head></html>'
+        if host == "dblp.org":
+            return json.dumps({"result": {"hits": {"@total": "1", "hit": [{"info": {
+                "title": "Toy decoders at scale on invented clusters.", "venue": "SC", "year": "2031",
+                "doi": "10.0000/sc.1", "authors": {"author": [{"text": "Li Wu"}]}}}]}}}).encode()
+        raise AssertionError(url)
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.plan = self.tmp / "plan.json"
+        self.plan.write_text(json.dumps(PLAN), encoding="utf-8")
+        self.run_dir = self.tmp / "run"
+        self.orig_check = ls.check_retraction.run
+        ls.check_retraction.run = lambda cands, mailto=None: {
+            "results": [{"id": c["id"], "status": "retracted" if c.get("doi") == "10.0000/sc.1" else "clear",
+                         "evidence": ["invented retraction notice"] if c.get("doi") == "10.0000/sc.1" else [],
+                         "notice_for": []} for c in cands],
+            "counts": {"crossref": {"checked": 4, "removed": 1, "lost": 0},
+                       "arxiv": {"checked": 99, "removed": 0, "lost": 0}}}
+
+    def tearDown(self):
+        ls.check_retraction.run = self.orig_check
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def cli(self, *args, web=None):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = ls.main(list(args), fetch=web or FakeWeb(), today="2031-06-01")
+        return code, json.loads(buf.getvalue())
+
+    def run_search(self, web=None):
+        return self.cli("run", "--plan", str(self.plan), "--out", str(self.run_dir), web=web)
+
+
+class Run(Base):
+    def test_queries_are_built_per_source_rules(self):
+        web = FakeWeb()
+        code, out = self.run_search(web)
+        self.assertEqual(code, 0, out)
+        qs = json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+        s2 = [q["query"] for q in qs if q["source"] == "s2"]
+        self.assertEqual(s2, ["toy code", "invented code", "toy decoder"])     # plain keywords, one per term
+        arx = next(q["query"] for q in qs if q["source"] == "arxiv" and q["facet"] == "A")
+        self.assertIn('ti:"toy code" OR abs:"toy code"', arx)
+        self.assertIn("submittedDate:[203001010000 TO 203106012359]", arx)
+        self.assertTrue(any("from_publication_date%3A2030-01-01" in u or "from_publication_date:2030-01-01" in u
+                            for u in web.urls if "openalex" in u))
+        self.assertTrue(any("year=2030-" in u for u in web.urls if "semanticscholar" in u))
+
+    def test_paging_truncation_and_window(self):
+        _, out = self.run_search()
+        qs = json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+        a = next(q for q in qs if q["source"] == "arxiv" and q["facet"] == "A")
+        self.assertEqual((a["fetched"], a["total"], a["truncated"], len(a["raw"])), (101, 300, True, 2))
+        self.assertEqual(a["outside_window"], 1)              # the 2020 paper is dropped by the window
+        self.assertTrue(any("truncad" in x or "de 300" in x for x in out["truncated"]))
+        for r in a["raw"]:                                     # every page kept with its hash
+            self.assertTrue((self.run_dir / "raw" / r["file"]).is_file())
+
+    def test_preprint_and_published_version_merge(self):
+        self.run_search()
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        c = next(c for c in cands if c.get("arxiv") == "0000.00003")
+        self.assertEqual(c["doi"], "10.0000/pub.3")
+        self.assertEqual(c["venues"], ["Invented Journal"])
+        self.assertEqual(set(c["sources"]), {"arxiv", "s2", "openalex"})
+        self.assertEqual(c["facets"], {"A": "toy code", "B": "toy decoder"})
+        anchor = next(c for c in cands if c.get("doi") == "10.0000/found")
+        self.assertTrue(anchor["anchor"])
+
+    def test_a_lost_source_is_degraded_coverage(self):
+        code, out = self.run_search(FakeWeb(fail_hosts=("api.semanticscholar.org",)))
+        self.assertEqual(code, 0)
+        self.assertTrue(out["lost"])
+        self.assertTrue(all("s2" in x for x in out["lost"]))
+
+    def test_crossref_brings_proceedings_with_venue_and_date(self):
+        self.run_search()
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        c = next(c for c in cands if c.get("doi") == "10.0000/qce.7")
+        self.assertEqual((c["venues"], c["date"], c["abstract"]),
+                         (["Proceedings of the Invented QCE"], "2031-03-02", "A toy decoder."))
+
+    def test_an_anti_bot_page_is_a_lost_query_never_forced(self):
+        code, out = self.run_search(FakeWeb(dblp_bot=True))
+        self.assertEqual(code, 0)
+        dblp = [x for x in out["lost"] if "dblp" in x]
+        self.assertTrue(dblp and all("anti-bot" in x for x in dblp), out["lost"])
+
+    def test_default_sources_leave_dblp_out(self):
+        plan = {k: v for k, v in PLAN.items() if k != "sources"}
+        self.plan.write_text(json.dumps(plan), encoding="utf-8")
+        self.run_search()
+        used = {q["source"] for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))}
+        self.assertEqual(used, {"arxiv", "s2", "s2-anchor", "openalex", "crossref"})
+
+    def test_bad_plans_are_refused(self):
+        for bad in ({**PLAN, "facets": []}, {**PLAN, "sources": ["scholar"]}, {**PLAN, "from": "2030"},
+                    {**PLAN, "description": ""}):
+            self.plan.write_text(json.dumps(bad), encoding="utf-8")
+            self.assertEqual(self.cli("run", "--plan", str(self.plan), "--out", str(self.tmp / "x"))[0], 2)
+
+
+class Screen(Base):
+    def setUp(self):
+        super().setUp()
+        self.run_search()
+        self.cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+
+    def decide(self, decisions):
+        p = self.tmp / "decisions.json"
+        p.write_text(json.dumps(decisions), encoding="utf-8")
+        return self.cli("screen", "--run", str(self.run_dir), "--decisions", str(p))
+
+    def all_decisions(self):
+        d = {}
+        for i, c in enumerate(self.cands):
+            if c.get("doi") == "10.0000/sc.1":
+                continue                                   # retracted: excluded by the script itself
+            if i % 3 == 0:
+                d[c["key"]] = {"decision": "include", "relevance": "alta",
+                               "why": "Reports a toy decoder result on a toy code (A, B)."}
+            elif i % 3 == 1:
+                d[c["key"]] = {"decision": "exclude", "reason": "relevancia baja", "why": "Peripheral."}
+            else:
+                d[c["key"]] = {"decision": "exclude", "reason": "fuera de alcance", "scope_clause": "hardware papers",
+                               "why": "Relevant hardware realisation of the toy decoder."}
+        return d
+
+    def test_screen_needs_the_retraction_check_first(self):
+        self.assertEqual(self.decide(self.all_decisions())[0], 2)
+
+    def test_counts_are_computed_and_exact(self):
+        self.cli("retraction", "--run", str(self.run_dir))
+        d = self.all_decisions()
+        code, out = self.decide(d)
+        self.assertEqual(code, 0, out)
+        c = out["counts"]
+        self.assertEqual(c["tras_deduplicacion"], len(self.cands))
+        self.assertEqual(c["tras_retraccion"], len(self.cands) - 1)
+        self.assertEqual(c["incluidos"], sum(1 for x in d.values() if x["decision"] == "include"))
+        self.assertEqual(c["motivos"]["retractado/retirado"], 1)
+        md = (self.run_dir / "busqueda.md").read_text(encoding="utf-8")
+        self.assertIn("## ⚠️ Cobertura degradada", md)                     # arXiv was truncated
+        self.assertIn("`(\"toy code\" \\| \"invented code\")`", md)        # pipes escaped in the table
+        ranked = (self.run_dir / "ranked.md").read_text(encoding="utf-8")
+        self.assertIn("### Relevante pero fuera de alcance", ranked)
+        self.assertIn("Cláusula: «hardware papers»", ranked)
+
+    def test_incomplete_or_invalid_decisions_are_refused(self):
+        self.cli("retraction", "--run", str(self.run_dir))
+        d = self.all_decisions()
+        first = next(iter(d))
+        for broken in ({k: v for k, v in d.items() if k != first},                 # undecided
+                       {**d, "doi:10.0000/none": {"decision": "include"}},          # unknown key
+                       {**d, first: {"decision": "exclude", "reason": "aburrido"}},  # unknown reason
+                       {**d, first: {"decision": "include", "relevance": "alta", "why": "ok"}},  # no sentence
+                       {**d, first: {"decision": "exclude", "reason": "fuera de alcance",
+                                     "scope_clause": "something else", "why": "Relevant but outside it."}}):
+            code, out = self.decide(broken)
+            self.assertEqual(code, 2, broken.get(first))
+
+
+class Snowball(Base):
+    def test_snowball_adds_multi_facet_neighbours_and_invalidates_retraction(self):
+        self.run_search()
+        self.cli("retraction", "--run", str(self.run_dir))
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        key = next(c["key"] for c in cands if c.get("arxiv") == "0000.00003")
+        code, out = self.cli("snowball", "--run", str(self.run_dir), "--keys", key, "--direction", "references")
+        self.assertEqual((code, out["added"]), (0, 1), out)
+        self.assertFalse((self.run_dir / "retraction.json").exists())
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        snow = next(c for c in cands if c.get("doi") == "10.0000/snow")
+        self.assertEqual(snow["facets"], {"A": "toy code", "B": "toy decoder"})
+
+
+if __name__ == "__main__":
+    unittest.main()

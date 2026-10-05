@@ -132,8 +132,10 @@ class TestLitWatch(unittest.TestCase):
         code, res = self.delta(net)
         self.assertEqual(code, 0, res)
         arxiv_url = urllib.parse.unquote(next(u for u in net.urls if "arxiv" in u))
-        self.assertIn("submittedDate:[203102010000 TO 203103012359]", arxiv_url)
-        self.assertIn("publicationDateOrYear=2031-02-01:", next(u for u in net.urls if "semanticscholar" in u))
+        # the window re-reads OVERLAP_DAYS before last_watch (late listing / indexing)
+        self.assertIn("submittedDate:[203101180000 TO 203103012359]", arxiv_url)
+        self.assertIn("publicationDateOrYear=2031-01-18:", next(u for u in net.urls if "semanticscholar" in u))
+        self.assertEqual((res["since"], res["queried_from"]), ("2031-02-01", "2031-01-18"))
         run = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         keys = [c["key"] for c in run["candidates"]]
         self.assertNotIn("arxiv:2031.00001", keys)          # already in Papers/
@@ -300,6 +302,68 @@ class TestLitWatch(unittest.TestCase):
         code, out = self.cli("check", *common)
         self.assertEqual(code, 3)
         self.assertTrue(any("gravedad" in m for m in out["missing"]))
+
+
+class TestQueriesAndCoverage(TestLitWatch):
+    """The three ways a watch used to lose papers silently."""
+
+    def test_piped_anchor_rows_and_or_groups_are_read_right(self):
+        sota = SOTA.replace(
+            "| A | vault | `widgets` | 3 |",
+            '| A | Semantic Scholar (anchor / bulk) | `("fictional widgets" \\| "toy widgets")` | 40 |\n'
+            '| B | Semantic Scholar | `(synthetic spin OR fake spin)` | 7 |')
+        (self.p / "Estado-del-arte.md").write_text(sota, encoding="utf-8")
+        qs = [(q["facet"], q["source"], q["query"]) for q in lit_watch.recorded_queries(self.p)]
+        self.assertEqual(qs, [("A", "arxiv", 'abs:"fictional widgets"'), ("B", "s2", "synthetic spin"),
+                              ("B", "s2", "fake spin")])          # anchor row not re-run; OR split
+        self.assertEqual(lit_watch.table_cells('| A | `("a" \\| "b")` | 3 |'), ["A", '`("a" | "b")`', "3"])
+
+    def test_a_query_with_more_than_one_page_is_paged_and_a_capped_one_is_degraded(self):
+        class Busy(FakeNet):
+            def __call__(self, url, headers):
+                self.urls.append(url)
+                if "arxiv" in url:
+                    start = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["start"][0])
+                    ents = [(f"2031.{start + i + 10:05d}", f"Widget paper {start + i}", "Widgets.")
+                            for i in range(100)]
+                    body = atom(ents).decode().replace(
+                        '<feed xmlns="http://www.w3.org/2005/Atom">',
+                        '<feed xmlns="http://www.w3.org/2005/Atom" xmlns:o="http://a9.com/-/spec/opensearch/1.1/">'
+                        '<o:totalResults>900</o:totalResults>')
+                    return body.encode()
+                return json.dumps({"total": 0, "data": []}).encode()
+        net = Busy()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(sum(1 for u in net.urls if "arxiv" in u), 5)    # 5 pages of 100 = MAX_RESULTS
+        self.assertTrue(res["truncated"])
+        self.assertFalse(res["last_watch_moved"])                       # the window stays open
+        self.assertIn("last_watch: 2031-02-01", (self.p / "_hub.md").read_text(encoding="utf-8"))
+
+    def test_a_structured_plan_is_preferred_and_run_over_the_window(self):
+        run = self.p / "_busquedas" / "2031-01-15"
+        run.mkdir(parents=True)
+        (run / "plan.json").write_text(json.dumps({
+            "description": "x", "facets": [{"id": "A", "term": "fictional widgets", "synonyms": []},
+                                           {"id": "B", "term": "synthetic spin", "synonyms": []}],
+            "sources": ["arxiv", "s2"], "from": "2020-01-01", "per_query": 100, "anchors": 10,
+            "arxiv_categories": [], "include": [], "exclude": [], "scope_out": []}), encoding="utf-8")
+        net = FakeNet()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertFalse(any("/bulk" in u for u in net.urls))           # no anchor pass in a watch
+        self.assertTrue(any("submittedDate%3A%5B203101180000" in u for u in net.urls if "arxiv" in u))
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertEqual(data["queries_from"], "_busquedas/2031-01-15")
+        self.assertIn("arxiv:2031.00002", [c["key"] for c in data["candidates"]])
+
+    def test_the_published_version_of_an_ingested_preprint_is_not_new(self):
+        (self.vault / "Papers" / "P-0963 pre.md").write_text(
+            "---\nid: P-0963\ntitle: Some preprint\narxiv: 2030.00009\npublished_doi: 10.9999/fake.1\n---\n",
+            encoding="utf-8")
+        _, res = self.delta()
+        keys = [c["key"] for c in json.loads(self.run_file(res).read_text(encoding="utf-8"))["candidates"]]
+        self.assertNotIn("doi:10.9999/fake.1", keys)
 
 
 if __name__ == "__main__":

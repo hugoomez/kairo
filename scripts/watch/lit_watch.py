@@ -14,13 +14,20 @@
                          --hypothesis H-XXXX --decision no_afecta|revisar --reason "..." --by <name>
 
 `delta` (mechanical, network):
-  - Re-runs the project's own recorded queries — every row of the
-    "Consultas (verbatim)" tables in `Estado-del-arte.md`'s
-    `### Búsqueda ejecutada` blocks — restricted to papers since the last
-    watch: arXiv with `submittedDate:[since TO today]`, Semantic Scholar with
-    `publicationDateOrYear=since:`. `SEMANTIC_SCHOLAR_API_KEY` is used when set.
-  - Drops papers already in `Papers/` (arXiv id, DOI, normalised title) and
-    papers offered by an earlier watch of this project.
+  - Re-runs the project's own recorded queries, restricted to the window:
+    the latest `_busquedas/<run>/plan.json` written by lit_search.py (every
+    source it used: arXiv, Semantic Scholar, OpenAlex, DBLP; no anchor pass),
+    or, for projects searched before it existed, every row of the
+    "Consultas (verbatim)" tables in `Estado-del-arte.md` (a `|` escaped or
+    inside `code` stays in its cell; Semantic Scholar OR-groups become one
+    plain-keyword query per alternative; anchor rows are not re-run).
+  - The window starts OVERLAP_DAYS before `last_watch` (arXiv lists, and
+    Semantic Scholar / OpenAlex index, papers days to weeks late); `--since`
+    sets it exactly. Every query is paged up to MAX_RESULTS; one with more
+    matches is `truncated`. `SEMANTIC_SCHOLAR_API_KEY` is used when set.
+  - Drops papers already in `Papers/` (arXiv id, DOI or the published DOI of
+    an ingested preprint, normalised title) and papers offered by an earlier
+    watch of this project.
   - A candidate is *strong* when queries of two or more facets found it (or the
     project has one facet). The top `--top` strong candidates are marked for
     triage; the rest are listed, not surfaced.
@@ -31,10 +38,11 @@
     `## Claim` and each candidate's title + abstract. Only ids and scores are
     stored — the claim text never leaves the note.
   - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json` and sets the hub's
-    `last_watch:` only when every query answered. If some failed, the run is
-    still saved but `last_watch` stays where it was, so the next watch covers
-    the same window again (papers already offered are dropped, never repeated);
-    if every query failed, nothing is written and the run says so.
+    `last_watch:` only when every query answered in full. If some failed or
+    were truncated, the run is still saved but `last_watch` stays where it
+    was, so the next watch covers the same window again (papers already
+    offered are dropped, never repeated); if every query failed, nothing is
+    written and the run says so.
 
 `threat` records a novelty threat, which is a model's judgement and not
 evidence:
@@ -83,6 +91,7 @@ from typing import Callable
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "citations"))
 sys.path.insert(0, str(HERE.parent / "security"))
+sys.path.insert(0, str(HERE.parent / "search"))
 import net  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 from vaultnotes import (  # noqa: E402
@@ -94,13 +103,18 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.3.0"
+TOOL = "kairo/lit_watch@1.4.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
 S2_FIELDS = "title,abstract,authors,year,externalIds,publicationDate,venue,citationCount,url"
-MAX_RESULTS = 50
+PAGE = 100
+MAX_RESULTS = 500          # per query and window; more than this marks the query truncated
 DEFAULT_LOOKBACK_DAYS = 30
+# arXiv lists a paper days after submission and Semantic Scholar / OpenAlex index
+# it days to weeks later: each watch re-reads this much before the last one.
+# Papers already offered are dropped, so the overlap never repeats a candidate.
+OVERLAP_DAYS = 14
 NOVELTY_MIN_SCORE = 0.25
 NOVELTY_MIN_SHARED = 3
 STOP = set("""
@@ -172,8 +186,66 @@ def find_candidate(run: dict, key: str) -> dict:
 # The project's recorded queries
 # --------------------------------------------------------------------------
 
+def table_cells(row: str) -> list[str]:
+    """A Markdown table row's cells. A `|` escaped as `\\|` or inside `code`
+    stays in its cell (the anchor-pass query uses `|` as OR)."""
+    cells, cur, code, i = [], "", False, 0
+    s = row.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s) and s[i + 1] == "|":
+            cur += "|"
+            i += 2
+            continue
+        if ch == "`":
+            code = not code
+        if ch == "|" and not code:
+            cells.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+        i += 1
+    cells.append(cur.strip())
+    return cells
+
+
+def _cell(cells: list[str], col: dict[str, int], name: str, default: str) -> str:
+    """The cell under header `name`, else `default` (tables written before the header names)."""
+    i = col.get(name)
+    return cells[i] if i is not None and i < len(cells) else default
+
+
+def s2_keywords(query: str) -> list[str]:
+    """Semantic Scholar's /paper/search takes plain keywords only: an OR-group
+    (`(a OR b)`, `("a" | "b")`) becomes one plain query per alternative."""
+    q = re.sub(r"\b(?:ti|abs|all|au|cat):", "", query)
+    parts = re.split(r"\s+OR\s+|\s*\|\s*", q.strip().strip("()"))
+    out = []
+    for p in parts:
+        p = re.sub(r"[()\"+]", " ", p)
+        p = " ".join(p.split())
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def structured_plan(pdir: Path) -> tuple[dict | None, str | None]:
+    """The latest lit_search run of the project (`_busquedas/<run>/plan.json`)."""
+    plans = sorted((pdir / "_busquedas").glob("*/plan.json"))
+    if not plans:
+        return None, None
+    return json.loads(plans[-1].read_text(encoding="utf-8")), plans[-1].parent.relative_to(pdir).as_posix()
+
+
 def recorded_queries(pdir: Path) -> list[dict]:
-    """Every (facet, source, query) row of the Consultas tables, deduplicated."""
+    """Legacy record: every (facet, source, query) row of the Consultas tables in
+    Estado-del-arte.md, deduplicated. Semantic Scholar rows are split into plain
+    keyword queries; anchor (bulk) rows are not re-run (a watch looks for new
+    papers, not the most-cited ones)."""
     f = pdir / "Estado-del-arte.md"
     if not f.is_file():
         return []
@@ -184,23 +256,32 @@ def recorded_queries(pdir: Path) -> list[dict]:
         m = re.search(r"\*\*Consultas \(verbatim\):\*\*\s*\n(.*?)(?:\n\s*\n|\Z)", block, re.DOTALL)
         if not m:
             continue
-        for row in m.group(1).split("\n"):
-            cells = [c.strip() for c in row.strip().strip("|").split("|")]
-            if len(cells) < 3 or set(cells[0]) <= set("-: ") or cells[0].lower() == "faceta":
+        rows = [r for r in m.group(1).split("\n") if r.strip()]
+        head = [c.lower() for c in table_cells(rows[0])] if rows else []
+        col = {name: head.index(name) for name in ("faceta", "fuente", "query", "pase") if name in head}
+        for row in rows[1:] if col else rows:
+            cells = table_cells(row)
+            if len(cells) < 3 or set(cells[0]) <= set("-: ") or cells[0].lower() in ("faceta", "id"):
                 continue
-            facet, source, query = cells[0], cells[1].lower(), cells[2].strip().strip("`").strip()
+            facet = _cell(cells, col, "faceta", cells[0])
+            source = _cell(cells, col, "fuente", cells[1]).lower()
+            query = _cell(cells, col, "query", cells[2]).strip().strip("`").strip()
+            anchor = ("anchor" in _cell(cells, col, "pase", "") or "bulk" in source or "anchor" in source
+                      or "ancla" in source)
             if "arxiv" in source:
                 src = "arxiv"
             elif "semantic" in source or source.startswith("s2"):
                 src = "s2"
             else:
                 continue  # vault, PatentsView: not watched
-            if not query or query in ("…", "..."):
+            if not query or query in ("…", "...") or anchor:
                 continue
-            k = (facet, src, query)
-            if k not in seen:
-                seen.add(k)
-                out.append({"facet": facet, "source": src, "query": query})
+            qs = s2_keywords(query) if src == "s2" else [query]
+            for qq in qs:
+                k = (facet, src, qq)
+                if k not in seen:
+                    seen.add(k)
+                    out.append({"facet": facet, "source": src, "query": qq})
     return out
 
 
@@ -212,12 +293,31 @@ def default_fetch(url: str, headers: dict) -> bytes:
     return net.get(url, headers=headers)
 
 
-def arxiv_delta(q: str, since: date, until: date, fetch: Fetch) -> list[dict]:
+def arxiv_delta(q: str, since: date, until: date, fetch: Fetch, log: dict | None = None) -> list[dict]:
+    """Every arXiv entry submitted in the window, paged by PAGE up to MAX_RESULTS;
+    `log` gets `total` (what arXiv reports) and `truncated`."""
     query = urllib.parse.unquote_plus(q) if "%" in q else q
     sq = f"({query}) AND submittedDate:[{since:%Y%m%d}0000 TO {until:%Y%m%d}2359]"
-    url = ("https://export.arxiv.org/api/query?search_query=" + urllib.parse.quote(sq, safe="")
-           + f"&start=0&max_results={MAX_RESULTS}&sortBy=submittedDate&sortOrder=descending")
-    root = ET.fromstring(fetch(url, {}))
+    out: list[dict] = []
+    start = 0
+    total = 0
+    while start < MAX_RESULTS:
+        url = ("https://export.arxiv.org/api/query?search_query=" + urllib.parse.quote(sq, safe="")
+               + f"&start={start}&max_results={PAGE}&sortBy=submittedDate&sortOrder=descending")
+        root = ET.fromstring(fetch(url, {}))
+        total = int(root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults") or 0)
+        page = _arxiv_entries(root)
+        out.extend(page)
+        if len(page) < PAGE or start + PAGE >= total:
+            break
+        start += PAGE
+    if log is not None:
+        log["total"] = max(total, len(out))
+        log["truncated"] = total > len(out)
+    return out
+
+
+def _arxiv_entries(root) -> list[dict]:
     out = []
     for e in root.findall(f"{ATOM}entry"):
         aid = (e.findtext(f"{ATOM}id") or "").rsplit("/abs/", 1)[-1]
@@ -235,18 +335,33 @@ def arxiv_delta(q: str, since: date, until: date, fetch: Fetch) -> list[dict]:
     return out
 
 
-def s2_delta(q: str, since: date, fetch: Fetch) -> list[dict]:
-    url = ("https://api.semanticscholar.org/graph/v1/paper/search?query=" + urllib.parse.quote(q)
-           + f"&publicationDateOrYear={since.isoformat()}:&limit={MAX_RESULTS}&fields={S2_FIELDS}")
+def s2_delta(q: str, since: date, fetch: Fetch, log: dict | None = None) -> list[dict]:
+    """Plain-keyword search restricted to the window, paged by PAGE up to MAX_RESULTS."""
     headers = {}
     if os.environ.get("SEMANTIC_SCHOLAR_API_KEY"):
         headers["x-api-key"] = os.environ["SEMANTIC_SCHOLAR_API_KEY"]
-    data = json.loads(fetch(url, headers))
+    items: list[dict] = []
+    offset, total = 0, 0
+    while offset < MAX_RESULTS:
+        url = ("https://api.semanticscholar.org/graph/v1/paper/search?query=" + urllib.parse.quote(q)
+               + f"&publicationDateOrYear={since.isoformat()}:&offset={offset}&limit={PAGE}&fields={S2_FIELDS}")
+        data = json.loads(fetch(url, headers))
+        page = data.get("data") or []
+        total = int(data.get("total") or len(page))
+        items.extend(page)
+        if len(page) < PAGE or offset + PAGE >= total:
+            break
+        offset += PAGE
+    if log is not None:
+        log["total"] = max(total, len(items))
+        log["truncated"] = total > len(items)
     out = []
-    for p in data.get("data") or []:
+    for p in items:
         ext = p.get("externalIds") or {}
         pub = p.get("publicationDate")
         if pub and pub < since.isoformat():
+            continue
+        if not pub and p.get("year") and int(p["year"]) < since.year:
             continue
         out.append({
             "arxiv": ext.get("ArXiv"), "doi": (ext.get("DOI") or "").lower() or None,
@@ -285,8 +400,9 @@ def known_papers(vault: Path) -> tuple[set[str], set[str], set[str]]:
         fm = parts[0]
         if a := (fm_get(fm, "arxiv") or "").strip():
             arx.add(re.sub(r"v\d+$", "", a.lower()))
-        if d := (fm_get(fm, "doi") or "").strip():
-            dois.add(d.lower())
+        for field in ("doi", "published_doi"):     # a preprint's journal version is not new either
+            if d := (fm_get(fm, field) or "").strip():
+                dois.add(d.lower())
         if t := (fm_get(fm, "title") or "").strip():
             titles.add(norm_title(t))
     return arx, dois, titles
@@ -333,28 +449,66 @@ def run_path(pdir: Path, today: date) -> Path:
     return p
 
 
+def structured_delta(plan: dict, pdir: Path, query_from: date, today: date,
+                     fetch: Fetch) -> tuple[list, list[dict], set[str]]:
+    """Re-run a lit_search plan over the watch window with lit_search's own
+    query builders and pager (raw responses kept next to the run)."""
+    import lit_search
+    p = {**plan, "from": query_from.isoformat(), "to": today.isoformat(), "anchors": 0,
+         "per_query": MAX_RESULTS}
+    raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
+    raw.mkdir(parents=True, exist_ok=True)
+    results, log = [], []
+    for q in lit_search.build_queries(p, today.isoformat()):
+        recs = lit_search.run_query(q, p, raw, fetch)
+        entry = {"id": q["id"], "facet": q["facet"], "source": q["source"], "query": q["query"],
+                 "hits": len(recs) if not q["error"] else None, "total": q["total"],
+                 "truncated": q.get("truncated", False), "error": q["error"]}
+        log.append(entry)
+        if not q["error"]:
+            got = [{"arxiv": r.get("arxiv"), "doi": r.get("doi"), "s2": r.get("s2"), "title": r["title"],
+                    "abstract": r.get("abstract") or "", "authors": (r.get("authors") or [])[:8],
+                    "date": r.get("date") or (str(r["year"]) if r.get("year") else None), "url": r.get("url"),
+                    "venue": r.get("venue"), "citations": r.get("citations")} for r in recs]
+            results.append(({"facet": q["facet"], "source": q["source"]}, got))
+    return results, log, {f["id"] for f in plan["facets"]}
+
+
 def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date) -> dict:
     if not hub_path(pdir).is_file():
         raise Refused(f"{pdir} is not a project folder (no _hub.md)")
-    queries = recorded_queries(pdir)
-    if not queries:
-        raise Refused("Estado-del-arte.md has no recorded queries (Búsqueda ejecutada → Consultas) to re-run")
+    plan, plan_run = structured_plan(pdir)
+    queries = [] if plan else recorded_queries(pdir)
+    if not plan and not queries:
+        raise Refused("no recorded queries to re-run: no _busquedas/<run>/plan.json (lit_search.py) and "
+                      "no Búsqueda ejecutada → Consultas table in Estado-del-arte.md")
+    explicit = since is not None
     if since is None:
         lw = (hub_field(pdir, "last_watch") or "").strip()
         since = date.fromisoformat(lw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lw) else today - timedelta(days=DEFAULT_LOOKBACK_DAYS)
+    # re-read OVERLAP_DAYS before the last watch: papers listed or indexed late
+    query_from = since if explicit else since - timedelta(days=OVERLAP_DAYS)
     arx, dois, titles = known_papers(vault)
     seen_before = earlier_keys(pdir)
-    facets_all = {q["facet"] for q in queries}
     merged: dict[str, dict] = {}
     by_title: dict[str, str] = {}
     log = []
-    for q in queries:
-        try:
-            got = arxiv_delta(q["query"], since, today, fetch) if q["source"] == "arxiv" else s2_delta(q["query"], since, fetch)
-            log.append({**q, "hits": len(got), "error": None})
-        except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
-            log.append({**q, "hits": None, "error": net.redact(str(exc))[:200]})
-            continue
+    if plan:
+        results, log, facets_all = structured_delta(plan, pdir, query_from, today, fetch)
+    else:
+        facets_all = {q["facet"] for q in queries}
+        results = []
+        for q in queries:
+            entry = {**q, "hits": None, "error": None, "total": None, "truncated": False}
+            try:
+                got = arxiv_delta(q["query"], query_from, today, fetch, entry) if q["source"] == "arxiv" \
+                    else s2_delta(q["query"], query_from, fetch, entry)
+                entry["hits"] = len(got)
+                results.append((q, got))
+            except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
+                entry["error"] = net.redact(str(exc))[:200]
+            log.append(entry)
+    for q, got in results:
         for c in got:
             if not c["title"]:
                 continue
@@ -395,22 +549,29 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     for i, c in enumerate(cands):
         c["triage"] = c["strong"] and i < top
         c.update({"why": None, "decision": None})
-    run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(), "until": today.isoformat(),
-           "degraded": any(x["error"] for x in log), "lost_all": lost_all, "queries": log,
-           "candidates": cands, "threats": []}
+    truncated = [x for x in log if x.get("truncated")]
+    run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(),
+           "queried_from": query_from.isoformat(), "until": today.isoformat(),
+           "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)",
+           "degraded": any(x["error"] for x in log) or bool(truncated), "lost_all": lost_all,
+           "truncated": [f"{x.get('id', x['facet'])} {x['source']}: {x.get('hits')} de {x.get('total')}"
+                         for x in truncated],
+           "queries": log, "candidates": cands, "threats": []}
     out = None
     moved = False
     if not lost_all:
         out = run_path(pdir, today)
         save_run(out, run)
         if not run["degraded"]:
-            # A window with lost queries was not covered: keep it open for the next watch.
+            # A window with lost or truncated queries was not covered: keep it open
+            # for the next watch (papers offered now are not offered again).
             text, nl = read_text(hub_path(pdir))
             write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
             moved = True
-    return {"run": out.relative_to(vault).as_posix() if out else None, "since": run["since"], "until": run["until"],
+    return {"run": out.relative_to(vault).as_posix() if out else None, "since": run["since"],
+            "queried_from": run["queried_from"], "until": run["until"],
             "queries": len(log), "lost": sum(1 for x in log if x["error"]), "lost_all": lost_all,
-            "last_watch_moved": moved,
+            "truncated": run["truncated"], "last_watch_moved": moved,
             "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
             "to_triage": sum(c["triage"] for c in cands),
             "novelty_candidates": sum(1 for c in cands if c["novelty"])}
