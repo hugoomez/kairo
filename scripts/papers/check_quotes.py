@@ -114,6 +114,13 @@ def projects_of(fm: list[str]) -> list[str]:
     return out
 
 
+def has_fulltext(body: str) -> bool:
+    """`## Texto completo` holds the paper's text, not «No disponible — solo abstract.»"""
+    m = re.search(r"^## Texto completo\s*\n(.*?)(?=^## |\Z)", body, re.M | re.S)
+    text = "\n".join(ln for ln in (m.group(1) if m else "").split("\n") if not ln.startswith(">")).strip()
+    return bool(text) and not text.startswith("No disponible")
+
+
 def list_papers(vault: str, project: str | None) -> list[dict]:
     """The papers an answer may quote: in Papers/, never the model-written
     reading notes, never send: never, and (with a project) listed for it."""
@@ -125,7 +132,7 @@ def list_papers(vault: str, project: str | None) -> list[dict]:
         if project and project not in projects_of(fm):
             continue
         out.append({"id": fm_scalar(fm, "id") or p.stem.split(" ")[0], "title": fm_scalar(fm, "title"),
-                    "path": p.relative_to(vault).as_posix(), "fulltext": "## Texto completo" in body})
+                    "path": p.relative_to(vault).as_posix(), "fulltext": has_fulltext(body)})
     return out
 
 

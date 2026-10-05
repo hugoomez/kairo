@@ -197,6 +197,12 @@ For each confirmed paper, add it to Zotero **first**, then generate the
      API>, obtenido <YYYY-MM-DD>` line. No source returned an abstract (null,
      429, paywall) → write `No disponible — ningún abstract recuperado
      (<sources tried>).` Never a summary, and never "from general knowledge".
+     Then, for every such note, run
+     `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/fill_abstract.py" --papers <vault>/Papers --only <P-ids> --write`:
+     it asks OpenAlex (its abstract index), Crossref and arXiv again and writes
+     the first verbatim abstract found, with its `> Fuente:` line. A note it
+     reports `still_missing` stays as it is: list it in the creation report as
+     «sin resumen ni texto: hace falta el PDF».
    - `## Texto completo`: the paper's **verbatim** text, organised by its own
      section / figure / table / appendix numbering, so locators can point at
      it. Build it with
@@ -206,8 +212,12 @@ For each confirmed paper, add it to Zotero **first**, then generate the
      fetched file) and marks anything it could not extract as
      `[extracción dañada]` instead of reconstructing it. For a non-arXiv
      open-access PDF, run `pdftotext` and pass the output with `--pdf-text`
-     and `--source-url`. Exit 1, or no open full text at all → `No disponible
-     — solo abstract.` and nothing else.
+     and `--source-url`. A letter-format paper with no numbered sections is
+     kept whole under `### Texto (sin secciones numeradas en la fuente)`
+     (cite it by figure / table or as `§Texto`). Exit 1, or no open full text
+     at all → `No disponible — solo abstract.` and nothing else. Never
+     download through a site's bot protection (a 403 from a publisher is a
+     no): the researcher adds that PDF by hand.
    - **No model-written text in the paper note at all.** A reading aid, if
      you write one, goes in a separate file `Papers/_notas/<P-id>.md` (see
      Paper note format), never in the paper note. No locator may point there;
@@ -283,7 +293,13 @@ For each confirmed paper, add it to Zotero **first**, then generate the
    note mixes metadata of two papers (a "chimeric" citation) — fix it by hand
    from the sources the script names; never "fix" it by trusting one source
    blindly (a `mismatch` also covers a DOI and arXiv id that point to two
-   different works). A note missing its first author or year stays
+   different works). Two versions of ONE work are not a mismatch: when the
+   arXiv record itself declares the note's DOI (a postprint posted years after
+   the proceedings, or a preprint later retitled), the script records the
+   year / title difference as `version` and resolves the note. When the DOI
+   and the arXiv id look like versions but arXiv declares no link, anchor the
+   note to the text you ingested (empty the other identifier) and keep it as
+   `posible_version_publicada: "<id> (<why>)"`. A note missing its first author or year stays
    `unresolved` ("note lacks author/year — cannot prove match", `importante`)
    until they are added. A `send: never` note is skipped entirely (nothing is sent).
    **OpenAlex API key:** `OPENALEX_API_KEY` is optional — keyless OpenAlex

@@ -648,3 +648,47 @@ class TestReviewFindingsPure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVersionsLinkedByArxiv(unittest.TestCase):
+    """A postprint posted to arXiv years after its conference version: arXiv's own
+    record declares the DOI, so the two are versions of one work (invented works)."""
+
+    note = {**X, "year": 2030, "id": "P-0050", "prev_status": None,
+            "doi": "10.9999/conf.2026.001", "arxiv": "9999.00042"}
+
+    def recs(self, declare=True, cr_author="Marta Alvarez", cr_title=None):
+        ax = rec("arxiv", X["title"], ["Marta Alvarez", "Li Chen"], 2030, id_key="arxiv:9999.00042",
+                 raw={"doi": "10.9999/conf.2026.001"} if declare else {})
+        cr = rec("crossref", cr_title or X["title"], [cr_author], 2026, id_key="doi:10.9999/conf.2026.001")
+        oa = rec("openalex", cr_title or X["title"], [cr_author], 2026, openalex_id="W77", found_by="doi",
+                 id_key="doi:10.9999/conf.2026.001", raw={"doi": "https://doi.org/10.9999/conf.2026.001"})
+        return [oa, cr, ax], oa
+
+    def decide(self, records, oa):
+        return rr.decide(self.note, records, oa, False, "clear", [], False, trace("openalex", "crossref", "arxiv"))
+
+    def test_declared_link_makes_year_a_version(self):
+        records, oa = self.recs()
+        self.assertTrue(rr.registrar_links_ids(self.note, records))
+        self.assertEqual(rr.identifier_conflicts(self.note, records), [])
+        r = self.decide(records, oa)
+        self.assertEqual((r.status, r.match, r.resolved), ("resolved", "close", True))
+        self.assertIn("version", [d["level"] for d in r.diff])
+        self.assertTrue(rr.gate_passes(r))
+        self.assertFalse(any(f["severity"] in ("crítico", "importante") for f in r.flags))
+
+    def test_retitled_published_version_is_a_version(self):
+        records, oa = self.recs(cr_title="Gadget Learning Improves with Sparse Widgets: Published Edition Retitled")
+        r = self.decide(records, oa)
+        self.assertEqual(r.status, "resolved")
+
+    def test_without_the_declaration_it_stays_a_conflict(self):
+        records, oa = self.recs(declare=False)
+        r = self.decide(records, oa)
+        self.assertEqual(r.status, "mismatch")
+
+    def test_another_first_author_is_never_a_version(self):
+        records, oa = self.recs(cr_author="Ngozi Okafor")
+        r = self.decide(records, oa)
+        self.assertEqual(r.status, "mismatch")

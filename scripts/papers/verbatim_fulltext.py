@@ -52,6 +52,9 @@ from pathlib import Path
 __version__ = "1.0.0"
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
 DAMAGED = "[extracción dañada]"
+# A paper with no numbered sections (letter format) is kept whole under this heading.
+UNSECTIONED_HEADING = "Texto (sin secciones numeradas en la fuente)"
+UNSECTIONED_MIN_WORDS = 800
 UA = {"User-Agent": f"Mozilla/5.0 ({TOOL_ID}; research use)"}
 
 # --------------------------------------------------------------------------
@@ -419,6 +422,11 @@ def fuente_line(url: str, version: str, kind: str, sha: str, date: str) -> str:
             f"«{DAMAGED}» marca lo que no se pudo extraer, sin reconstruirlo.")
 
 
+def build_from_text(data: bytes, url: str, version: str, date: str) -> str | None:
+    """--pdf-text: pdftotext output already on disk; the same rules as build()."""
+    return _assemble("pdf", url, version, data, pdftext_to_body(data.decode("utf-8", errors="replace")), date)
+
+
 def build(kind: str, url: str, version: str, data: bytes, date: str) -> str | None:
     if kind == "pdf":
         txt = pdf_bytes_to_text(data)
@@ -427,9 +435,24 @@ def build(kind: str, url: str, version: str, data: bytes, date: str) -> str | No
         body = pdftext_to_body(txt)
     else:
         body = html_to_body(data.decode("utf-8", errors="replace"))
-    if not re.search(r"^### ", body, re.M):
-        return None                      # no section structure recovered: not usable
+    return _assemble(kind, url, version, data, body, date)
+
+
+def _assemble(kind: str, url: str, version: str, data: bytes, body: str, date: str) -> str | None:
     sha = hashlib.sha256(data).hexdigest()
+    if not re.search(r"^### ", body, re.M):
+        # A letter-format paper (PRL, Nature Physics…) numbers no sections. Its text is
+        # still the paper's own: kept verbatim under one heading that says so, so it is
+        # cited by figure / table or as «§Texto». A short or empty extraction is refused.
+        if len(body.split()) < UNSECTIONED_MIN_WORDS:
+            return None                  # nothing usable recovered
+        # without sections nothing can be cut off safely: say what stays in
+        head = re.sub(r"; se omiten el abstract \(en ## Resumen\) y la bibliografía", "",
+                      fuente_line(url, version, kind, sha, date))
+        return (head
+                + "\n> La fuente no numera secciones: el texto va entero, en el orden del documento,"
+                  " bajo un solo encabezado, incluidos su cabecera, su resumen y su bibliografía."
+                + f"\n\n### {UNSECTIONED_HEADING}\n\n" + body)
     return fuente_line(url, version, kind, sha, date) + "\n\n" + body
 
 
@@ -473,10 +496,7 @@ def main(argv=None) -> int:
         if a.html:
             block = build("arxiv-html", a.source_url, a.source_version, data, date)
         else:
-            body = pdftext_to_body(data.decode("utf-8", errors="replace"))
-            block = (fuente_line(a.source_url, a.source_version, "pdf",
-                                 hashlib.sha256(data).hexdigest(), date) + "\n\n" + body
-                     if re.search(r"^### ", body, re.M) else None)
+            block = build_from_text(data, a.source_url, a.source_version, date)
     if block is None:
         print("error: the source yielded no section-structured text", file=sys.stderr)
         return 1

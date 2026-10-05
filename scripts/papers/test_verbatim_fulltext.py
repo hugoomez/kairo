@@ -129,6 +129,15 @@ class Build(unittest.TestCase):
         self.assertIsNone(vf.build("arxiv-html", "u", "v1", b"<html><p>no sections</p></html>",
                                    "2030-01-01"))
 
+    def test_a_long_letter_without_sections_is_kept_whole(self):
+        # a letter-format paper (invented text): no numbered sections, but real prose
+        prose = " ".join(f"Invented letter sentence number {i} about toy atoms." for i in range(200))
+        block = vf.build_from_text(prose.encode("utf-8"), "https://arxiv.org/pdf/0000.00000v1", "v1", "2030-01-01")
+        self.assertIsNotNone(block)
+        self.assertIn(f"### {vf.UNSECTIONED_HEADING}", block)
+        self.assertIn("La fuente no numera secciones", block)
+        self.assertIn("Invented letter sentence number 7 about toy atoms.", block)
+
 
 if __name__ == "__main__":
     unittest.main()

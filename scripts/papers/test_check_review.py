@@ -101,6 +101,12 @@ class TestCheckReview(unittest.TestCase):
         r = check_review.check(self.vault, "Solo uno [P-0901 §3.1].", "PROJ-900")
         self.assertEqual((r["cited"], r["uncited"]), (["P-0901"], ["P-0902"]))
 
+    def test_a_readable_paper_left_out_without_a_reason_is_unaccounted(self):
+        r = check_review.check(self.vault, "Solo uno [P-0901 §3.1].", "PROJ-900")
+        self.assertEqual(r["unaccounted"], ["P-0902"])          # it has an abstract
+        text = "Solo uno [P-0901 §3.1].\n\n## Papers no tratados\n\n- P-0902: referencia en conflicto.\n"
+        self.assertEqual(check_review.check(self.vault, text, "PROJ-900")["unaccounted"], [])
+
     def test_out_writes_a_non_citable_note(self):
         draft = self.tmp / "borrador.md"
         draft.write_text(REVIEW, encoding="utf-8")

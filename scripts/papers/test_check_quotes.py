@@ -124,3 +124,10 @@ class TestCheckQuotes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHasFulltext(unittest.TestCase):
+    def test_a_placeholder_is_not_full_text(self):
+        self.assertFalse(check_quotes.has_fulltext("## Resumen\n\nx\n\n## Texto completo\n\nNo disponible — solo abstract.\n"))
+        self.assertFalse(check_quotes.has_fulltext("## Resumen\n\nx\n"))
+        self.assertTrue(check_quotes.has_fulltext("## Texto completo\n\n> Fuente: u\n\n### 1 Toy\n\nInvented text.\n"))

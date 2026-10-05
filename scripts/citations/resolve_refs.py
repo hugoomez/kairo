@@ -380,6 +380,25 @@ def rec_as_note(rec: SourceRecord) -> dict:
     return {"title": rec.title, "authors": [f"{fam}, "] if fam else [], "year": rec.year}
 
 
+def registrar_links_ids(note: dict, records: list[SourceRecord]) -> bool:
+    """The arXiv registrar record for the note's arXiv id declares the note's DOI:
+    the authors themselves linked the two (a postprint of the published version,
+    or a preprint later published). Then the two records are versions of ONE work,
+    whatever their years -- and their titles, when the first author agrees."""
+    mine = note_keys(note)
+    if "doi" not in mine or "arxiv" not in mine:
+        return False
+    return any(rec.source == "arxiv" and rec.id_key == mine["arxiv"] and mine["doi"] in declared_keys(rec)
+               for rec in records)
+
+
+def version_only(diff: list[dict]) -> bool:
+    """Only the year and/or the title differ: what changes between a preprint and
+    its published version. The first author must agree."""
+    differs = {d["field"] for d in diff if d["level"] == "differs"}
+    return bool(differs) and differs <= {"year", "title"}
+
+
 def identifier_conflicts(note: dict, records: list[SourceRecord]) -> list[str]:
     """Evidence that the note's DOI and arXiv id point to DIFFERENT works:
     an arXiv DOI naming another arXiv id; a record fetched by one identifier
@@ -407,6 +426,8 @@ def identifier_conflicts(note: dict, records: list[SourceRecord]) -> list[str]:
     dk, ak = mine.get("doi"), mine.get("arxiv")
     if dk in reps and ak in reps:
         lvl, diff = match_record(rec_as_note(reps[dk]), reps[ak])
+        if lvl == "mismatch" and registrar_links_ids(note, records) and version_only(diff):
+            lvl = "close"                  # two versions of one work, linked by arXiv itself
         if lvl == "mismatch":
             bad = ", ".join(d["field"] for d in diff if d["level"] == "differs")
             msgs.append(f"the {reps[dk].source} record for {dk} and the {reps[ak].source} record for {ak} "
@@ -586,7 +607,22 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
     registrar_ok = {rec.id_key: rec.source for rec, lvl, _ in per
                     if rec.source in REGISTRARS and lvl in ("exact", "close") and rec.id_key}
     levels = []
+    linked = registrar_links_ids(note, records)
+    mine = note_keys(note)
     for rec, lvl, diff in per:
+        # a record of the OTHER version of a work arXiv links to the note's DOI:
+        # its different year (or retitling) is a version, not a chimera
+        same_ids = {rec.id_key} | declared_keys(rec)
+        if (linked and lvl == "mismatch" and version_only(diff)
+                and (mine.get("doi") in same_ids or mine.get("arxiv") in same_ids)):
+            lvl = "close"
+            for d in diff:
+                if d["level"] == "differs":
+                    d["level"] = "version"
+            if not any("version" in f["message"] for f in r.flags):
+                r.flags.append({"severity": "menor",
+                                "message": "two versions of one work: the arXiv record declares the note's DOI "
+                                           "(preprint/postprint vs published); year or title differ between them"})
         same_work = (sorted(({rec.id_key} | declared_keys(rec)) & set(registrar_ok))
                      if rec.source == "openalex" else [])
         if (same_work and lvl == "mismatch"
@@ -669,7 +705,7 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
         r.flags.append({"severity": "importante",
                         "message": f"retraction/withdrawal check LOST ({', '.join(r.retraction_lost)}) -- "
                                    "not proven clear; re-run later"})
-    note_side = sorted({d["field"] for d in r.diff if d["level"] != "source_error"})
+    note_side = sorted({d["field"] for d in r.diff if d["level"] not in ("source_error", "version")})
     if r.status in ("resolved", "retracted", "withdrawn") and r.match == "close" and note_side:
         r.flags.append({"severity": "menor", "message": f"close match -- check {', '.join(note_side)} in the note"})
     if oa_rec and oa_rec.openalex_id:

@@ -56,10 +56,23 @@ def papers_for(vault: str, project: str) -> list[dict]:
     """The project's citable papers, with what the review needs to know about each."""
     out = []
     for p in list_papers(vault, project):
-        fm, _ = split_frontmatter(read_text(str(Path(vault, p["path"]))))
+        fm, body = split_frontmatter(read_text(str(Path(vault, p["path"]))))
         status = fm_scalar(fm, "resolution_status") or ""
-        out.append({**p, "year": fm_scalar(fm, "year"), "conflict": status == "mismatch"})
+        out.append({**p, "year": fm_scalar(fm, "year"), "conflict": status == "mismatch",
+                    "abstract": has_abstract(body)})
     return out
+
+
+def has_abstract(body: str) -> bool:
+    m = re.search(r"^## Resumen\s*\n(.*?)(?=^## |\Z)", body, re.M | re.S)
+    text = "\n".join(ln for ln in (m.group(1) if m else "").split("\n") if not ln.startswith(">")).strip()
+    return bool(text) and not text.startswith("No disponible")
+
+
+def listed_as_untreated(review: str) -> set[str]:
+    """The P-ids the review itself lists under «## Papers no tratados», with a reason."""
+    m = re.search(r"^## Papers no tratados\s*\n(.*?)(?=^## |\Z)", review, re.M | re.S)
+    return set(re.findall(r"P-\d{3,5}", m.group(1))) if m else set()
 
 
 def check_inline(vault: str, pid: str, loc: str, papers: dict[str, dict]) -> str | None:
@@ -121,6 +134,10 @@ def check(vault: str, review: str, project: str) -> dict:
 
     report["cited"] = sorted(cited & papers.keys())
     report["uncited"] = sorted(set(papers) - cited)
+    # Coverage: a paper with something to read (text or abstract) that the review
+    # neither cites nor explains under «Papers no tratados» was skipped.
+    readable = {pid for pid, p in papers.items() if p["fulltext"] or p["abstract"]}
+    report["unaccounted"] = sorted(readable - cited - listed_as_untreated(review))
     report["papers"] = len(papers)
     report["text"] = "\n\n".join(out_pars)
     return report
@@ -152,6 +169,9 @@ def render(report: dict, project: str, title: str | None) -> str:
         out.append("")
     if report["uncited"]:
         out += ["Papers del proyecto que la revisión no cita: " + ", ".join(report["uncited"]) + ".", ""]
+    if report["unaccounted"]:
+        out += ["⚠ Papers con texto o resumen que la revisión ni cita ni explica por qué deja fuera: "
+                + ", ".join(report["unaccounted"]) + ".", ""]
     return "\n".join(out)
 
 
