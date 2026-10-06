@@ -52,6 +52,8 @@ def web(fail=()):
                 {"citingPaper": {"title": "Newer citing toy paper", "year": 2032, "publicationDate": "2032-05-01",
                                  "externalIds": {"DOI": "10.0000/new"}, "venue": "Invented Journal",
                                  "authors": [{"name": "Ana Poe"}]}}]}).encode()
+        if host == "api2.openreview.net":
+            return json.dumps({"count": 0, "notes": []}).encode()
         if host == "api.semanticscholar.org":
             return json.dumps({"citationCount": 29, "influentialCitationCount": 4,
                                "publicationVenue": {"name": "SC", "type": "conference"}}).encode()
@@ -138,6 +140,57 @@ class PaperCard(unittest.TestCase):
         self.assertIn("year = {2030}", bib)
         self.assertIn("Invented Systems Conf", bib)                 # the venue, in a note
         self.assertIn("año de la versión publicada no consta", bib)
+
+    def openreview(self, venue, title="Distributed Toy State-Vector Simulation", bib_year="2031",
+                   authors=("Jane Doe",)):
+        return {"count": 1, "notes": [{"id": "orX", "cdate": 1916006400000, "content": {
+            "title": {"value": title}, "venue": {"value": venue}, "authors": {"value": list(authors)},
+            "_bibtex": {"value": "@inproceedings{doe" + bib_year + ",\ntitle={" + title + "},\n"
+                                 "booktitle={The Invented Conference on Learning Representations},\n"
+                                 "year={" + bib_year + "}\n}"}}}]}
+
+    def _with_openreview(self, page):
+        work = {**OPENALEX, "doi": "https://doi.org/10.48550/arxiv.0000.44444",
+                "primary_location": {"source": {"type": "repository", "display_name": "arXiv"}}}
+        base = self._with(work, "404")
+
+        def fetch(url, headers):
+            if "api2.openreview.net" in url:
+                return json.dumps(page).encode()
+            if "api.semanticscholar.org" in url and "/citations" not in url:
+                return json.dumps({"citationCount": 1}).encode()
+            return base(url, headers)
+        return fetch
+
+    def test_an_ml_venue_with_no_doi_comes_from_openreview_with_its_year(self):
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json",
+                                 fetch=self._with_openreview(self.openreview("ICLR 2031 Poster")))
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+        bib = card["bibtex"]
+        self.assertTrue(bib.startswith("@inproceedings{doe2031distributed,"), bib)
+        self.assertIn("booktitle = {The Invented Conference on Learning Representations}", bib)
+        self.assertIn("year = {2031}", bib)
+        self.assertIn("eprint = {0000.44444}", bib)
+
+    def test_a_retitled_version_by_the_same_first_author_counts_and_shows_its_title(self):
+        page = self.openreview("ICLR 2031 Poster", title="Distributed Toy (Almost) State-Vector Simulation")
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        src = next(p["source"] for p in card["published"] if p["source"].startswith("OpenReview"))
+        self.assertIn("título publicado: «Distributed Toy (Almost) State-Vector Simulation»", src)
+        self.assertTrue(card["bibtex"].startswith("@inproceedings{"), card["bibtex"])
+
+    def test_a_rejected_or_differently_titled_openreview_record_is_not_a_publication(self):
+        for page in (self.openreview("Submitted to ICLR 2031"),
+                     self.openreview("ICLR 2031 Poster", title="Distributed Toy State-Vector Simulation Revisited",
+                                     authors=("Rui Roe",)),
+                     self.openreview("ICLR 2031 Poster", title="Toy Simulations of Something Else")):
+            code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+            card = json.loads(out)
+            self.assertNotIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+            self.assertTrue(card["bibtex"].startswith("@misc{"), card["bibtex"])
 
     def test_a_paper_is_found_by_its_title(self):
         hit = {**OPENALEX, "title": "Distributed Toy State-Vector Simulation"}

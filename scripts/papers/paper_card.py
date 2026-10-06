@@ -12,6 +12,8 @@ Sources (no model involved, each answer kept with --raw-dir):
     locations (repository vs journal / conference), cited_by_count;
   - Crossref (a non-arXiv DOI): container title, issue date, and the
     `is-preprint-of` / `has-preprint` relations publishers register;
+  - OpenReview: an accepted record with exactly this title (ICLR, NeurIPS,
+    ICML, MLSys, TMLR — venues with no DOI) gives the venue and its year;
   - Semantic Scholar: citation count and the list of citing papers
     (the newest first, up to --citations);
   - the shared retraction / withdrawal check (Crossref + arXiv).
@@ -50,8 +52,11 @@ from typing import Callable
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "citations"))
+sys.path.insert(0, str(HERE.parent / "search"))
 import export_bib  # noqa: E402
+import lit_search  # noqa: E402
 import net  # noqa: E402
+import resolve_refs as rr  # noqa: E402
 import retraction  # noqa: E402
 from fill_abstract import from_jats  # noqa: E402
 
@@ -244,6 +249,30 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             # S2 pages in its own order: past 1000, "newest" means newest of the first 1000 it gave
             card["citing_truncated"] = offset >= 1000
             card["citing"] = citing[:n_cit]
+    if ident.get("title"):
+        # ICLR / NeurIPS / ICML / MLSys / TMLR have no DOI: OpenReview holds the decision and the
+        # year. A record accepted there counts with exactly this title, or with a close one
+        # (resolve_refs' rule: a retitled camera-ready) by the same first author — and the
+        # card then shows the published title.
+        raw = c.get("openreview.json", "https://api2.openreview.net/notes/search?term="
+                    + urllib.parse.quote(ident["title"]) + "&type=terms&content=all&source=forum&limit=10",
+                    {"Accept": "application/json"})
+        recs = lit_search.parse_openreview(raw)[0] if raw else []
+        first = rr.surname_of((ident.get("authors") or [""])[0] or "")
+
+        def same(r: dict) -> str | None:
+            level = rr.title_level(ident["title"], r.get("title") or "")[0]
+            if level == "exact":
+                return ""
+            if level == "close" and first and r.get("authors") and rr.surname_matches(first, r["authors"][0]):
+                return f"; título publicado: «{r['title']}»"
+            return None
+        hit = next(((r, same(r)) for r in recs if r.get("venue") and same(r) is not None), None)
+        if hit:
+            hit, retitled = hit
+            card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}{retitled})",
+                                      "doi": hit.get("doi") or "", "venue": hit["venue"],
+                                      "year": str(hit.get("year") or ""), "url": hit["url"]})
     if doi or arxiv:
         # the same detection rules as check_retraction.py, on the records fetched above
         checks = []
@@ -268,7 +297,7 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
     # for the BibTeX: the publisher's own record first (clean venue name and year),
     # then OpenAlex, then what arXiv's authors declared (journal_ref is free text)
     real = [p for p in card["published"] if p.get("venue") and "preprint en arXiv" not in p["venue"]]
-    pub = next((p for src in ("Crossref (", "OpenAlex", "Semantic", "arXiv") for p in real
+    pub = next((p for src in ("Crossref (", "OpenReview", "OpenAlex", "Semantic", "arXiv") for p in real
                 if p["source"].startswith(src)), None)
     meta = {"title": ident.get("title") or "", "authors": ident.get("authors") or [], "year": ident.get("year") or "",
             "venue": "arXiv preprint" if arxiv else (pub or {}).get("venue", ""), "doi": "" if arxiv else (doi or ""),

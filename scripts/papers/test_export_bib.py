@@ -46,6 +46,10 @@ class ExportBib(unittest.TestCase):
         base = {"title": "T", "authors": ["Jane Doe"], "year": "2031", "doi": "10.0000/x"}
         cases = [({"venue": "Proceedings of the National Academy of Invented Sciences"}, "article"),
                  ({"venue": "Proceedings of the IEEE"}, "article"),
+                 ({"venue": "Proceedings of the IEEE International Conference on Invented Computing (QCE)"},
+                  "inproceedings"),
+                 ({"venue": "Proceedings of the IEEE Symposium on Invented Systems"}, "inproceedings"),
+                 ({"venue": "IEEE Transactions on Invented Codes"}, "article"),
                  ({"venue": "PNAS Nexus"}, "article"),
                  ({"venue": "Advances in Neural Information Processing Systems"}, "inproceedings"),
                  ({"venue": "Invented Letters", "venue_type": "proceedings-article"}, "inproceedings"),

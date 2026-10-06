@@ -48,6 +48,7 @@ WARN = {"mismatch": "ATENCIÓN: referencia en conflicto en Kairo (resolution_sta
 PROCEEDINGS = re.compile(r"\b(proc(?:eedings)?|conference|symposium|workshop|SC\d*|IPDPS|ISC|NeurIPS|ICML|ICLR|"
                          r"MLSys|OSDI|NSDI|SOSP|PPoPP|HPDC|ICS|QCE|QIP|CVPR|ACL|EMNLP|AAAI|"
                          r"Advances in Neural Information Processing Systems)\b", re.I)
+CONFERENCE_WORDS = re.compile(r"\b(conference|symposium|workshop|congress)\b", re.I)
 # venues named "Proceedings …" that are journals
 JOURNAL_PROCEEDINGS = re.compile(r"\b(?:Proc(?:eedings|\.)?\s+(?:of\s+)?(?:the\s+)?(?:National Academy|IEEE\b|"
                                  r"(?:the\s+)?Royal Society|R\.\s*Soc|Natl\.?\s*Acad|Japan Academy|"
@@ -127,6 +128,8 @@ def entry_type(m: dict) -> tuple[str, str | None]:
     kind = TYPE_ENTRY.get((m.get("venue_type") or "").lower())
     if kind and kind != "misc":
         return kind, VENUE_FIELD.get(kind)
+    if CONFERENCE_WORDS.search(venue):
+        return "inproceedings", "booktitle"     # "Proceedings of the IEEE International Conference …"
     if JOURNAL_PROCEEDINGS.search(venue):
         return "article", "journal"
     return ("inproceedings", "booktitle") if PROCEEDINGS.search(venue) else ("article", "journal")
