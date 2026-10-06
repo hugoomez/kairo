@@ -83,6 +83,8 @@ class FakeWeb:
                  "container-title": ["Proceedings of the Invented QCE"], "type": "proceedings-article",
                  "abstract": "<jats:title>Abstract</jats:title><jats:p>A toy decoder.</jats:p>",
                  "is-referenced-by-count": 2}]}}).encode()
+        if host == "api2.openreview.net":
+            return json.dumps(OR_PAGE).encode()
         if host == "dblp.org" and self.dblp_bot:
             return b'<!doctype html><html><head><title>Making sure you&#39;re not a bot!</title></head></html>'
         if host == "dblp.org":
@@ -180,13 +182,88 @@ class Run(Base):
         self.plan.write_text(json.dumps(plan), encoding="utf-8")
         self.run_search()
         used = {q["source"] for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))}
-        self.assertEqual(used, {"arxiv", "s2", "s2-anchor", "openalex", "crossref"})
+        self.assertEqual(used, {"arxiv", "s2", "s2-anchor", "openalex", "crossref", "openreview"})
+
+    def test_an_openreview_record_merges_with_the_same_paper_and_keeps_its_venue(self):
+        plan = {**PLAN, "sources": ["arxiv", "openreview"]}
+        self.plan.write_text(json.dumps(plan), encoding="utf-8")
+
+        class Same(FakeWeb):
+            def __call__(self, url, headers):
+                if "openreview" in url:
+                    self.urls.append(url)
+                    page = json.loads(json.dumps(OR_PAGE))
+                    page["notes"][0]["content"]["title"]["value"] = "Toy code paper number 3 with toy decoder"
+                    return json.dumps(page).encode()
+                return super().__call__(url, headers)
+        code, out = self.run_search(Same())
+        self.assertEqual(code, 0, out)
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        c = next(c for c in cands if c.get("arxiv") == "0000.00003")
+        self.assertEqual(set(c["sources"]), {"arxiv", "openreview"})
+        self.assertIn("The Invented International Conference on Learning Representations", c["venues"])
+        self.assertFalse(any("Submitted to" in v for c in cands for v in c["venues"]))
 
     def test_bad_plans_are_refused(self):
         for bad in ({**PLAN, "facets": []}, {**PLAN, "sources": ["scholar"]}, {**PLAN, "from": "2030"},
                     {**PLAN, "description": ""}):
             self.plan.write_text(json.dumps(bad), encoding="utf-8")
             self.assertEqual(self.cli("run", "--plan", str(self.plan), "--out", str(self.tmp / "x"))[0], 2)
+
+
+OR_PAGE = {"count": 3, "notes": [
+    {"id": "orA", "cdate": 1916006400000, "pdate": 1926374400000, "content": {   # 2030-09-19 / 2031-01-17
+        "title": {"value": "Toy decoder for a toy code at scale"},
+        "abstract": {"value": "We study a toy code with a toy decoder."},
+        "authors": {"value": ["Ana Poe", "Li Wu"]}, "venue": {"value": "ICLR 2031 poster"},
+        "venueid": {"value": "ICLR.cc/2031/Conference"},
+        "_bibtex": {"value": "@inproceedings{poe2031toy,\ntitle={Toy decoder for a toy code at scale},\n"
+                             "booktitle={The Invented International Conference on Learning Representations},\n"
+                             "year={2031}\n}"}}},
+    {"id": "orB", "cdate": 1916006400000, "content": {
+        "title": {"value": "A rejected toy code decoder study"}, "abstract": {"value": "toy code toy decoder"},
+        "authors": {"value": ["Rui Roe"]}, "venue": {"value": "Submitted to ICLR 2031"},
+        "venueid": {"value": "ICLR.cc/2031/Conference/Rejected_Submission"}}},
+    {"id": "orC", "cdate": 1893456000000, "pdate": 1893456000000, "content": {   # 2030-01-01: year only
+        "title": {"value": "Imported toy code record"}, "abstract": {"value": "A toy code and its toy decoder."},
+        "authors": {"value": ["Jane Doe"]}, "venue": {"value": "Invented Quantum J. 2030"},
+        "venueid": {"value": "dblp.org/journals/IQJ/2030"},
+        "html": {"value": "https://doi.org/10.0000/IQJ.9"},
+        "_bibtex": {"value": "@article{doe2030,\njournal={Invented Quantum J.},\nyear={2030}\n}"}}},
+]}
+
+
+class OpenReview(unittest.TestCase):
+    def test_parse_keeps_venue_status_dates_and_ids(self):
+        recs, total = ls.parse_openreview(json.dumps(OR_PAGE).encode())
+        self.assertEqual(total, 3)
+        a, b, c = recs
+        self.assertEqual((a["venue"], a["year"], a["date"], a["openreview"]),
+                         ("The Invented International Conference on Learning Representations", 2031,
+                          "2031-01-17", "orA"))
+        self.assertEqual(a["openreview_venue"], "ICLR 2031 poster")
+        self.assertEqual(a["url"], "https://openreview.net/forum?id=orA")
+        self.assertIsNone(b["venue"])                                  # not accepted: never a venue
+        self.assertEqual(b["openreview_venue"], "Submitted to ICLR 2031")
+        self.assertEqual((c["doi"], c["date"], c["year"], c["venue"]),
+                         ("10.0000/iqj.9", None, 2030, "Invented Quantum J."))   # imported: year only
+
+    def test_an_arxiv_link_gives_the_arxiv_id(self):
+        page = {"count": 1, "notes": [{"id": "orD", "cdate": 1893456000000, "content": {
+            "title": {"value": "Imported preprint record"}, "venue": {"value": "CoRR 2030"},
+            "venueid": {"value": "dblp.org/journals/CORR/2030"},
+            "html": {"value": "http://arxiv.org/abs/3001.00042"}}}]}
+        (r,), _ = ls.parse_openreview(json.dumps(page).encode())
+        self.assertEqual((r["arxiv"], r["venue"]), ("3001.00042", None))      # CoRR is arXiv, not a venue
+
+    def test_queries_are_plain_terms_and_paged_by_offset(self):
+        plan = ls.load_plan_dict({**PLAN, "sources": ["openreview"]})
+        qs = ls.build_queries(plan, "2031-06-01")
+        self.assertEqual([q["query"] for q in qs], ["toy code", "invented code", "toy decoder", "toy code toy decoder"])
+        url, _ = ls.page_urls("openreview", "toy code", plan, 100, 100)
+        self.assertTrue(url.startswith("https://api2.openreview.net/notes/search?term=toy%20code"))
+        self.assertIn("&offset=100&limit=100", url)
+        self.assertIn("openreview", ls.DEFAULT_SOURCES)
 
 
 class Screen(Base):

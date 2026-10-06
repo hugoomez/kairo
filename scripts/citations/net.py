@@ -57,6 +57,7 @@ HOST_SPACING = {
     "api.crossref.org": 0.2,
     "api.openalex.org": 0.1,         # OpenAlex asks for at most 10 requests per second
     "dblp.org": 1.0,
+    "api2.openreview.net": 1.0,      # no published limit: one request per second
 }
 BACKOFF = (5.0, 15.0)            # waits before attempt 2 and 3
 RETRYABLE = (406, 429)            # plus every 5xx

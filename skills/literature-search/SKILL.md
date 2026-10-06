@@ -22,7 +22,7 @@ Core Kairo principle: **every hypothesis must cite specific papers**. This
 skill finds and screens them; ingestion (create-project step 6) proves they
 exist and fetches their text.
 
-**Scope limit — disclose it.** arXiv, Semantic Scholar, OpenAlex, Crossref (and
+**Scope limit — disclose it.** arXiv, Semantic Scholar, OpenAlex, Crossref, OpenReview (and
 DBLP when asked; US patents for `producto`/`hibrido`) plus the vault. No grey
 literature (theses, technical reports, whitepapers), nothing against
 **publication bias**, no Google Scholar (no API, and its terms forbid
@@ -52,6 +52,7 @@ vault (Smart Connections MCP directly).
 | Semantic Scholar | `/paper/search` takes **plain keywords only**: one query per term and synonym, `year=` window, paged; plus one `/paper/search/bulk` **anchor pass** per facet (`"a" \| "b"`, `sort=citationCount:desc`, top `anchors`) | keyless pool often answers `429`; `SEMANTIC_SCHOLAR_API_KEY` fixes it |
 | OpenAlex | `search="t1" OR "t2"`, `from/to_publication_date` filter, paged | list calls cost $0.001 against a free daily budget ($0.10 keyless, $1 with `OPENALEX_API_KEY`) |
 | Crossref | one query per term, `from-pub-date` / `until-pub-date` | the ACM / IEEE / Springer / APS proceedings and journals (SC, IPDPS, ISC, QCE, PRX Quantum…) with DOI and venue; `KAIRO_MAILTO` joins the polite pool |
+| OpenReview | `/notes/search` (API 2), one plain-keyword query per term and synonym, paged by `offset`; no date filter, so the window is applied to each record | ICLR / NeurIPS / ICML / MLSys / TMLR papers that have no DOI, **with their decision**: a venue is kept only when the paper was accepted (`Submitted to …`, `Withdrawn`, `Rejected` stay in `openreview_venue`, never as a venue); also the DBLP records its authors imported (year only). Keyless, 1 request/s |
 | DBLP | on request only (`"sources"` lists it) | its API now answers with an anti-bot challenge page: the script records the query as **lost** and never works around it |
 | Vault | Smart Connections MCP (`search_by_text`), by you, in parallel | see step 2 |
 | PatentsView | `producto`/`hibrido` only, with a key — see **Patents** below | outside the script's counts |
@@ -86,7 +87,7 @@ copies it in, dated):
 {"description": "<the request, verbatim>",
  "facets": [{"id": "A", "term": "qLDPC codes", "synonyms": ["quantum LDPC", "bivariate bicycle codes"]},
             {"id": "B", "term": "decoder", "synonyms": ["BP-OSD", "belief propagation decoding"]}],
- "sources": ["arxiv", "s2", "openalex", "crossref"],
+ "sources": ["arxiv", "s2", "openalex", "crossref", "openreview"],
  "from": "2024-10-01", "to": null, "arxiv_categories": ["quant-ph", "cs.IT"],
  "per_query": 100, "anchors": 10, "cross": true, "prefilter": true,
  "include": ["reports a code construction, decoder or benchmark result on facets A and B"],

@@ -36,10 +36,13 @@ Sources and how each facet is queried
     crossref  /works?query=<term>, one per term and synonym, from/until-pub-date filter —
               the ACM / IEEE / Springer proceedings and journals (SC, IPDPS, ISC, QCE,
               PRX Quantum, …), with their DOI and venue (KAIRO_MAILTO: polite pool)
+    openreview /notes/search (API 2), one plain-keyword query per term, paged by offset;
+              the ML venues with no DOI (ICLR, NeurIPS, ICML, MLSys, TMLR) and their
+              decision — a venue only when accepted — plus DBLP records authors imported
     dblp      on request only (not a default): one query per term; DBLP's API now
               answers with an anti-bot challenge page, which is recorded as a lost
               query and never worked around
-Default sources: arxiv, s2, openalex, crossref.
+Default sources: arxiv, s2, openalex, crossref, openreview.
 Cross pass (`cross`, default true with ≥ 2 facets): one more query per source
 that asks for every facet at once — arXiv and OpenAlex `(A-group) AND
 (B-group)`, Semantic Scholar and Crossref the facets' main terms together —
@@ -119,11 +122,13 @@ import retraction  # noqa: E402
 from untrusted import suspicious  # noqa: E402
 
 TOOL = "kairo/lit_search@1.2.0"
-SOURCES = ("arxiv", "s2", "openalex", "crossref", "dblp")
+SOURCES = ("arxiv", "s2", "openalex", "crossref", "openreview", "dblp")
 # DBLP's API now sits behind an anti-bot challenge, which Kairo never works
 # around: it stays available on request but is not a default source. Crossref
-# covers the ACM / IEEE / Springer proceedings (SC, IPDPS, ISC, QCE, …) instead.
-DEFAULT_SOURCES = ["arxiv", "s2", "openalex", "crossref"]
+# covers the ACM / IEEE / Springer proceedings (SC, IPDPS, ISC, QCE, …) instead,
+# and OpenReview the ML venues with no DOI (ICLR, NeurIPS, ICML, MLSys, TMLR) —
+# with their acceptance status — plus the DBLP records its authors imported.
+DEFAULT_SOURCES = ["arxiv", "s2", "openalex", "crossref", "openreview"]
 CROSSREF_SELECT = "DOI,title,author,issued,container-title,type,abstract,is-referenced-by-count"
 ATOM = "{http://www.w3.org/2005/Atom}"
 OS = "{http://a9.com/-/spec/opensearch/1.1/}"
@@ -203,6 +208,12 @@ def load_plan(path: Path) -> dict:
         plan = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         raise Refused(f"cannot read the plan: {e}") from None
+    return load_plan_dict(plan)
+
+
+def load_plan_dict(plan: dict) -> dict:
+    """Validate a plan and fill its defaults (a copy; the input is not changed)."""
+    plan = json.loads(json.dumps(plan))
     facets = plan.get("facets") or []
     if not (1 <= len(facets) <= 6):
         raise Refused("the plan needs 1–6 facets")
@@ -387,8 +398,60 @@ def parse_crossref(raw: bytes) -> tuple[list[dict], int]:
     return out, int(msg.get("total-results") or len(out))
 
 
+# OpenReview `venue` values that say the paper was NOT published there
+OR_UNPUBLISHED = re.compile(r"submitted to|withdrawn|reject|desk|blind submission|conference submission|"
+                            r"under review|^corr\b", re.I)
+OR_IMPORTED = ("dblp.org/", "OpenReview.net/Public_Article")     # records with a year, not a date
+
+
+def _iso_day(ms: int) -> str:
+    return _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc).date().isoformat()
+
+
+def _bib_field(bib: str, name: str) -> str:
+    m = re.search(name + r"\s*=\s*\{([^{}]*)\}", bib or "")
+    return ws(m.group(1)) if m else ""
+
+
+def parse_openreview(raw: bytes) -> tuple[list[dict], int]:
+    """OpenReview `/notes/search` (API 2). A venue is kept only when the paper was
+    accepted there (`Submitted to …`, `Withdrawn`, `Rejected`, CoRR are not
+    venues; the raw string stays in `openreview_venue`). Records imported from
+    DBLP carry only a year, so they get no day-precise date."""
+    data = json.loads(raw)
+    out = []
+    for n in data.get("notes") or []:
+        c = n.get("content") or {}
+
+        def v(k, c=c):
+            x = (c.get(k) or {}).get("value")
+            return x if x is not None else ""
+        bib = v("_bibtex")
+        raw_venue = ws(v("venue"))
+        venueid = v("venueid") or ""
+        published = bool(raw_venue) and not OR_UNPUBLISHED.search(raw_venue)
+        venue = (_bib_field(bib, "booktitle") or _bib_field(bib, "journal") or raw_venue) if published else None
+        ms = n.get("pdate") or n.get("cdate")
+        imported = venueid.startswith(OR_IMPORTED)
+        date = None if imported or not ms else _iso_day(ms)
+        year = _bib_field(bib, "year") or (date or "")[:4] or (str(_iso_day(n["cdate"])[:4]) if n.get("cdate") else "")
+        link = v("html") or ""
+        m = re.match(r"https?://(?:dx\.)?doi\.org/(.+)$", link)
+        doi = retraction.normalize_doi(m.group(1)) if m else None
+        aid = retraction.normalize_arxiv(m.group(1)) if (m := re.search(r"arxiv\.org/abs/(\S+)", link)) else None
+        if doi and retraction.is_arxiv_doi(doi):
+            aid, doi = aid or retraction.arxiv_from_doi(doi), None
+        authors = v("authors")
+        out.append({"title": ws(v("title")), "abstract": ws(v("abstract")),
+                    "authors": [ws(a) for a in authors] if isinstance(authors, list) else [],
+                    "date": date, "year": int(year) if str(year).isdigit() else None, "arxiv": aid, "doi": doi,
+                    "venue": venue or None, "openreview_venue": raw_venue or None, "citations": None,
+                    "url": f"https://openreview.net/forum?id={n.get('id')}", "openreview": n.get("id")})
+    return out, int(data.get("count") or len(out))
+
+
 PARSERS = {"arxiv": parse_arxiv, "s2": parse_s2, "s2-anchor": parse_s2, "openalex": parse_openalex,
-           "crossref": parse_crossref, "dblp": parse_dblp}
+           "crossref": parse_crossref, "openreview": parse_openreview, "dblp": parse_dblp}
 
 
 # --------------------------------------------------------------------------
@@ -438,6 +501,9 @@ def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tup
                 + (f"&filter={','.join(flt)}" if flt else "") + f"&rows={size}&offset={start}"
                 + f"&select={CROSSREF_SELECT}" + (f"&mailto={urllib.parse.quote(mailto)}" if mailto else ""),
                 {"Accept": "application/json"})
+    if source == "openreview":
+        return (f"https://api2.openreview.net/notes/search?term={urllib.parse.quote(query)}&type=terms"
+                f"&content=all&source=forum&offset={start}&limit={size}", {"Accept": "application/json"})
     if source == "dblp":
         return (f"https://dblp.org/search/publ/api?q={urllib.parse.quote(query)}&format=json&h={size}&f={start}", {})
     raise ValueError(source)
@@ -460,7 +526,7 @@ def build_queries(plan: dict, until: str) -> list[dict]:
             elif src == "openalex":
                 qs.append({"facet": f["id"], "source": "openalex", "pass": "relevance",
                            "query": " OR ".join(f'"{t}"' for t in ts), "terms": ts})
-            elif src in ("crossref", "dblp"):
+            elif src in ("crossref", "openreview", "dblp"):
                 for t in ts:
                     qs.append({"facet": f["id"], "source": src, "pass": "relevance", "query": t, "terms": [t]})
     if plan.get("cross", True) and len(plan["facets"]) >= 2:
@@ -471,7 +537,7 @@ def build_queries(plan: dict, until: str) -> list[dict]:
                 query = arxiv_cross_query(plan, until)
             elif src == "openalex":
                 query = " AND ".join("(" + " OR ".join(f'"{t}"' for t in terms(f)) + ")" for f in plan["facets"])
-            elif src in ("s2", "crossref"):
+            elif src in ("s2", "crossref", "openreview"):
                 query = mains                   # plain keywords: the facets' main terms together
             else:
                 continue                        # DBLP: title words only, a cross query adds nothing
@@ -581,7 +647,7 @@ def dedup(records: list[dict]) -> list[dict]:
     groups: dict[int, list[dict]] = {}
     for i, r in enumerate(records):
         groups.setdefault(find(i), []).append(r)
-    order = {"arxiv": 0, "openalex": 1, "crossref": 2, "s2": 3, "dblp": 4}
+    order = {"arxiv": 0, "openalex": 1, "crossref": 2, "s2": 3, "openreview": 4, "dblp": 5}
     out = []
     for rs in groups.values():
         rs = sorted(rs, key=lambda r: order.get(r["source"], 9))
