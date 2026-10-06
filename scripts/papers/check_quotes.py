@@ -234,7 +234,7 @@ def check(vault: str, answer: str, project: str | None) -> dict:
         report["quotes"] += len(checked)
         report["quotes_ok"] += sum(c["ok"] for c in checked)
         entry = {"claim": g["claim"], "quotes": [{k: c.get(k) for k in ("paper", "locator", "quote", "ok", "reason")}
-                                                 for c in checked]}
+                                                 for c in checked], "raw": [c["raw"] for c in checked]}
         if not checked:
             report["removed"].append({"text": g["claim"], "reason": "afirmación sin cita del paper"})
             continue
@@ -254,10 +254,75 @@ def check(vault: str, answer: str, project: str | None) -> dict:
     return report
 
 
+def support_packet(vault: str, report: dict) -> str:
+    """The fresh-verifier packet: every claim that passed, numbered «Afirmación N»
+    in order, with its quotes and the full source unit each quote sits in (so a
+    quote taken out of context shows). Nothing else: no question, no draft, no
+    removed claim."""
+    out = ["# Paquete de verificación (respuesta del corpus)", "",
+           "- Alcance: note",
+           "- Contenido: afirmaciones escritas por un modelo, cada una con citas literales ya comprobadas "
+           "carácter a carácter y el texto fuente completo donde está cada cita. Busca afirmaciones que sus "
+           "citas no respaldan: atribución, dirección, condiciones, alcance, cifras, fuerza de la afirmación, "
+           "una cita sacada de contexto. Nombra cada hallazgo como «Afirmación N».", ""]
+    for n, c in enumerate(report["claims"], 1):
+        out += [f"### Afirmación {n}", "", c["claim"] or "(cita sin afirmación)", ""]
+        for q in c["quotes"]:
+            out += [f"> {q['quote']}", f"> — {q['paper']} {q['locator']}", ""]
+            res = resolve_citation(vault, q["paper"], q["locator"])
+            frags = [ws(f) for f in _ELLIPSIS.split(q["quote"]) if ws(f)]
+            unit = next((u for u in res["units"] if fragments_in(ws(u.removeprefix("[## Resumen]\n")), frags)),
+                        None)
+            if unit:
+                out += [f"Texto fuente ({q['paper']} {q['locator']}):", "", "\n".join("    " + ln for ln in
+                                                                                    unit.split("\n")), ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def apply_support(report: dict, verdict: dict) -> dict:
+    """Apply the fresh verifier's verdict mechanically: a crítico / importante
+    finding on «Afirmación N» removes that claim; a menor one is kept and shown.
+    A finding that names no numbered claim is refused (never guessed)."""
+    v = verdict.get("verdict")
+    if v not in ("no_errors_found", "errors_found", "cannot_assess"):
+        raise ValueError(f"veredicto desconocido: {v!r}")
+    model = verdict.get("model") or "modelo no indicado"
+    n_claims = len(report["claims"])
+    drop: dict[int, list[str]] = {}
+    notes: list[str] = []
+    for f in verdict.get("findings") or []:
+        m = re.search(r"Afirmaci[oó]n\s+(\d+)", f.get("location") or "")
+        if not m or not 1 <= int(m.group(1)) <= n_claims:
+            raise ValueError(f"hallazgo sin afirmación numerada válida: {f.get('location')!r}")
+        n = int(m.group(1))
+        if f.get("severity") in ("crítico", "importante"):
+            drop.setdefault(n, []).append(f.get("why") or "")
+        else:
+            notes.append(f"Afirmación {n} ({f.get('severity') or 'menor'}): {f.get('why') or ''}")
+    if drop:
+        kept_claims, kept_lines = [], []
+        for n, c in enumerate(report["claims"], 1):
+            if n in drop:
+                report["removed"].append({"text": c["claim"], "reason": "la cita no respalda la afirmación "
+                                          f"(verificador {model}): " + " / ".join(drop[n])})
+                continue
+            kept_claims.append(c)
+            if c["claim"]:
+                kept_lines.append(c["claim"])
+            kept_lines += [c_raw for c_raw in c.get("raw", [])]
+        report["claims"], report["kept_lines"] = kept_claims, kept_lines
+        if not kept_claims:
+            report["status"] = "nothing_verified"
+    report["support"] = {"no_errors_found": f"sí ({model})", "errors_found": f"errores ({model})",
+                         "cannot_assess": "no evaluable"}[v]
+    report["support_notes"] = notes
+    return report
+
+
 def render(report: dict, question: str | None, project: str | None) -> str:
     fm = ["---", "tipo: respuesta-corpus", "escrito_por: modelo", "citable: false",
           f"comprobado_por: {TOOL}", f"fecha: {date.today().isoformat()}",
-          f"estado: {report['status']}"]
+          f"estado: {report['status']}", f"apoyo_verificado: {report.get('support') or 'no comprobado'}"]
     if project:
         fm.append(f"proyecto: {project}")
     if question:
@@ -272,9 +337,12 @@ def render(report: dict, question: str | None, project: str | None) -> str:
         out += ["Ninguna afirmación pasó la comprobación de citas: trátalo como «no está en el corpus».", ""]
     for block in report["kept_lines"]:
         out += [block, ""]
+    if report.get("support_notes"):
+        out += ["## Observaciones menores del verificador", ""] + [f"- {n}" for n in report["support_notes"]] + [""]
     if report["removed"]:
         out += ["## Retirado por la comprobación", "",
-                "Estas afirmaciones del borrador se quitaron porque su cita no es texto literal del paper:", ""]
+                "Estas afirmaciones del borrador se quitaron porque su cita no es texto literal del paper "
+                "o no respalda lo que la afirmación dice:", ""]
         for r in report["removed"]:
             first = (r["text"] or "(cita suelta)").split("\n")[0]
             out.append(f"- «{first[:200]}» — {r['reason']}")
@@ -290,6 +358,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--project", default=None)
     ap.add_argument("--question", default=None)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--packet", type=Path, default=None,
+                    help="write the fresh-verifier packet of the claims that passed (step 4a)")
+    ap.add_argument("--support", type=Path, default=None,
+                    help="the fresh verifier's JSON verdict on that packet, applied before --out")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -300,6 +372,16 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--answer is required (or --list)")
     try:
         report = check(a.vault, a.answer.read_text(encoding="utf-8"), a.project)
+        if a.packet:
+            a.packet.parent.mkdir(parents=True, exist_ok=True)
+            a.packet.write_text(support_packet(a.vault, report), encoding="utf-8", newline="\n")
+            report["packet"], report["packet_claims"] = str(a.packet), len(report["claims"])
+        if a.support:
+            try:
+                report = apply_support(report, json.loads(a.support.read_text(encoding="utf-8")))
+            except (ValueError, json.JSONDecodeError) as exc:
+                print(json.dumps({"refused": str(exc)}, ensure_ascii=False))
+                return 2
         if a.out:
             a.out.parent.mkdir(parents=True, exist_ok=True)
             a.out.write_text(render(report, a.question, a.project), encoding="utf-8", newline="\n")

@@ -146,6 +146,78 @@ class TestCheckQuotes(unittest.TestCase):
         self.assertLess(note.index("The precursor rises"), note.index("## Retirado"))
 
 
+TWO = GOOD + """
+La anticipación sigue una ley de potencias.
+
+> lead time follows a power law
+> — P-0901 §3.1
+"""
+
+
+class TestSupport(TestCheckQuotes):
+    """A quote can be the paper's own text and still not say what the claim says:
+    the fresh verifier judges each kept claim against its quotes, and a claim it
+    finds unsupported is removed mechanically."""
+
+    def cli(self, *args):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = check_quotes.main(["--vault", self.vault, *args])
+        return code, json.loads(buf.getvalue())
+
+    def draft(self, text=TWO):
+        d = self.tmp / "draft.md"
+        d.write_text(text, encoding="utf-8")
+        return d
+
+    def test_packet_numbers_only_the_claims_that_passed(self):
+        packet = self.tmp / "packet.md"
+        code, rep = self.cli("--answer", str(self.draft("Sin cita.\n\n" + TWO)), "--packet", str(packet))
+        self.assertEqual((code, rep["packet_claims"]), (0, 2))
+        text = packet.read_text(encoding="utf-8")
+        self.assertIn("### Afirmación 1", text)
+        self.assertIn("El precursor anticipa la transición.", text)
+        self.assertIn("### Afirmación 2", text)
+        self.assertNotIn("Sin cita.", text)
+        self.assertIn("> lead time follows a power law", text)
+
+    def test_a_claim_the_verifier_finds_unsupported_is_removed(self):
+        verdict = self.tmp / "v.json"
+        verdict.write_text(json.dumps({"verdict": "errors_found", "model": "m-x", "findings": [
+            {"severity": "importante", "location": "Afirmación 2 (P-0901 §3.1)",
+             "why": "La cita habla del tiempo de anticipación, no de la anticipación en sí."},
+            {"severity": "menor", "location": "Afirmación 1", "why": "Matiz."}]}), encoding="utf-8")
+        out = self.tmp / "R.md"
+        code, rep = self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(out))
+        self.assertEqual(code, 0, rep)
+        note = out.read_text(encoding="utf-8")
+        self.assertIn("apoyo_verificado: errores (m-x)", note)
+        answer = note.split("## Respuesta")[1].split("## Retirado")[0]
+        self.assertIn("El precursor anticipa la transición.", answer)
+        self.assertNotIn("La anticipación sigue una ley de potencias.", answer)
+        self.assertIn("la cita no respalda la afirmación", note)
+        self.assertIn("Matiz.", note)                         # a menor finding stays visible, claim kept
+
+    def test_a_finding_that_names_no_claim_is_refused(self):
+        verdict = self.tmp / "v.json"
+        verdict.write_text(json.dumps({"verdict": "errors_found", "findings": [
+            {"severity": "crítico", "location": "Afirmación 7", "why": "x"}]}), encoding="utf-8")
+        code, rep = self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(self.tmp / "R.md"))
+        self.assertEqual(code, 2)
+        self.assertIn("Afirmación 7", rep["refused"])
+        self.assertFalse((self.tmp / "R.md").exists())
+
+    def test_without_a_verdict_the_note_says_support_was_not_checked(self):
+        out = self.tmp / "R.md"
+        self.cli("--answer", str(self.draft()), "--out", str(out))
+        self.assertIn("apoyo_verificado: no comprobado", out.read_text(encoding="utf-8"))
+        verdict = self.tmp / "v.json"
+        verdict.write_text(json.dumps({"verdict": "cannot_assess", "findings": [],
+                                       "cannot_assess_reason": "x"}), encoding="utf-8")
+        self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(out))
+        self.assertIn("apoyo_verificado: no evaluable", out.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

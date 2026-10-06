@@ -103,15 +103,36 @@ format:
   ```
   That is a good answer. Do not stretch a loosely related quote to fit.
 
-### 4. Check (mechanical) and save
+### 4. Check the quotes, then their support, and save
 
-```
-python <plugin>/scripts/papers/check_quotes.py --vault <vault> --project <PROJ-XXX> \
-  --answer "<output folder>/_borrador-respuesta.md" --question "<the question>" --out "<output path>"
-```
+A quote can be the paper's own words and still not say what your claim says.
+Two checks, in this order:
+
+a. **Quotes (mechanical) and the support packet:**
+   ```
+   python <plugin>/scripts/papers/check_quotes.py --vault <vault> --project <PROJ-XXX> \
+     --answer "<output folder>/_borrador-respuesta.md" --packet "<tmp>/apoyo.md"
+   ```
+   The packet numbers every claim whose quotes passed (`Afirmación N`), each
+   with its quotes and the source text around them.
+b. **Support (a fresh instance):** unless `packet_claims` is 0, dispatch one
+   `fresh-verifier` with the packet file's content and nothing else. Save its
+   JSON block, unchanged, to `<tmp>/apoyo.json`.
+c. **Apply and save:**
+   ```
+   python <plugin>/scripts/papers/check_quotes.py --vault <vault> --project <PROJ-XXX> \
+     --answer "<output folder>/_borrador-respuesta.md" --support "<tmp>/apoyo.json" \
+     --question "<the question>" --out "<output path>"
+   ```
+   A `crítico` / `importante` finding removes its claim; a `menor` one stays,
+   listed under the answer. Exit 2 = a finding names no `Afirmación N`:
+   re-dispatch the verifier, never edit its block. The note records
+   `apoyo_verificado` (`sí`, `errores`, `no evaluable`, or `no comprobado` when
+   step b was skipped — say why in the report).
 
 - The script writes the checked answer to the output path. It keeps only
-  claims whose quotes all pass, and lists what it removed and why.
+  claims whose quotes all pass and that the verifier found supported, and
+  lists what it removed and why.
 - Delete the draft. Commit only the output note:
   `Respuesta del corpus: <first words of the question>`.
 - Do not retry to "rescue" removed claims. The researcher can see them and
