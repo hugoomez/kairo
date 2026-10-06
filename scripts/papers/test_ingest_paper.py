@@ -182,6 +182,34 @@ class Verify(Base):
         self.assertEqual(code, 3)
         self.assertTrue(any("texto.html cambió" in x for x in out["notes"][0]["problems"]))
 
+    def _age_converter(self):
+        m = self.vault / "Papers/_fuentes/P-0001/fuentes.json"
+        man = json.loads(m.read_text(encoding="utf-8"))
+        man["converter"] = "kairo/verbatim_fulltext@0.9.0"
+        m.write_text(json.dumps(man), encoding="utf-8")
+        return m
+
+    def test_an_older_converter_whose_output_is_unchanged_still_verifies(self):
+        self._age_converter()
+        self.assertEqual(self.verify()[1]["counts"], {"ok": 1})
+
+    def test_reconvert_regenerates_the_text_from_the_kept_bytes_without_network(self):
+        m = self._age_converter()
+        p = self.note()
+        p.write_text(p.read_text(encoding="utf-8").replace("1,200 steps", "1,300 steps"), encoding="utf-8")
+        code, out = self.verify()
+        self.assertEqual(code, 3)
+        self.assertTrue(any("reconvert" in x for x in out["notes"][0]["problems"]), out)
+
+        def no_network(url, headers):
+            raise AssertionError(f"reconvert must not fetch {url}")
+        code, out = self.run_cli("reconvert", "--vault", str(self.vault), "--only", "P-0001",
+                                 fetch=no_network, fetch_arxiv=lambda *a, **k: no_network("arxiv", {}))
+        self.assertEqual(code, 0, out)
+        self.assertIn("1,200 steps", p.read_text(encoding="utf-8"))
+        self.assertEqual(json.loads(m.read_text(encoding="utf-8"))["converter"], ip.vf.TOOL_ID)
+        self.assertEqual(self.verify()[1]["counts"], {"ok": 1})
+
     def test_the_verifier_packet_flags_an_edited_note(self):
         sys.path.insert(0, str(HERE.parent / "ledger"))
         import verifier_packet as vp

@@ -10,7 +10,15 @@ type: <ciencia | producto | hibrido>
 #   aplicado — type hibrido, with a linked code repository
 #   producto — type producto: pure engineering, no scientific questions
 #   ciencia  — type ciencia, no paper skeleton
-template: <teorico | aplicado | producto | ciencia>
+#   revision — type ciencia, state of the art only: no seed hypotheses
+template: <teorico | aplicado | producto | ciencia | revision>
+# seed_hypotheses — whether create-project seeds hypotheses from the gaps
+# (revision: false). Hypotheses can always be generated later.
+seed_hypotheses: true
+# comparison_fields — optional: the fields of the Estado-del-arte's
+# "Tabla comparativa" (e.g. [hardware, escala, throughput, MFU]); each cell is
+# a figure or phrase from the paper with its locator, checked by check_sota.py.
+comparison_fields: []
 # paper_thread — teorico: the paper the project is organised around
 # (Manuscritos/outline-<paper_thread>.md). Optional otherwise.
 paper_thread: <slug>

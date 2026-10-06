@@ -396,5 +396,92 @@ class CrossAndPrefilter(Base):
                 self.assertIn("per-page=100", u)
 
 
+class Matching(Base):
+    """The prefilter reads facet terms in titles and abstracts: it must not lose a
+    paper over an inflection, a hyphen or a missing abstract."""
+
+    def test_facet_terms_match_inflections_and_hyphenation(self):
+        plan = ls.load_plan(self.plan)
+        c = {"title": "Fast toy decoders", "abstract": "We build invented-code families and decode them."}
+        self.assertEqual(set(ls.facet_matches(c, plan)), {"A", "B"})
+        plan2 = {"facets": [{"id": "A", "term": "toy parallelism", "synonyms": []},
+                            {"id": "B", "term": "invented model", "synonyms": []}]}
+        c2 = {"title": "Toy-parallel training of invented models", "abstract": ""}
+        self.assertEqual(set(ls.facet_matches(c2, plan2)), {"A", "B"})
+        # stemming never joins two different words into one
+        c3 = {"title": "A toy coder", "abstract": "Toy codec design."}
+        self.assertNotIn("B", ls.facet_matches(c3, plan))
+
+    def test_a_boolean_cross_hit_is_credited_with_every_facet(self):
+        """arXiv and OpenAlex cross queries AND every facet: their hits reached all of them."""
+        plan = ls.load_plan(self.plan)
+        r = {"title": "Fast decoding for a toy code", "abstract": ""}
+        q = {"id": "Q9", "facet": "*", "source": "openalex", "pass": "cross", "query": "x", "terms": [], "raw": []}
+        recs = ls.run_query(q, plan, self.tmp, lambda u, h: json.dumps({"meta": {"count": 1}, "results": [
+            {"id": "https://openalex.org/W9", "title": r["title"], "publication_date": "2031-01-01",
+             "publication_year": 2031, "authorships": []}]}).encode())
+        got = {x["facet"]: x["matched"] for x in recs}
+        self.assertEqual(got["A"], "toy code")
+        self.assertEqual(got["B"], "consulta cruzada Q9")    # credited by the query, said so
+
+    def test_a_candidate_without_abstract_needs_one_facet_in_its_title(self):
+        plan = ls.load_plan(self.plan)
+        cands = [{"title": "Toy decoder on invented clusters", "abstract": "", "facets": {"B": "toy decoder"}},
+                 {"title": "Something unrelated", "abstract": "", "facets": {"B": "toy decoder"}}]
+        ls.mark_prefilter(cands, plan)
+        self.assertTrue(cands[0]["prefilter"]["pass"])
+        self.assertTrue(cands[0]["prefilter"]["sin_abstract"])
+        self.assertFalse(cands[1]["prefilter"]["pass"])
+
+    def test_snowball_keeps_candidates_with_no_facet_credit(self):
+        class Facetless(FakeWeb):
+            def __call__(self, url, headers):
+                if "api.crossref.org" in url and "toy%20code%20toy%20decoder" in url:
+                    return json.dumps({"message": {"total-results": 1, "items": [
+                        {"DOI": "10.0000/none", "title": ["Something only the cross pass found"], "author": [],
+                         "issued": {"date-parts": [[2031, 1, 5]]}, "container-title": ["J"]}]}}).encode()
+                return super().__call__(url, headers)
+        self.run_search(Facetless())
+        before = {c["key"] for c in json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))}
+        self.assertIn("doi:10.0000/none", before)
+        key = next(k for k in before if k.startswith("arxiv:"))
+        code, _ = self.cli("snowball", "--run", str(self.run_dir), "--keys", key, web=Facetless())
+        self.assertEqual(code, 0)
+        after = {c["key"] for c in json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))}
+        self.assertLessEqual(before, after)                    # nobody vanished from the record
+
+    def test_agreement_between_two_screeners_is_counted_by_the_script(self):
+        a = {"k1": {"decision": "include"}, "k2": {"decision": "exclude"}, "k3": {"decision": "include"},
+             "k4": {"decision": "exclude"}, "k5": {"decision": "include"}}
+        b = {"k1": {"decision": "include"}, "k2": {"decision": "include"}, "k3": {"decision": "include"},
+             "k4": {"decision": "exclude"}}
+        pa, pb = self.tmp / "a.json", self.tmp / "b.json"
+        pa.write_text(json.dumps(a), encoding="utf-8")
+        pb.write_text(json.dumps(b), encoding="utf-8")
+        code, out = self.cli("agree", "--decisions", str(pa), "--second", str(pb))
+        self.assertEqual(code, 0, out)
+        self.assertEqual((out["compared"], out["agree"], out["disagree"]), (4, 3, ["k2"]))
+        self.assertAlmostEqual(out["kappa"], 0.5)                # po 0.75, pe 0.5
+
+    def test_the_screen_records_who_screened(self):
+        self.run_search()
+        self.cli("retraction", "--run", str(self.run_dir))
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        d = {c["key"]: {"decision": "exclude", "reason": "relevancia baja", "why": "Invented, not relevant here."}
+             for c in cands if c["prefilter"]["pass"] and c.get("doi") != "10.0000/sc.1"}
+        p = self.tmp / "d.json"
+        p.write_text(json.dumps(d), encoding="utf-8")
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(p),
+                             "--screened-by", "claude-opus-5-5")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["screened_by"], "claude-opus-5-5")
+        self.assertIn("**Cribado por:** claude-opus-5-5", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+        shutil.rmtree(self.run_dir)
+        self.run_search()
+        self.cli("retraction", "--run", str(self.run_dir))
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(p))
+        self.assertIn("**Cribado por:** no consta", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

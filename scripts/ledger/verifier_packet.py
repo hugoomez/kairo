@@ -436,12 +436,15 @@ def source_units(texto: str) -> list[dict]:
     return units
 
 
-def unit_matches(unit: dict, tok: tuple[str, str]) -> bool:
+def unit_matches(unit: dict, tok: tuple[str, str], inline_ok: bool = True) -> bool:
+    """Whether `unit` is text a locator points at. For a section, `inline_ok=False`
+    keeps only the section itself (its heading context, or a subsection packed in
+    a bullet), not a paragraph elsewhere that merely mentions "Section N"."""
     kind, v = tok
     text = unit["text"]
     ev = re.escape(v)
     if kind == "sec":
-        inline = re.search(
+        inline = inline_ok and re.search(
             rf"(?:§\s*|\bSecs?\.?\s*|\bSection\s+|\bSección\s+){ev}(?:\.\d+)*(?![\d])",
             text)
         num = unit.get("num")
@@ -540,8 +543,11 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
                     chosen.append(u["text"])
             continue
         units = source_units(texto)
+        # a section locator reaches the section itself; a paragraph elsewhere that only
+        # mentions "Section N" counts only when the text has no such section at all
+        inline_ok = tok[0] != "sec" or not any(unit_matches(u, tok, inline_ok=False) for u in units)
         for i, u in enumerate(units):
-            if unit_matches(u, tok) and u["text"] not in chosen:
+            if unit_matches(u, tok, inline_ok) and u["text"] not in chosen:
                 chosen.append(u["text"])
                 if tok[0] == "table":
                     # the rows of a table follow its caption as their own unit(s):

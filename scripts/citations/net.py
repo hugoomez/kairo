@@ -19,7 +19,10 @@ throttle, so every citation script talks to public APIs the same way:
     answers, not transient failures.
   - Per-host minimum spacing between requests: arXiv 3 s (arXiv's own rule,
     serial), Semantic Scholar 1 s (~1 rps keyless pool), Crossref 0.2 s
-    (polite pool), OpenAlex 0.02 s (hard limit is 100 rps).
+    (polite pool), OpenAlex 0.1 s (10 rps). The spacing holds across
+    processes: each host's last request time is shared through
+    `~/.kairo/throttle/` (`KAIRO_THROTTLE_DIR`), under a lock file; if that
+    place cannot be used, the spacing falls back to this process alone.
 
 Secrets: `redact()` strips `api_key=` values from any URL before it is put in
 an error message or log line. Never print a raw request URL that may carry a
@@ -30,7 +33,9 @@ This module is imported, not run. Standard library only.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
+import os
 import re
 import shutil
 import subprocess
@@ -38,8 +43,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"   # 1.1.0: per-host spacing shared across processes
 
 USER_AGENT = "kairo-citations/1.0 (research vault citation check; https://github.com/ -- see plugin README)"
 
@@ -61,7 +67,16 @@ CURL_FALLBACK_HOSTS = {"export.arxiv.org", "arxiv.org"}
 # indirection so tests can replace sleeping and the opener
 sleep = time.sleep
 monotonic = time.monotonic
+wallclock = time.time
+_poll = time.sleep                 # waiting for another process's lock (not a throttle wait)
 _last_call: dict[str, float] = {}
+
+# The spacing holds across processes too (two scripts querying arXiv at once):
+# each host's last request time is kept in a small file, under a lock file.
+# KAIRO_THROTTLE_DIR overrides the place; when it cannot be used, the spacing
+# falls back to this process alone.
+SHARED_DIR: Path | None = Path(os.environ.get("KAIRO_THROTTLE_DIR") or Path.home() / ".kairo" / "throttle")
+LOCK_STALE_S = 30.0
 
 
 class HttpError(Exception):
@@ -87,15 +102,67 @@ def redact(text: str) -> str:
     return _KEY_RE.sub(r"\1***", text)
 
 
+@contextlib.contextmanager
+def _host_lock(host: str):
+    """Yields the host's shared state file, or None when it cannot be used."""
+    try:
+        SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    except (OSError, AttributeError):
+        yield None
+        return
+    lock = SHARED_DIR / f"{host}.lock"
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > LOCK_STALE_S:
+                    lock.unlink()                   # left by a crashed process
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                yield None                          # never block a run on a stuck lock
+                return
+            _poll(0.05)
+        except OSError:
+            yield None
+            return
+    try:
+        yield SHARED_DIR / f"{host}.last"
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
 def _throttle(url: str) -> None:
     host = urllib.parse.urlsplit(url).netloc.lower()
     spacing = HOST_SPACING.get(host, 0.0)
-    last = _last_call.get(host)
-    if last is not None and spacing:
-        wait = spacing - (monotonic() - last)
+    if not spacing:
+        return
+    with _host_lock(host) if SHARED_DIR is not None else contextlib.nullcontext() as state:
+        wait = 0.0
+        last = _last_call.get(host)
+        if last is not None:
+            wait = spacing - (monotonic() - last)
+        if state is not None:
+            try:
+                other = float(state.read_text(encoding="utf-8").strip())
+                wait = max(wait, spacing - (wallclock() - other))
+            except (OSError, ValueError):
+                pass
         if wait > 0:
             sleep(wait)
-    _last_call[host] = monotonic()
+        _last_call[host] = monotonic()
+        if state is not None:
+            try:
+                state.write_text(repr(wallclock()), encoding="utf-8")
+            except OSError:
+                pass
 
 
 def _retry_after(e: urllib.error.HTTPError) -> float | None:

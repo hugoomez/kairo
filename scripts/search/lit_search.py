@@ -6,7 +6,8 @@ paged, deduplicated and counted by this script, never by a model.
     lit_search.py snowball   --run <run dir> --keys K1 [K2 …] [--direction both|references|citations]
                              [--vault <vault>]
     lit_search.py retraction --run <run dir> [--mailto you@example.org] [--keys K1 …]
-    lit_search.py screen     --run <run dir> --decisions decisions.json
+    lit_search.py screen     --run <run dir> --decisions decisions.json [--screened-by <model id>]
+    lit_search.py agree      --decisions decisions.json --second sample.json
     lit_search.py show       --run <run dir> [--offset 0] [--limit 60] [--all] [--abstract-chars 1200]
 
 The model's part is the judgement around it: it writes `plan.json` (the
@@ -42,8 +43,14 @@ Cross pass (`cross`, default true with ≥ 2 facets): one more query per source
 that asks for every facet at once — arXiv and OpenAlex `(A-group) AND
 (B-group)`, Semantic Scholar and Crossref the facets' main terms together —
 so the papers that sit at the intersection are fetched first instead of being
-fished out of each facet's own (much larger) result list. A cross hit is
-credited only to the facets whose terms its title or abstract contains.
+fished out of each facet's own (much larger) result list. An arXiv or OpenAlex
+cross hit satisfied a query that ANDs every facet, so it is credited with all
+of them (`matched: "consulta cruzada Qnnn"` for a facet its text does not
+show); a Semantic Scholar or Crossref cross hit (keyword ranking, not AND) only
+with the facets whose terms its title or abstract contains.
+Facet terms are matched as whole-word sequences after light suffix stripping
+(`stem`): "decoder" matches "decoders" and "decoding", "parallelism" matches
+"tensor-parallel"; two different words are never joined.
 A query whose source reports more matches than were fetched is `truncated`;
 a query that failed after retries is `lost`. Both are listed as degraded
 coverage, never hidden.
@@ -59,7 +66,9 @@ Prefilter (`prefilter`, default true): a candidate that reaches fewer than
 min(2, facets) facets — counting the facets whose queries found it and the
 facet terms in its title or abstract — is excluded mechanically by `screen`
 (reason `prefiltro`, counted on its own line), unless decisions.json decides
-it explicitly. Anchor candidates are exempt. `show` lists only the candidates
+it explicitly. Anchor candidates are exempt, and so is a candidate with no
+abstract (common for publisher records) that shows one facet term in its
+title — the snowball's rule. `show` lists only the candidates
 that pass (`--all` for every one) and pages with `--offset`; `retraction`
 checks only those (`--keys` adds any other one the model wants to include).
 
@@ -108,7 +117,7 @@ import net  # noqa: E402
 import retraction  # noqa: E402
 from untrusted import suspicious  # noqa: E402
 
-TOOL = "kairo/lit_search@1.1.0"
+TOOL = "kairo/lit_search@1.2.0"
 SOURCES = ("arxiv", "s2", "openalex", "crossref", "dblp")
 # DBLP's API now sits behind an anti-bot challenge, which Kairo never works
 # around: it stays available on request but is not a default source. Crossref
@@ -127,6 +136,7 @@ SNOWBALL_PAGE = 500                  # Semantic Scholar references / citations: 
 SNOWBALL_CAP = 2000                  # per key and direction; more is reported as truncated
 REASONS = ("fuera de tema", "solo survey", "fuera de alcance", "relevancia baja", "sin justificación", "duplicado")
 PREFILTER = "prefiltro"              # the mechanical exclusion, never a reason the model gives
+BOOLEAN_CROSS = ("arxiv", "openalex")  # cross queries that AND every facet (S2 / Crossref only rank keywords)
 MIN_WHY_WORDS_EXCLUDE = 3
 RELEVANCE = ("alta", "media", "baja")
 
@@ -149,6 +159,31 @@ def norm_title(t: str) -> str:
     t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
     t = re.sub(r"<[^>]+>|\$[^$]*\$", " ", t)
     return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+# Light suffix stripping, so a facet term matches its inflections ("decoder",
+# "decoders", "decoding"; "parallelism", "parallel"). The same rule is applied to
+# the term and to the text, and only whole-word sequences match, so it never
+# joins two different words ("coder" ≠ "codec").
+_SUFFIXES = ("izations", "ization", "isations", "isation", "ations", "ation", "ings", "ing", "isms", "ism",
+             "ities", "ity", "ers", "er", "ors", "or", "ies", "es", "ed", "s")
+
+
+def stem(w: str) -> str:
+    if len(w) <= 4 or any(ch.isdigit() for ch in w):
+        return w
+    for s in _SUFFIXES:
+        if w.endswith(s) and len(w) - len(s) >= 3:
+            if s == "es" and not w[:-2].endswith(("s", "x", "ch", "sh", "z")):
+                continue                    # "codes" → "code" by the plain "s" below
+            w = w[:-len(s)] + ("y" if s == "ies" else "")
+            break
+    return w[:-1] if len(w) > 4 and w.endswith("e") else w
+
+
+def stems(text: str) -> str:
+    """norm_title, then every word stemmed: the form facet terms are matched in."""
+    return " ".join(stem(w) for w in norm_title(text).split())
 
 
 def from_inverted_index(ii: dict | None) -> str:
@@ -486,8 +521,12 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
         r.update(query=q["id"], source=q["source"].replace("-anchor", ""),
                  anchor=q["source"] == "s2-anchor", rank=rank)
         if q["pass"] == "cross":
-            # credited only to the facets its own title / abstract shows; none → no facet credit
+            # credited to the facets its own title / abstract shows; an arXiv or OpenAlex
+            # cross query ANDs every facet, so its hit reached all of them — the facets its
+            # text does not show are credited to the query itself, and say so
             hits = facet_matches(r, plan)
+            if q["source"] in BOOLEAN_CROSS:
+                hits = {f["id"]: hits.get(f["id"], f"consulta cruzada {q['id']}") for f in plan["facets"]}
             out += [{**r, "facet": fid, "matched": t} for fid, t in hits.items()] or \
                    [{**r, "facet": None, "matched": None}]
         else:
@@ -499,9 +538,9 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
 def matched_term(r: dict, q: dict) -> str:
     if len(q["terms"]) == 1:
         return q["terms"][0]
-    hay = norm_title(r.get("title", "") + " " + r.get("abstract", ""))
+    hay = stems(r.get("title", "") + " " + r.get("abstract", ""))
     for t in q["terms"]:
-        if norm_title(t) and f" {norm_title(t)} " in f" {hay} ":
+        if stems(t) and f" {stems(t)} " in f" {hay} ":
             return t
     return q["query"]
 
@@ -613,8 +652,16 @@ def mark_prefilter(cands: list[dict], plan: dict) -> None:
     need = prefilter_need(plan)
     for c in cands:
         reached = set(c["facets"]) | set(facet_matches(c, plan))
-        ok = (not plan.get("prefilter", True)) or bool(c.get("anchor")) or len(reached) >= need
+        # a record with no abstract (common for publisher records) shows only its
+        # title, which rarely carries two facets: one facet term in it is enough —
+        # the same rule the snowball applies to its neighbours
+        bare = not ws(c.get("abstract"))
+        in_title = set(facet_matches(c, plan, title_only=True))
+        ok = (not plan.get("prefilter", True)) or bool(c.get("anchor")) or len(reached) >= need \
+            or (bare and bool(in_title))
         c["prefilter"] = {"facets": sorted(reached), "need": need, "pass": ok}
+        if bare:
+            c["prefilter"]["sin_abstract"] = True
 
 
 def passes_prefilter(c: dict) -> bool:
@@ -670,12 +717,12 @@ def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
 
 def facet_matches(c: dict, plan: dict, title_only: bool = False) -> dict[str, str]:
     """Per facet, the first of its terms found in the title (+ abstract) as whole words."""
-    text = c.get("title", "") if title_only else c.get("title", "") + " " + c.get("abstract", "")
-    hay = f" {norm_title(text)} "
+    text = c.get("title", "") if title_only else c.get("title", "") + " " + (c.get("abstract") or "")
+    hay = f" {stems(text)} "
     out = {}
     for f in plan["facets"]:
         for t in terms(f):
-            if norm_title(t) and f" {norm_title(t)} " in hay:
+            if stems(t) and f" {stems(t)} " in hay:
                 out[f["id"]] = t
                 break
     return out
@@ -760,7 +807,9 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
     # re-merge: existing candidates are re-expanded into one record per facet
     old = []
     for c in cands:
-        for fid, t in c["facets"].items():
+        # a candidate no facet was credited to (a cross hit whose text shows none)
+        # still carries one record, so the re-merge never drops it from the run
+        for fid, t in (list(c["facets"].items()) or [(None, None)]):
             old.append({"title": c["title"], "authors": c["authors"], "year": c["year"], "date": c["date"],
                         "doi": c["doi"], "arxiv": c["arxiv"], "venue": (c["venues"] or [None])[0],
                         "abstract": c["abstract"], "citations": c["citations"], "url": c["url"],
@@ -882,7 +931,7 @@ def validate(cands: list[dict], decisions: dict, plan: dict) -> list[str]:
     return errs
 
 
-def cmd_screen(run: Path, decisions_path: Path) -> dict:
+def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) -> dict:
     plan, queries, cands = load(run / "plan.json"), load(run / "queries.json"), load(run / "candidates.json")
     if not (run / "retraction.json").is_file():
         raise Refused("run `retraction` before `screen`: a retracted paper must never be screened in")
@@ -924,10 +973,37 @@ def cmd_screen(run: Path, decisions_path: Path) -> dict:
               "prefiltro": tally[PREFILTER],
               "motivos": {k: v for k, v in tally.items() if k != PREFILTER},
               "relevante_fuera_de_alcance": tally["fuera de alcance"]}
+    # who wrote the decisions: the judgement is a model's, so its id is part of the record
+    plan["screened_by"] = ws(screened_by) or None
+    save(run / "plan.json", plan)
     (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts), encoding="utf-8", newline="\n")
     (run / "ranked.md").write_text(ranked_md(cands, plan), encoding="utf-8", newline="\n")
-    return {"tool": TOOL, "counts": counts, "busqueda": (run / "busqueda.md").as_posix(),
+    return {"tool": TOOL, "counts": counts, "screened_by": plan["screened_by"],
+            "busqueda": (run / "busqueda.md").as_posix(),
             "ranked": (run / "ranked.md").as_posix()}
+
+
+def cmd_agree(first: Path, second: Path) -> dict:
+    """Agreement between two screeners on the candidates both decided (include /
+    exclude): counts, the keys they disagree on, and Cohen's kappa — computed
+    here, never estimated by a model."""
+    try:
+        a, b = load(first), load(second)
+    except (OSError, json.JSONDecodeError) as e:
+        raise Refused(f"cannot read decisions: {e}") from None
+    keys = sorted(k for k in set(a) & set(b) if isinstance(a[k], dict) and isinstance(b[k], dict))
+    if not keys:
+        raise Refused("the two files decide no candidate in common")
+    da = [a[k].get("decision") == "include" for k in keys]
+    db = [b[k].get("decision") == "include" for k in keys]
+    n = len(keys)
+    agree = sum(x == y for x, y in zip(da, db))
+    po = agree / n
+    pa, pb = sum(da) / n, sum(db) / n
+    pe = pa * pb + (1 - pa) * (1 - pb)
+    kappa = None if pe == 1 else round((po - pe) / (1 - pe), 4)
+    return {"tool": TOOL, "compared": n, "agree": agree,
+            "disagree": [k for k, x, y in zip(keys, da, db) if x != y], "kappa": kappa}
 
 
 def degraded_lines(queries: list[dict]) -> list[str]:
@@ -962,6 +1038,8 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict) -> str:
     L += ["", f"**Ventana de fechas:** {window}" + (f" · **Categorías arXiv:** {', '.join(plan['arxiv_categories'])}"
                                                   if plan["arxiv_categories"] else ""),
           "**Fechas:** arXiv = envío de la v1; Semantic Scholar, OpenAlex y Crossref = fecha de publicación.",
+          "**Cribado por:** " + (plan.get("screened_by") or "no consta")
+          + " (el modelo que decidió cada candidato; los conteos son del script)",
           "**Criterios de inclusión:** " + ("; ".join(plan["include"]) or "—"),
           "**Criterios de exclusión:** " + ("; ".join(plan["exclude"]) or "—"),
           "**Fuera de alcance:** " + ("; ".join(plan["scope_out"]) or "—"),
@@ -1071,6 +1149,10 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
     sc = sub.add_parser("screen")
     sc.add_argument("--run", type=Path, required=True)
     sc.add_argument("--decisions", type=Path, required=True)
+    sc.add_argument("--screened-by", help="model id of whoever wrote the decisions (recorded in busqueda.md)")
+    ag = sub.add_parser("agree")
+    ag.add_argument("--decisions", type=Path, required=True)
+    ag.add_argument("--second", type=Path, required=True)
     sh = sub.add_parser("show")
     sh.add_argument("--run", type=Path, required=True)
     sh.add_argument("--limit", type=int, default=60)
@@ -1086,8 +1168,10 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
             out = cmd_snowball(a.run, a.keys, a.direction, fetch, a.vault)
         elif a.cmd == "retraction":
             out = cmd_retraction(a.run, a.mailto, a.keys)
+        elif a.cmd == "agree":
+            out = cmd_agree(a.decisions, a.second)
         elif a.cmd == "screen":
-            out = cmd_screen(a.run, a.decisions)
+            out = cmd_screen(a.run, a.decisions, a.screened_by)
         else:
             out = cmd_show(a.run, a.limit, a.offset, a.all, a.abstract_chars)
     except Refused as e:

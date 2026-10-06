@@ -42,7 +42,7 @@ sys.path.insert(0, str(HERE.parent / "security"))
 import vaultnotes as vn  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/export_bib@1.1.0"
+TOOL = "kairo/export_bib@1.2.0"
 WARN = {"mismatch": "ATENCIÓN: referencia en conflicto en Kairo (resolution_status: mismatch); no citar sin revisar",
         "retracted": "ATENCIÓN: paper RETRACTADO", "withdrawn": "ATENCIÓN: preprint RETIRADO por sus autores"}
 PROCEEDINGS = re.compile(r"\b(proc(?:eedings)?|conference|symposium|workshop|SC\d*|IPDPS|ISC|NeurIPS|ICML|ICLR|"
@@ -103,7 +103,22 @@ def note_meta(fm: list[str]) -> dict:
             "status": g("resolution_status"), "source": g("source")}
 
 
+def effective(m: dict) -> dict:
+    """The record to cite. A published version is cited only with its own year:
+    a venue (or DOI) whose year no source gave is never paired with the
+    preprint's year — the preprint is cited, and the published version named in
+    a note."""
+    if (m.get("published_venue") or m.get("published_doi")) and not str(m.get("published_year") or "").strip():
+        bits = [b for b in (m.get("published_venue"),
+                            f"DOI {m['published_doi']}" if m.get("published_doi") else "") if b]
+        return {**m, "published_venue": "", "published_doi": "",
+                "pub_note": "Versión publicada: " + ", ".join(bits)
+                            + " (año de la versión publicada no consta; se cita el preprint)"}
+    return m
+
+
 def entry_type(m: dict) -> tuple[str, str | None]:
+    m = effective(m)
     venue = m.get("published_venue") or (m["venue"] if m.get("venue") and m["venue"] != "arXiv preprint" else "")
     if m.get("source") == "patentsview":
         return "patent", None
@@ -118,6 +133,7 @@ def entry_type(m: dict) -> tuple[str, str | None]:
 
 
 def base_key(m: dict) -> str:
+    m = effective(m)
     first = _ascii(_surname(m["authors"][0])).lower() if m.get("authors") else "anon"
     word = next((w for w in re.findall(r"[A-Za-z]{4,}", m.get("title") or "")
                  if w.lower() not in {"with", "from", "that", "this", "towards", "using"}), "paper")
@@ -125,7 +141,13 @@ def base_key(m: dict) -> str:
     return f"{first or 'anon'}{year or ''}{word.lower()}"
 
 
+def notes(m: dict) -> str:
+    """The entry's `note`: a reference warning and / or the unpublished-year note."""
+    return "; ".join(n for n in (WARN.get(m.get("status") or ""), m.get("pub_note")) if n)
+
+
 def bibtex_entry(m: dict, key: str) -> str:
+    m = effective(m)
     kind, venue_field = entry_type(m)
     venue = m.get("published_venue") or (m["venue"] if m.get("venue") != "arXiv preprint" else "")
     doi = m.get("published_doi") or m.get("doi") or ""
@@ -146,8 +168,8 @@ def bibtex_entry(m: dict, key: str) -> str:
             fields.append(("howpublished", "{arXiv preprint arXiv:" + m["arxiv"] + (m.get("arxiv_version") or "") + "}"))
     if m.get("url") and not doi:
         fields.append(("url", "{" + m["url"] + "}"))
-    if m.get("status") in WARN:
-        fields.append(("note", "{" + WARN[m["status"]] + "}"))
+    if notes(m):
+        fields.append(("note", "{" + _latex(notes(m)) + "}"))
     if m.get("id"):
         fields.append(("keywords", "{kairo:" + m["id"] + "}"))
     body = ",\n".join(f"  {k} = {v}" for k, v in fields if v not in ("{}",))
@@ -155,6 +177,7 @@ def bibtex_entry(m: dict, key: str) -> str:
 
 
 def csl_item(m: dict, key: str) -> dict:
+    m = effective(m)
     kind, _ = entry_type(m)
     item = {"id": key, "type": {"article": "article-journal", "inproceedings": "paper-conference",
                                 "incollection": "chapter", "book": "book", "phdthesis": "thesis",
@@ -176,8 +199,8 @@ def csl_item(m: dict, key: str) -> dict:
             item[dst] = m[src].replace("--", "-")
     if m.get("arxiv"):
         item["number"] = f"arXiv:{m['arxiv']}"
-    if m.get("status") in WARN:
-        item["note"] = WARN[m["status"]]
+    if notes(m):
+        item["note"] = notes(m)
     item["keyword"] = f"kairo:{m['id']}"
     return item
 

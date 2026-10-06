@@ -155,6 +155,13 @@ file = "agents/second-critic.md"
 tier = "sonnet"
 label = "Envoltorio del segundo crítico (el juicio lo da DeepSeek en DeepInfra)"
 
+[tasks.screener]
+kind = "agent"
+file = "agents/screener.md"
+isolated = true          # sees only its plan + page: no file, shell or network tool
+tier = "sonnet"
+label = "Cribado de una página de candidatos (literature-search)"
+
 # --- tools --------------------------------------------------------------------
 [tasks.evolve_program]
 kind = "tool"

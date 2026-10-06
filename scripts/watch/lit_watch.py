@@ -100,6 +100,7 @@ sys.path.insert(0, str(HERE.parent / "citations"))
 sys.path.insert(0, str(HERE.parent / "security"))
 sys.path.insert(0, str(HERE.parent / "search"))
 import net  # noqa: E402
+from lit_search import stem  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 from untrusted import suspicious  # noqa: E402
 from vaultnotes import (  # noqa: E402
@@ -111,7 +112,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.5.0"
+TOOL = "kairo/lit_watch@1.6.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -125,6 +126,12 @@ DEFAULT_LOOKBACK_DAYS = 30
 OVERLAP_DAYS = 14
 NOVELTY_MIN_SCORE = 0.25
 NOVELTY_MIN_SHARED = 3
+# Claims are written in Spanish and abstracts in English, so the share of a
+# claim's words found in an abstract stays low even for the same result. Each
+# hypothesis therefore also gets its NOVELTY_PER_HYPOTHESIS candidates sharing
+# the most (stemmed) terms, at least NOVELTY_MIN_SHARED_TOP of them.
+NOVELTY_PER_HYPOTHESIS = 3
+NOVELTY_MIN_SHARED_TOP = 2
 STOP = set("""
 the and for with that this from are was were been have has into over under than then them they their there these those
 which while where when what about also such only more most very using used use based between among within without upon
@@ -157,7 +164,8 @@ def norm_title(s: str) -> str:
 
 
 def words(s: str) -> set[str]:
-    return {w for w in re.findall(r"[a-záéíóúñü][a-záéíóúñü0-9-]{3,}", (s or "").lower()) if w not in STOP}
+    """Content words, stemmed (lit_search's rule), so inflections share a form."""
+    return {stem(w) for w in re.findall(r"[a-záéíóúñü][a-záéíóúñü0-9-]{3,}", (s or "").lower()) if w not in STOP}
 
 
 def section(body: str, heading: str) -> str:
@@ -416,11 +424,15 @@ def known_papers(vault: Path) -> tuple[set[str], set[str], set[str]]:
     return arx, dois, titles
 
 
-def earlier_keys(pdir: Path) -> set[str]:
-    out = set()
+def earlier_keys(pdir: Path) -> dict[str, bool]:
+    """Every candidate an earlier watch offered → whether it was offered in full
+    (strong, triaged or decided). A weak one may come back once it is strong."""
+    out: dict[str, bool] = {}
     for f in (pdir / "_vigilancia").glob("vigilancia-*.json"):
         try:
-            out |= {c["key"] for c in load_run(f).get("candidates", [])}
+            for c in load_run(f).get("candidates", []):
+                full = bool(c.get("strong", True) or c.get("triage") or c.get("decision"))
+                out[c["key"]] = out.get(c["key"], False) or full
         except (OSError, json.JSONDecodeError, KeyError):
             continue
     return out
@@ -586,25 +598,37 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     cands = []
     for c in merged.values():
         if (c.get("arxiv") and c["arxiv"].lower() in arx) or (c.get("doi") and c["doi"] in dois) \
-                or norm_title(c["title"]) in titles or c["key"] in seen_before:
+                or norm_title(c["title"]) in titles:
             continue
         c["strong"] = len(c["facets"]) >= 2 or len(facets_all) == 1
+        if c["key"] in seen_before:
+            # offered before: only a weak candidate that is now strong comes back, once
+            if seen_before[c["key"]] or not c["strong"]:
+                continue
+            c["reofrecido"] = True
         c["abstract_sha256"] = sha256(c.get("abstract") or "") if c.get("abstract") else None
         flags = suspicious(c["title"] + "\n" + (c.get("abstract") or ""))
         if flags:
             c["sospechoso"] = flags                 # third-party text that reads like an instruction
         cands.append(c)
     hyps = hypotheses(pdir)
+    pairs: dict[str, dict[str, dict]] = {c["key"]: {} for c in cands}
+    for hid, hw in hyps:
+        if not hw:
+            continue
+        ranked = []
+        for c in cands:
+            shared = hw & words(c["title"] + " " + c.get("abstract", ""))
+            score = round(len(shared) / len(hw), 3)
+            if len(shared) >= NOVELTY_MIN_SHARED and score >= NOVELTY_MIN_SCORE:
+                pairs[c["key"]][hid] = {"hypothesis": hid, "score": score, "shared": len(shared)}
+            ranked.append((len(shared), score, c["key"]))
+        # the closest few for every hypothesis, whatever the language gap does to the ratio
+        for n, score, key in sorted(ranked, reverse=True)[:NOVELTY_PER_HYPOTHESIS]:
+            if n >= NOVELTY_MIN_SHARED_TOP:
+                pairs[key].setdefault(hid, {"hypothesis": hid, "score": score, "shared": n})
     for c in cands:
-        cw = words(c["title"] + " " + c.get("abstract", ""))
-        scored = []
-        for hid, hw in hyps:
-            shared = hw & cw
-            if hw and len(shared) >= NOVELTY_MIN_SHARED:
-                score = round(len(shared) / len(hw), 3)
-                if score >= NOVELTY_MIN_SCORE:
-                    scored.append({"hypothesis": hid, "score": score})
-        c["novelty"] = sorted(scored, key=lambda x: -x["score"])[:3]
+        c["novelty"] = sorted(pairs[c["key"]].values(), key=lambda x: (-x["shared"], -x["score"]))[:3]
     cands.sort(key=lambda c: c.get("date") or "", reverse=True)  # newest first within a rank
     cands.sort(key=lambda c: (not c["strong"], -len(c["facets"]), -max([n["score"] for n in c["novelty"]] or [0])))
     for i, c in enumerate(cands):

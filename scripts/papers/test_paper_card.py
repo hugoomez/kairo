@@ -93,6 +93,79 @@ class PaperCard(unittest.TestCase):
         self.assertIn("## ⚠️ Fuentes que fallaron", out)
         self.assertIn("crossref.json", out)
 
+    def _with(self, openalex_work=None, crossref=None, lists=None, fail=()):
+        """web() with the OpenAlex work, the Crossref record and OpenAlex list answers replaced."""
+        base = web(fail)
+
+        def fetch(url, headers):
+            host = urllib.parse.urlsplit(url).netloc
+            if host == "api.openalex.org" and "/works?" in url and lists is not None:
+                for marker, results in lists.items():
+                    if marker in urllib.parse.unquote(url):
+                        return json.dumps({"meta": {"count": len(results)}, "results": results}).encode()
+                return json.dumps({"meta": {"count": 0}, "results": []}).encode()
+            if host == "api.openalex.org" and openalex_work is not None:
+                return json.dumps(openalex_work).encode()
+            if host == "api.crossref.org" and crossref is not None:
+                if crossref == "404":
+                    raise pc.net.HttpError(url, 404, "not found")
+                return json.dumps(crossref).encode()
+            return base(url, headers)
+        return fetch
+
+    def test_a_venue_known_only_to_openalex_takes_doi_and_year_from_the_publisher(self):
+        work = {**OPENALEX, "doi": "https://doi.org/10.48550/arxiv.0000.44444", "publication_year": 2030,
+                "primary_location": {"landing_page_url": "https://doi.org/10.0000/conf.9",
+                                     "source": {"type": "conference", "display_name": "Invented Systems Conf"}}}
+        cr = {"message": {"DOI": "10.0000/conf.9", "type": "proceedings-article", "title": ["x"],
+                          "container-title": ["Proceedings of the Invented Systems Conf"],
+                          "issued": {"date-parts": [[2031, 4, 2]]}}}
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with(work, cr))
+        self.assertEqual(code, 0, out)
+        bib = json.loads(out)["bibtex"]
+        self.assertIn("year = {2031}", bib)
+        self.assertIn("doi = {10.0000/conf.9}", bib)
+        self.assertIn("booktitle = {Proceedings of the Invented Systems Conf}", bib)
+
+    def test_a_venue_without_a_known_year_is_never_paired_with_the_preprint_year(self):
+        work = {**OPENALEX, "doi": "https://doi.org/10.48550/arxiv.0000.44444",
+                "primary_location": {"source": {"type": "conference", "display_name": "Invented Systems Conf"}}}
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with(work, "404"))
+        self.assertEqual(code, 0, out)
+        bib = json.loads(out)["bibtex"]
+        self.assertTrue(bib.startswith("@misc{"), bib)              # cited as the preprint it is
+        self.assertNotIn("booktitle", bib)
+        self.assertIn("year = {2030}", bib)
+        self.assertIn("Invented Systems Conf", bib)                 # the venue, in a note
+        self.assertIn("año de la versión publicada no consta", bib)
+
+    def test_a_paper_is_found_by_its_title(self):
+        hit = {**OPENALEX, "title": "Distributed Toy State-Vector Simulation"}
+        other = {**OPENALEX, "id": "https://openalex.org/W9", "title": "Something else entirely"}
+        code, out = self.run_cli("--title", "distributed toy state vector simulation", "--json",
+                                 fetch=self._with(lists={"search=": [other, hit]}))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["identity"]["doi"], "10.0000/sc.444")
+
+    def test_an_ambiguous_title_lists_the_candidates_and_stops(self):
+        a = {**OPENALEX, "title": "Toy simulation on invented clusters"}
+        b = {**OPENALEX, "id": "https://openalex.org/W9", "title": "Toy simulation on invented clusters, revisited"}
+        code, out = self.run_cli("--title", "toy simulation", fetch=self._with(lists={"search=": [a, b]}))
+        self.assertEqual(code, 3)
+        res = json.loads(out)
+        self.assertEqual(len(res["candidates"]), 2)
+
+    def test_the_newest_citing_papers_come_sorted_from_openalex(self):
+        cites = [{"id": "https://openalex.org/W7", "title": "Newest citing toy paper", "publication_year": 2033,
+                  "publication_date": "2033-02-01", "doi": "https://doi.org/10.0000/c7",
+                  "authorships": [{"author": {"display_name": "Li Wu"}}],
+                  "primary_location": {"source": {"display_name": "Invented Journal"}}}]
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with(lists={"cites:W444": cites}))
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual(card["citing_source"], "OpenAlex")
+        self.assertEqual(card["citing"][0]["title"], "Newest citing toy paper")
+
     def test_unknown_paper(self):
         def nothing(url, headers):
             raise pc.net.HttpError(url, 404, "not found")

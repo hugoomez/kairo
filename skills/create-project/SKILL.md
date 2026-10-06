@@ -88,6 +88,15 @@ existing fields — never a new `type` value:
 | `aplicado` (code) | `hibrido` | `code_repo`, `code_remote: none`, `code_visibility: private` | the repository link + its pre-push guard (see "Applied projects: the code repository") |
 | `producto` | `producto` | — | as today |
 | `ciencia` (default) | `ciencia` | — | as today |
+| `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
+
+**`revision`** is the light path for a question like "state of the art on X,
+last two years" or "compare A, B and C": Propósito is the question itself and
+Alcance can be one line each (ask only if the brief gives neither). It runs
+search → screening → ingestion → the map (with a *Tabla comparativa* when the
+question compares things, see step 7) and stops there: no related-projects
+pass, no seed hypotheses. Say in the report that hypotheses can be generated
+later from the gaps.
 
 Set `template:` to the one used. For `teorico`, tell the researcher once, in
 your report: `default_linea_publicacion: true` means every experiment that
@@ -116,6 +125,8 @@ can set it to `false` in the hub.
   gates.
 
 ### 3. Compute `related_projects`
+
+*(Skipped for the `revision` template.)*
 
 Embed the **Propósito** text via Smart Connections
 (`mcp__smart-connections__search_by_text` with the Propósito as query, or
@@ -326,7 +337,7 @@ leave it out of the map and list it in the end-of-run message as `importante`
 researcher can add the entry with `--add`. Then **dispatch one `facet-summarizer` subagent per
 facet, all launched together in the same turn** (exception: if the prompt says memory is low and subagents go **one at a time**, launch each and wait for its answer before the next), each given its facet + the
 explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
-`type`. **A facet with more than 6 papers is split:** one `facet-summarizer` per
+`type` (+ the hub's `comparison_fields`, when set). **A facet with more than 6 papers is split:** one `facet-summarizer` per
 chunk of at most 6 of its papers (same facet, disjoint lists), so every paper
 is actually read within one subagent's turns; the Reduce pass merges chunks of
 a facet like any two contributions. **Never assign a `send: never` note** (check the candidate list with
@@ -401,7 +412,9 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/check_sota.py" --vault <vault> --pr
   --packet <tmp>/sota-<n>.md --section "<heading>"
 ```
 
-Pass the verifier the packet file's content and nothing else. Every
+A large section is split: the JSON lists every part in `packets`
+(`sota-<n>.md`, `sota-<n>-2.md`, …) — dispatch one `fresh-verifier` per part.
+Pass each verifier its packet file's content and nothing else. Every
 `errors_found` finding names an `Afirmación`: re-open its source and fix the
 sentence to what the text says, or drop it, then re-run `check_sota.py`. A
 `cannot_assess` is listed in the end-of-run message as `importante`. Record
@@ -459,12 +472,30 @@ locator (`… — §4.2`), blank = doesn't address it. `check_sota.py` checks ev
 number in a cell against that column's paper. Skip this appendix entirely for smaller
 sets — a 6-paper matrix is noise, not signal.
 
+**`## Tabla comparativa` — when the question compares things.** When the hub
+has `comparison_fields` (or the brief asks to compare methods / systems /
+strategies, in which case propose the fields to the researcher and record them
+in the hub first), add this section after §7: one row per paper (or per
+method a paper reports), one column per field, plus a `fuente` column. Every
+cell is a figure or short phrase **taken from the paper** (a number exactly as
+it appears, with its unit), and the row's `fuente` cell holds the locators that
+row's cells come from (`P-0007 Tabla 3; P-0007 §5.2`); a field the paper does
+not report is `no consta`, never estimated or converted. The values come from
+the facet summarizers' `(comparativa)` lines (they are given the fields),
+never from memory. `check_sota.py` checks every number in a cited row against
+the cited text, and the row goes into the fresh-verifier packet like any cited
+sentence. Comparable only as reported: say under the table when the papers
+measure on different hardware or with different metrics.
+
 Also append the **Búsqueda ejecutada** block — step 4's `busqueda.md`,
 unchanged (the frozen queries + PRISMA counts computed by the script) — plus
 one line naming its run directory (`_busquedas/<date>/`, raw responses and
 sha256 inside), so the map's evidence base is auditable and re-runnable.
 
 ### 8. Seed candidate hypotheses
+
+**`seed_hypotheses: false` (the `revision` template)?** Skip this step and end
+the run saying the gaps are ready for hypothesis generation when wanted.
 
 **Launched from the Kairo interface?** Skip this step: the prompt says so.
 Hypothesis generation runs on the policy's hard-task model as its own job

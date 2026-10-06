@@ -84,6 +84,20 @@ class Html(unittest.TestCase):
         self.assertIn("- A bullet point.", self.body)
         self.assertIn("**Setup.**\n\nThe precursor rises 1,200 steps early.", self.body)
 
+    def test_spanned_cells_keep_every_column_aligned(self):
+        """A multi-level header (colspan / rowspan) must not shift a number into
+        the wrong column: a spanned cell is repeated in every column / row it covers."""
+        html = HTML.replace(
+            '<table class="ltx_tabular"><tr><td>r</td><td>delay</td></tr><tr><td>0.3</td><td>1200</td></tr></table>',
+            '<table class="ltx_tabular">'
+            '<tr><th rowspan="2">Method</th><th colspan="2">Throughput</th></tr>'
+            '<tr><th>8 GPUs</th><th>64 GPUs</th></tr>'
+            '<tr><td>Toy</td><td>1.5</td><td>9.8</td></tr>'
+            '<tr><td colspan="3">invented footnote row</td></tr></table>')
+        body = vf.html_to_body(html)
+        self.assertIn("| Method | Throughput | Throughput |\n| Method | 8 GPUs | 64 GPUs |\n| Toy | 1.5 | 9.8 |\n"
+                      "| invented footnote row | invented footnote row | invented footnote row |", body)
+
     def test_front_matter_abstract_and_bibliography_left_out(self):
         for gone in ("ABSTRACTTEXT", "BIBENTRY", "jane@x.org", "A Title"):
             self.assertNotIn(gone, self.body)

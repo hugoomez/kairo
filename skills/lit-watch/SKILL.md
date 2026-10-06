@@ -1,6 +1,6 @@
 ---
 name: lit-watch
-description: Use for the periodic literature watch of one Kairo project ("vigila la literatura", "¿hay papers nuevos?", "lit watch"), or to ingest the papers the researcher picked from a watch. Re-runs the project's own recorded queries restricted to papers since the last watch (scripts/watch/lit_watch.py), writes a one-line triage reason for each strong candidate, and checks whether a new paper threatens the novelty of an existing hypothesis. A threat is a model's judgement recorded in the hypothesis's Revisión de vigencia with a verbatim sentence of the abstract. It never changes a status, and it ingests nothing unless the researcher chose the paper or the hub says paper_ingestion: auto.
+description: Use for the periodic literature watch of one Kairo project ("vigila la literatura", "¿hay papers nuevos?", "lit watch"), or to ingest the papers the researcher picked from a watch. Re-runs the project's own recorded queries restricted to papers since the last watch (scripts/watch/lit_watch.py), writes a one-line triage reason for each strong candidate, and checks whether a new paper threatens the novelty of an existing hypothesis. A threat is a model's judgement recorded in the hypothesis's Revisión de vigencia with a verbatim sentence of the abstract. It never changes a status, and it ingests nothing unless the researcher chose the paper or the hub says paper_ingestion: autonomo.
 ---
 
 # lit-watch — what is new, and does it matter to a hypothesis
@@ -38,7 +38,7 @@ may already report the hypothesis's claim.
 - **watch** (default): steps 1–4.
 - **ingest `<keys>`**: step 5 only, for the candidates the researcher marked
   `ingerir`, or for every triaged candidate when the hub has
-  `autonomy_defaults.paper_ingestion: auto`.
+  `autonomy_defaults.paper_ingestion: autonomo` (the template's value).
 
 ## Steps
 
@@ -84,8 +84,13 @@ so in its line ("fuera de tema: …"). Do not drop it: the researcher decides.
 ### 3. Novelty threats
 
 Look at each candidate whose `novelty` list names hypotheses. The list is a
-word-overlap prefilter and not a verdict. Take at most the 3 highest scores
-per hypothesis.
+word-overlap prefilter (stemmed words; every active hypothesis also gets its
+three closest candidates sharing two or more terms, since a Spanish claim
+shares few words with an English abstract) and not a verdict. Take at most
+the 3 highest per hypothesis.
+
+A candidate with `reofrecido: true` was offered before as a weak candidate and
+is now strong: triage it like any other, and say so in its line.
 
 The judgement is not yours: it runs on the policy's hard-task model
 (`config/models.toml`, task `novelty_judge`).

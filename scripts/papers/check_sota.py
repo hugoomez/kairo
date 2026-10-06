@@ -40,7 +40,14 @@ locators and figures are real. `--packet FILE [--section "<heading>"]` writes
 the fresh-verifier packet for that: every cited sentence (or row) of the
 document, or of one `##` section, as an `Afirmación` followed by the verbatim
 text its locators point at, built by the verifier's own renderer. The
-fresh-verifier then hunts the sentences the source does not support.
+fresh-verifier then hunts the sentences the source does not support. A packet
+larger than `--max-chars` (default 150,000) is split into parts — FILE,
+FILE-2, … — each with its own header and "Parte: i de n", so every verifier
+reads its part whole.
+
+A figure with a unit glued to it (`530B`, `80GB`, `1.2k`) is checked whatever
+its size, against the same figure and unit (or its spelled-out word) in the
+cited text; a Spanish decimal comma (`1,1%`) is the same number as `1.1%`.
 
 With `--write`, each failing citation / number is marked in place with a
 visible «⚠ …» after it; nothing is removed. Prints a JSON report.
@@ -72,13 +79,18 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.1.0"
+TOOL = "kairo/check_sota@1.2.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
+# A unit glued to a figure ("530B", "80GB", "7B", "1.2k", "312 TFLOPS") is a result
+# whatever its size: model sizes, memory and throughput live in these.
+UNIT = r"(?:[kKMBT]|[KMGTP]i?B|[KMGTPE]FLOP[sS]?)"
 NUMBER = re.compile(r"(?<![\w.§-])[-−]?\d[\d,.]*"
-                    r"(?:\s*%|\s*×\s*10\^?[-−]?\d+|e[-−]?\d+|\s*[×x](?![\w\d]))?(?![\w])")
+                    r"(?:\s*%|\s*×\s*10\^?[-−]?\d+|e[-−]?\d+|\s*[×x](?![\w\d])|\s?" + UNIT + r"(?![\w]))?(?![\w])")
 MULT = re.compile(r"\s*[×x]$")
+SUFFIX = re.compile(r"\s?(" + UNIT + r")$")
+UNIT_WORDS = {"k": "thousand|mil", "m": "million|millones", "b": "billion|mil millones", "t": "trillion|billones"}
 HEADER_PAPER = re.compile(r"^\[{0,2}(P-\d{4,5})\]{0,2}$")
 BAD_STATUS = {"mismatch": "referencia en conflicto (resolution_status: mismatch)",
               "retracted": "paper retractado", "withdrawn": "paper retirado"}
@@ -107,8 +119,8 @@ def numbers(sentence: str) -> list[str]:
         digits = re.sub(r"[^\d.]", "", re.split(r"[×x]", tok)[0]).strip(".")
         if not digits:
             continue
-        if MULT.search(tok):
-            out.append(tok)                   # a multiplier is a result whatever its size
+        if MULT.search(tok) or SUFFIX.search(tok):
+            out.append(tok)                   # a multiplier or a sized figure is a result whatever its size
             continue
         is_int = "." not in digits and "%" not in tok and "×" not in tok and "e" not in tok.lower()
         if is_int and (int(digits.replace(".", "") or 0) < 10 or re.fullmatch(r"(?:19|20)\d{2}", digits)):
@@ -120,11 +132,21 @@ def numbers(sentence: str) -> list[str]:
 def _canon(tok: str) -> str:
     t = tok.replace("−", "-").replace(" ", "")
     t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)     # thousands separators
+    t = re.sub(r"(?<=\d),(?=\d)", ".", t)          # a Spanish decimal comma: 1,1 = 1.1
     return t.rstrip("%")
 
 
 def number_in(tok: str, texts: list[str]) -> bool:
     want = _canon(tok)
+    unit = SUFFIX.search(tok) if not MULT.search(tok) else None
+    if unit:
+        # the figure with the same unit, glued, spaced or hyphenated, or spelled out
+        core = re.escape(re.sub(r"[^\d.]", "", _canon(tok[:unit.start()])))
+        u = unit.group(1)
+        alt = UNIT_WORDS.get(u.lower()) if len(u) == 1 else None
+        rx = re.compile(rf"(?<![\d.]){core}\s*-?\s*(?:{re.escape(u)}(?![a-z])" + (rf"|(?:{alt})\b" if alt else "") + ")",
+                        re.IGNORECASE if len(u) > 1 else 0)
+        return any(rx.search(re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)) for t in texts)
     if MULT.search(tok):
         core = re.sub(r"[^\d.]", "", MULT.sub("", tok))
         rx = re.compile(rf"(?<![\d.]){re.escape(core)}\s*(?:×|x\b|times\b|-?fold\b|veces\b)", re.IGNORECASE)
@@ -272,12 +294,43 @@ def section_text(text: str, heading: str | None) -> str:
     raise ValueError(f"no '## {heading}' section")
 
 
-def support_packet(vault: str, text: str, label: str, heading: str | None) -> tuple[str, dict]:
-    """The fresh-verifier packet for a synthesis: every cited sentence or table row
-    as an Afirmación, each followed by the verbatim text its locators point at."""
+MAX_PACKET_CHARS = 150_000          # ~40k tokens: one verifier reads a part whole, never a truncated one
+
+
+def section_claims(text: str, heading: str | None) -> list[str]:
     body = section_text(text, heading)
     claims = [" ".join(b.split()) for _, _, b in blocks(body) if CITE.search(b)]
-    claims += [t["row"].strip() for t in tables(body) if CITE.search(t["row"])]
+    return claims + [t["row"].strip() for t in tables(body) if CITE.search(t["row"])]
+
+
+def support_packets(vault: str, text: str, label: str, heading: str | None,
+                    max_chars: int = MAX_PACKET_CHARS) -> list[tuple[str, dict]]:
+    """The support packet, split into parts of at most `max_chars` (a single
+    sentence whose cited text is larger still goes alone, whole): one fresh
+    verifier per part, so none receives a packet too large to read."""
+    claims = section_claims(text, heading)
+    groups: list[list[str]] = [[]]
+    size = 0
+    for c in claims:
+        n = len(support_packet(vault, text, label, heading, [c])[0])
+        if groups[-1] and size + n > max_chars:
+            groups.append([])
+            size = 0
+        groups[-1].append(c)
+        size += n
+    parts = [support_packet(vault, text, label, heading, g) for g in groups]
+    if len(parts) > 1:
+        parts = [(p.replace("\n- Alcance:", f"\n- Parte: {i} de {len(parts)}\n- Alcance:", 1), m)
+                 for i, (p, m) in enumerate(parts, 1)]
+    return parts
+
+
+def support_packet(vault: str, text: str, label: str, heading: str | None,
+                   claims: list[str] | None = None) -> tuple[str, dict]:
+    """The fresh-verifier packet for a synthesis: every cited sentence or table row
+    as an Afirmación, each followed by the verbatim text its locators point at."""
+    if claims is None:
+        claims = section_claims(text, heading)
     manifest: dict = {"tool": VERIFIER_PACKET_ID, "built_by": TOOL,
                       "scope": f"section:{heading}" if heading else "note",
                       "sources": [{"path": label, "role": "note"}], "citations": [], "analysis_outputs": []}
@@ -312,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--packet", help="write the fresh-verifier support packet here instead of checking")
     ap.add_argument("--section", help="with --packet: only this ## section (heading text, without '## ')")
+    ap.add_argument("--max-chars", type=int, default=MAX_PACKET_CHARS,
+                    help="with --packet: split into parts of at most this size (FILE, FILE-2, …), one verifier each")
     a = ap.parse_args(argv)
     pdir = Path(a.vault, a.project_dir)
     f = pdir / a.file if not Path(a.file).is_absolute() else Path(a.file)
@@ -322,14 +377,18 @@ def main(argv: list[str] | None = None) -> int:
     project = fm_scalar(split_frontmatter(read_text(str(hub)))[0], "id") if hub.is_file() else None
     if a.packet:
         try:
-            packet, manifest = support_packet(a.vault, f.read_text(encoding="utf-8"),
-                                              f"{Path(a.project_dir).name}/{f.name}", a.section)
+            parts = support_packets(a.vault, f.read_text(encoding="utf-8"),
+                                    f"{Path(a.project_dir).name}/{f.name}", a.section, a.max_chars)
         except (OSError, ValueError) as e:
             print(json.dumps({"tool": TOOL, "error": str(e)}, ensure_ascii=False))
             return 2
-        Path(a.packet).write_text(packet, encoding="utf-8", newline="\n")
-        print(json.dumps({"tool": TOOL, "packet": a.packet, "assertions": manifest["assertions"],
-                          "citations": len(manifest["citations"])}, ensure_ascii=False, indent=2))
+        first = Path(a.packet)
+        paths = [first] + [first.with_name(f"{first.stem}-{i}{first.suffix}") for i in range(2, len(parts) + 1)]
+        for path, (packet, _) in zip(paths, parts):
+            path.write_text(packet, encoding="utf-8", newline="\n")
+        print(json.dumps({"tool": TOOL, "packet": a.packet, "packets": [str(p) for p in paths],
+                          "assertions": sum(m["assertions"] for _, m in parts),
+                          "citations": sum(len(m["citations"]) for _, m in parts)}, ensure_ascii=False, indent=2))
         return 0
     try:
         text = f.read_text(encoding="utf-8")

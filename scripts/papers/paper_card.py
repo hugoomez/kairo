@@ -2,7 +2,7 @@
 """One paper's card: which versions exist, where it was published, whether it
 was retracted, who cites it, and its BibTeX — all from public records.
 
-    paper_card.py (--arxiv ID | --doi DOI) [--vault <vault>] [--citations 25] [--json]
+    paper_card.py (--arxiv ID | --doi DOI | --title "<title>") [--vault <vault>] [--citations 25] [--json]
                   [--raw-dir DIR]
 
 Sources (no model involved, each answer kept with --raw-dir):
@@ -22,9 +22,15 @@ Crossref relation) and says which source said what; when none does, it says
 "no consta", never guesses. With --vault, says whether the paper is already a
 note (P-XXXX) and prints the ingest_paper.py command otherwise.
 
+--title looks the paper up in OpenAlex: one work with exactly that title (case,
+punctuation and accents aside) is the paper; anything else lists the closest
+hits and exits 3, never guessing. The citing papers come from OpenAlex, which
+sorts them by date itself; Semantic Scholar is the fallback (it pages in its
+own order, so past 1000 the card says it is the newest of the first 1000).
+
 Prints Markdown (or one JSON object with --json). A source that failed is
 named in the card, never silently left out. Exit: 0 ok · 1 nothing found ·
-2 bad input. Standard library only.
+2 bad input · 3 ambiguous title (candidates listed). Standard library only.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import urllib.parse
 from pathlib import Path
 from typing import Callable
@@ -48,7 +55,7 @@ import net  # noqa: E402
 import retraction  # noqa: E402
 from fill_abstract import from_jats  # noqa: E402
 
-TOOL = "kairo/paper_card@1.0.0"
+TOOL = "kairo/paper_card@1.1.0"
 S2 = "https://api.semanticscholar.org/graph/v1"
 Fetch = Callable[[str, dict], bytes]
 
@@ -69,6 +76,15 @@ def arxiv_versions(abs_html: str) -> list[dict]:
         if v not in [x["version"] for x in out]:
             out.append({"version": v, "date": d})
     return out
+
+
+def _oa_arxiv(w: dict) -> str | None:
+    """The arXiv id among an OpenAlex work's locations, if any."""
+    for loc in [w.get("primary_location") or {}] + list(w.get("locations") or []):
+        m = re.search(r"arxiv\.org/(?:abs|pdf)/([^\s?#]+?)(?:v\d+)?(?:\.pdf)?$", loc.get("landing_page_url") or "")
+        if m:
+            return retraction.normalize_arxiv(m.group(1))
+    return None
 
 
 class Card:
@@ -107,8 +123,10 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
         if e:
             ident.update(title=e["title"], authors=e["authors"], year=(e["published"] or "")[:4], arxiv=arxiv)
             if e.get("doi") or e.get("journal_ref"):
+                # journal_ref is free text ("Invented J. 7, 11 (2031)"): its year, when it names one
+                years = re.findall(r"\b(?:19|20)\d{2}\b", e.get("journal_ref") or "")
                 card["published"].append({"source": "arXiv (declarado por los autores)", "doi": e.get("doi") or "",
-                                          "venue": e.get("journal_ref") or ""})
+                                          "venue": e.get("journal_ref") or "", "year": years[-1] if years else ""})
             doi = doi or (e.get("doi") if e.get("doi") and not retraction.is_arxiv_doi(e["doi"]) else None)
         page = c.get("arxiv-abs.html", f"https://arxiv.org/abs/{arxiv}")
         card["versions"] = arxiv_versions(page.decode("utf-8", "replace")) if page else []
@@ -130,6 +148,10 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             src = loc.get("source") or {}
             if (src.get("type") or "") in ("journal", "conference") and src.get("display_name"):
                 d = retraction.normalize_doi(w.get("doi"))
+                if not d or retraction.is_arxiv_doi(d):
+                    # the work is the preprint's: the published version's DOI is its landing page's
+                    m = re.match(r"https?://(?:dx\.)?doi\.org/(.+)$", loc.get("landing_page_url") or "")
+                    d = retraction.normalize_doi(m.group(1)) if m else None
                 card["published"].append({"source": f"OpenAlex (ubicación de tipo {src['type']})",
                                           "doi": d if d and not retraction.is_arxiv_doi(d) else "",
                                           "venue": src["display_name"]})
@@ -176,7 +198,29 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             pv = p.get("publicationVenue") or {}
             if pv.get("name") and (pv.get("type") or "") in ("journal", "conference"):
                 card["published"].append({"source": "Semantic Scholar", "doi": "", "venue": pv["name"]})
-        if n_cit:
+        if n_cit and ident.get("openalex"):
+            # OpenAlex sorts the citing works by date itself: the newest really are the newest
+            raw = c.get("openalex-citing.json",
+                        f"https://api.openalex.org/works?filter=cites:{ident['openalex']}"
+                        f"&sort=publication_date:desc&per-page={min(max(n_cit, 1), 100)}"
+                        "&select=id,doi,title,publication_year,publication_date,authorships,primary_location,locations"
+                        + (f"&api_key={urllib.parse.quote(oa_key)}" if oa_key else ""))
+            data = json.loads(raw) if raw else {}
+            if data.get("results"):
+                card["citing_source"] = "OpenAlex"
+                card["citing_total_listed"] = (data.get("meta") or {}).get("count") or len(data["results"])
+                for w in data["results"][:n_cit]:
+                    d = retraction.normalize_doi(w.get("doi"))
+                    card["citing"].append({
+                        "title": w.get("title"), "year": w.get("publication_year"), "date": w.get("publication_date"),
+                        "venue": ((w.get("primary_location") or {}).get("source") or {}).get("display_name"),
+                        "arxiv": _oa_arxiv(w) or (retraction.arxiv_from_doi(d) if d and retraction.is_arxiv_doi(d)
+                                                  else None),
+                        "doi": d if d and not retraction.is_arxiv_doi(d) else None,
+                        "first_author": (((w.get("authorships") or [{}])[0] or {}).get("author") or {}).get(
+                            "display_name")})
+        if n_cit and not card["citing"]:
+            card["citing_source"] = "Semantic Scholar"
             citing: list[dict] = []
             offset = 0
             while offset < 1000:
@@ -197,6 +241,8 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                 offset = data["next"]
             citing.sort(key=lambda x: (x.get("date") or str(x.get("year") or "")), reverse=True)
             card["citing_total_listed"] = len(citing)
+            # S2 pages in its own order: past 1000, "newest" means newest of the first 1000 it gave
+            card["citing_truncated"] = offset >= 1000
             card["citing"] = citing[:n_cit]
     if doi or arxiv:
         # the same detection rules as check_retraction.py, on the records fetched above
@@ -265,7 +311,9 @@ def markdown(card: dict) -> str:
           f"- OpenAlex: {cit.get('openalex', '—')} · Semantic Scholar: {cit.get('semantic_scholar', '—')}"
           f" (influyentes: {cit.get('semantic_scholar_influential', '—')})"]
     if card["citing"]:
-        L += [f"- Las {len(card['citing'])} más recientes de {card.get('citing_total_listed', 0)} listadas:", ""]
+        scope = (f"entre las {card.get('citing_total_listed', 0)} primeras que devuelve Semantic Scholar"
+                 if card.get("citing_truncated") else f"de {card.get('citing_total_listed', 0)}")
+        L += [f"- Las {len(card['citing'])} más recientes {scope} (fuente: {card.get('citing_source', '—')}):", ""]
         for q in card["citing"]:
             ids = " · ".join(x for x in (f"arXiv:{q['arxiv']}" if q.get("arxiv") else "",
                                          f"DOI:{q['doi']}" if q.get("doi") else "") if x)
@@ -275,6 +323,36 @@ def markdown(card: dict) -> str:
         L += ["", "## ⚠️ Fuentes que fallaron", ""] + [f"- {e}" for e in card["errors"]]
     L += ["", "## BibTeX", "", "```bibtex", card["bibtex"].rstrip(), "```", ""]
     return "\n".join(L)
+
+
+def _norm_title(t: str) -> str:
+    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"<[^>]+>|\$[^$]*\$", " ", t)).strip()
+
+
+def find_by_title(title: str, fetch: Fetch) -> dict:
+    """OpenAlex's title search. Exactly one work whose normalised title equals the
+    one asked for is the paper; otherwise the closest hits are listed and nothing
+    is guessed."""
+    key = os.environ.get("OPENALEX_API_KEY")
+    try:
+        raw = fetch("https://api.openalex.org/works?search=" + urllib.parse.quote(title)
+                    + "&per-page=10&select=id,doi,title,publication_year,primary_location,locations"
+                    + (f"&api_key={urllib.parse.quote(key)}" if key else ""), {})
+    except net.HttpError as e:
+        return {"error": f"OpenAlex: {net.redact(str(e))[:160]}"}
+    hits = []
+    for w in json.loads(raw).get("results") or []:
+        d = retraction.normalize_doi(w.get("doi"))
+        arx = _oa_arxiv(w) or (retraction.arxiv_from_doi(d) if d and retraction.is_arxiv_doi(d) else None)
+        hits.append({"title": w.get("title"), "year": w.get("publication_year"), "openalex": (w.get("id") or "").rsplit("/", 1)[-1],
+                     "doi": d if d and not retraction.is_arxiv_doi(d) else None, "arxiv": arx})
+    exact = [h for h in hits if _norm_title(h["title"] or "") == _norm_title(title) and (h["doi"] or h["arxiv"])]
+    if len(exact) == 1:
+        return {"chosen": exact[0]}
+    if not hits:
+        return {"error": "OpenAlex no encuentra ningún trabajo con ese título"}
+    return {"error": "título ambiguo: elige uno y vuelve con --arxiv o --doi", "candidates": hits[:10]}
 
 
 def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:
@@ -287,11 +365,18 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--arxiv")
     g.add_argument("--doi")
+    g.add_argument("--title", help="find the paper by its title (OpenAlex); an ambiguous title lists candidates")
     ap.add_argument("--vault", type=Path)
     ap.add_argument("--citations", type=int, default=25)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--raw-dir", type=Path)
     a = ap.parse_args(argv)
+    if a.title:
+        found = find_by_title(a.title, fetch)
+        if not found.get("chosen"):
+            print(json.dumps({"tool": TOOL, "title": a.title, **found}, ensure_ascii=False, indent=2))
+            return 3 if found.get("candidates") else 1
+        a.arxiv, a.doi = found["chosen"].get("arxiv"), found["chosen"].get("doi")
     arxiv = retraction.normalize_arxiv(a.arxiv) if a.arxiv else None
     doi = retraction.normalize_doi(a.doi) if a.doi else None
     if a.arxiv and not arxiv or a.doi and not doi:

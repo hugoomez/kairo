@@ -5,6 +5,7 @@ Run: python -m unittest discover -s scripts/citations -p "test_*.py"
 
 import io
 import sys
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -37,6 +38,20 @@ class TestNet(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         net._last_call.clear()
+        shared = mock.patch.object(net, "SHARED_DIR", None)      # per-process spacing only, unless a test says
+        shared.start()
+        self.addCleanup(shared.stop)
+
+    def test_spacing_holds_across_processes(self):
+        """Two scripts running at once share one host's spacing (arXiv: 3 s)."""
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(net, "SHARED_DIR", Path(d)), \
+                mock.patch.object(net, "wallclock", side_effect=iter([500.0, 501.0, 503.0]).__next__), \
+                mock.patch("urllib.request.urlopen", side_effect=[FakeResp(b"1"), FakeResp(b"2")]):
+            net.get("https://export.arxiv.org/api/query?id_list=1")
+            net._last_call.clear()                                   # another process: no memory of the first
+            net.get("https://export.arxiv.org/api/query?id_list=2")
+        self.assertEqual(self.sleeps, [2.0])
 
     def test_redact(self):
         self.assertEqual(net.redact("https://api.openalex.org/works?api_key=SECRET123&x=1"),

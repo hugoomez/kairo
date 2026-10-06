@@ -7,6 +7,7 @@
                             [--no-fulltext] [--dry-run]
     ingest_paper.py rebuild --vault <vault> --only P-XXXX [P-YYYY …]
     ingest_paper.py verify  --vault <vault> [--only P-XXXX …]
+    ingest_paper.py reconvert --vault <vault> [--only P-XXXX …] [--dry-run]
     ingest_paper.py zotero-key --vault <vault> --id P-XXXX --key <citekey>
 
 A paper note's source fields — the frontmatter metadata, `## Referencia`,
@@ -37,9 +38,13 @@ Every byte fetched is kept in `Papers/_fuentes/<P-id>/` with a manifest
 (`fuentes.json`: file, URL, sha256, date, converter version). `verify`
 rebuilds the three sections from those bytes and compares them with the note:
 a section edited after ingestion (by hand or by a model) is reported, and so
-is a raw file whose sha256 changed. `rebuild` re-fetches and rewrites the
-three sections of a note ingested before this script existed, keeping its
-frontmatter. A `send: never` note is never opened or rewritten.
+is a raw file whose sha256 changed. A note converted by an older converter
+version still verifies when the current one gives the same text (its
+`> Fuente:` lines aside, which name the version that wrote them); when it does
+not, `reconvert` regenerates `## Texto completo` from the kept bytes with the
+current converter — no network, nothing else touched. `rebuild` re-fetches and
+rewrites the three sections of a note ingested before this script existed,
+keeping its frontmatter. A `send: never` note is never opened or rewritten.
 
 A preprint that arXiv or OpenAlex says was published (journal_ref, DOI,
 a journal / proceedings location) gets `published_doi`, `published_venue`,
@@ -610,6 +615,17 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
                     "abstract": meta.get("abstract") or ""}}
 
 
+def convert(f: dict, data: bytes) -> str | None:
+    """The `## Texto completo` block the current converter gives for one kept file."""
+    if f["kind"] == "pdf-text":
+        return vf.build_from_text(data, f["url"], f.get("version", "?"), f["obtenido"])
+    return vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"])
+
+
+def _unquoted(block: str) -> str:
+    return "\n".join(ln for ln in block.split("\n") if not ln.startswith(">"))
+
+
 def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
     """The three source sections as the kept bytes give them; problems found."""
     fm = (vn.split_frontmatter(text) or ([], ""))[0]
@@ -654,15 +670,17 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
         data = raws.get(f["file"])
         if data is None or f["role"] != "fulltext":
             continue
+        block = convert(f, data)
+        got_body = section_body(text, "Texto completo") or ""
         if manifest.get("converter") != vf.TOOL_ID:
-            problems.append(f"convertidor distinto ({manifest.get('converter')} → {vf.TOOL_ID}): "
-                            "## Texto completo no se puede recomprobar; `rebuild` lo regenera")
+            # another converter version wrote it: its `> Fuente:` lines name that version,
+            # so only the text itself can be compared with what this version gives
+            if ws(_unquoted(block or "")) != ws(_unquoted(got_body)):
+                problems.append(f"convertidor distinto ({manifest.get('converter')} → {vf.TOOL_ID}) y "
+                                "## Texto completo no coincide con lo que da el actual (el cambio de versión o "
+                                "una edición a mano): `reconvert` lo regenera desde los bytes guardados, sin red")
             break
-        if f["kind"] == "pdf-text":
-            block = vf.build_from_text(data, f["url"], f.get("version", "?"), f["obtenido"])
-        else:
-            block = vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"])
-        if ws(block or "") != ws(section_body(text, "Texto completo") or ""):
+        if ws(block or "") != ws(got_body):
             problems.append("## Texto completo no coincide con el texto fuente guardado")
     if meta:
         want = referencia({**meta, "doi": retraction.normalize_doi(vn.fm_get(fm, "doi")) or "",
@@ -760,6 +778,48 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
     return {"tool": TOOL, "notes": out}
 
 
+def cmd_reconvert(a) -> dict:
+    """Regenerate `## Texto completo` from the kept source bytes with the current
+    converter — no network, nothing else in the note touched. For a converter
+    upgrade: the bytes are the source, so the new text is still the paper's own."""
+    vault = a.vault.resolve()
+    out = []
+    with vault_lock(vault):
+        paths = [find_note(vault, i) for i in a.only] if a.only else paper_notes(vault)
+        for path in paths:
+            pid = path.name.split(" ")[0]
+            if is_flagged(path):
+                out.append({"id": pid, "status": "skipped_send_never"})
+                continue
+            text = path.read_text(encoding="utf-8")
+            fm = (vn.split_frontmatter(text) or ([], ""))[0]
+            mpath = vault / (vn.fm_get(fm, "fuentes") or "")
+            if not vn.fm_get(fm, "fuentes") or not mpath.is_file():
+                out.append({"id": pid, "status": "legacy", "note": "sin bytes guardados: usa `rebuild`"})
+                continue
+            manifest = json.loads(mpath.read_text(encoding="utf-8"))
+            f = next((x for x in manifest["files"] if x["role"] == "fulltext"), None)
+            if f is None:
+                out.append({"id": pid, "status": "no_fulltext"})
+                continue
+            data = (mpath.parent / f["file"]).read_bytes()
+            if sha256(data) != f["sha256"]:
+                out.append({"id": pid, "status": "refused", "reason": f"{f['file']} cambió (sha256 distinto)"})
+                continue
+            block = convert(f, data)
+            if not block:
+                out.append({"id": pid, "status": "refused", "reason": "el convertidor actual no saca texto"})
+                continue
+            new = replace_section(text, "Texto completo", block.strip())
+            if not a.dry_run:
+                path.write_text(new, encoding="utf-8", newline="\n")
+                manifest["converter"] = vf.TOOL_ID
+                mpath.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+                                 newline="\n")
+            out.append({"id": pid, "status": "reconverted" if not a.dry_run else "dry_run", "changed": new != text})
+    return {"tool": TOOL, "converter": vf.TOOL_ID, "notes": out}
+
+
 def cmd_zotero_key(a) -> dict:
     vault = a.vault.resolve()
     path = find_note(vault, a.id)
@@ -800,6 +860,10 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
     rb.add_argument("--vault", type=Path, required=True)
     rb.add_argument("--only", nargs="+", required=True)
     rb.add_argument("--dry-run", action="store_true")
+    rc = sub.add_parser("reconvert", help="regenerate ## Texto completo from the kept bytes (no network)")
+    rc.add_argument("--vault", type=Path, required=True)
+    rc.add_argument("--only", nargs="*")
+    rc.add_argument("--dry-run", action="store_true")
     ve = sub.add_parser("verify")
     ve.add_argument("--vault", type=Path, required=True)
     ve.add_argument("--only", nargs="*")
@@ -819,6 +883,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
             out = cmd_rebuild(a, fetch, fetch_arxiv, today)
         elif a.cmd == "verify":
             out = cmd_verify(a)
+        elif a.cmd == "reconvert":
+            out = cmd_reconvert(a)
         else:
             out = cmd_zotero_key(a)
     except Refused as e:

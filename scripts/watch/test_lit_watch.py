@@ -147,6 +147,46 @@ class TestLitWatch(unittest.TestCase):
         self.assertEqual([n["hypothesis"] for n in top["novelty"]], ["H-0961"])  # refuted one skipped
         self.assertIn("last_watch: 2031-03-01", (self.p / "_hub.md").read_text(encoding="utf-8"))
 
+    def test_novelty_prefilter_survives_a_spanish_claim_against_an_english_abstract(self):
+        """Claims are written in Spanish, abstracts in English: the shared technical
+        terms (inflections included) must still put the pair in front of the judge."""
+        (self.p / "Hipotesis" / "H-0963.md").write_text(
+            hyp("H-0963", "propuesta", "Los widgets azules ficticios giran más deprisa bajo un spin sintético "
+                                       "que los rojos, en toda configuración simulada que se pruebe."),
+            encoding="utf-8")
+        _, res = self.delta()
+        run = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        top = next(c for c in run["candidates"] if c["key"] == "arxiv:2031.00002")
+        self.assertIn("H-0963", [n["hypothesis"] for n in top["novelty"]])
+        unrelated = next(c for c in run["candidates"] if c["key"] == "arxiv:2031.00003")
+        self.assertEqual(unrelated["novelty"], [])
+
+    def test_a_weak_candidate_offered_before_comes_back_once_it_is_strong(self):
+        calls = {"n": 0}
+
+        def fetch(url, headers):
+            host = urllib.parse.urlparse(url).netloc
+            if "arxiv" in host:
+                calls["n"] += 1
+                return atom([("2031.00009", "Widgets in a later paper", "Fictional widgets and synthetic spin.")])
+            # Semantic Scholar finds it only on the second watch: then two facets reach it
+            data = [] if calls["n"] < 2 else [
+                {"paperId": "s2z", "title": "Widgets in a later paper", "abstract": "Fictional widgets and synthetic spin.",
+                 "externalIds": {"ArXiv": "2031.00009"}, "publicationDate": "2031-02-25", "authors": []}]
+            return json.dumps({"data": data}).encode()
+        _, first = self.delta(fetch)
+        c1 = next(c for c in json.loads(self.run_file(first).read_text(encoding="utf-8"))["candidates"]
+                  if c["key"] == "arxiv:2031.00009")
+        self.assertFalse(c1["strong"])
+        _, second = self.delta(fetch)
+        c2 = [c for c in json.loads(self.run_file(second).read_text(encoding="utf-8"))["candidates"]
+              if c["key"] == "arxiv:2031.00009"]
+        self.assertEqual(len(c2), 1)
+        self.assertTrue(c2[0]["strong"])
+        self.assertTrue(c2[0]["reofrecido"])
+        _, third = self.delta(fetch)                        # strong once offered: never again
+        self.assertEqual(json.loads(self.run_file(third).read_text(encoding="utf-8"))["candidates"], [])
+
     def test_a_second_watch_does_not_offer_the_same_papers(self):
         self.delta()
         _, res = self.delta()

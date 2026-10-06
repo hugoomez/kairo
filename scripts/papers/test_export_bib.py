@@ -16,12 +16,16 @@ import export_bib as eb  # noqa: E402
 NOTES = {
     "P-0201 pre.md": '---\nid: P-0201\ntitle: "Fast BP-OSD for Toy qLDPC Codes"\nauthors: ["Jane Doe", "Rui Roe"]\n'
                      'year: 2031\nvenue: "arXiv preprint"\ndoi:\narxiv: 0000.22222\narxiv_version: v3\n'
-                     'projects: [PROJ-201]\npublished_doi: "10.0000/jour.9"\npublished_venue: "Invented Journal of Codes"\n---\n',
+                     'projects: [PROJ-201]\npublished_doi: "10.0000/jour.9"\npublished_venue: "Invented Journal of Codes"\n'
+                     'published_year: 2032\n---\n',
     "P-0202 conf.md": '---\nid: P-0202\ntitle: "Scaling Toy Pipelines & 50% Less Memory"\nauthors: ["Poe, Ana"]\n'
                       'year: 2030\nvenue: "Proceedings of the Invented SC Conference"\ndoi: 10.0000/sc.2\n'
                       'projects: [PROJ-201]\nzotero_key: poe2030scaling\nresolution_status: retracted\n---\n',
     "P-0203 only.md": '---\nid: P-0203\ntitle: "An Unpublished Toy Preprint"\nauthors: ["Jane Doe"]\nyear: 2031\n'
                       'venue: "arXiv preprint"\narxiv: 0000.33333\nprojects: [PROJ-201]\n---\n',
+    "P-0206 noyear.md": '---\nid: P-0206\ntitle: "A Toy Preprint Published Somewhere"\nauthors: ["Jane Doe"]\n'
+                        'year: 2031\nvenue: "arXiv preprint"\narxiv: 0000.66666\nprojects: [PROJ-201]\n'
+                        'published_venue: "Invented Systems Conf"\n---\n',
     "P-0204 secret.md": "---\nid: P-0204\nsend: never\nprojects: [PROJ-201]\n---\nPRIVATE TITLE\n",
     "P-0205 other.md": '---\nid: P-0205\ntitle: "Another Project Paper"\nauthors: ["Jane Doe"]\nyear: 2031\n'
                        'projects: [PROJ-999]\n---\n',
@@ -72,11 +76,12 @@ class ExportBib(unittest.TestCase):
         code, bib, err = self.run_cli("--project", "PROJ-201")
         self.assertEqual(code, 0)
         rep = json.loads(err)
-        self.assertEqual((rep["entries"], rep["skipped_send_never"]), (3, ["P-0204"]))
+        self.assertEqual((rep["entries"], rep["skipped_send_never"]), (4, ["P-0204"]))
         self.assertNotIn("PRIVATE", bib)
         self.assertNotIn("Another Project", bib)
         # a published preprint is exported as the published version, eprint kept
-        self.assertIn("@article{doe2031fast,", bib)
+        self.assertIn("@article{doe2032fast,", bib)
+        self.assertIn("year = {2032}", bib)
         self.assertIn("journal = {Invented Journal of Codes}", bib)
         self.assertIn("doi = {10.0000/jour.9}", bib)
         self.assertIn("eprint = {0000.22222}", bib)
@@ -91,6 +96,15 @@ class ExportBib(unittest.TestCase):
         self.assertIn("@misc{doe2031unpublished,", bib)
         self.assertIn("howpublished = {arXiv preprint arXiv:0000.33333}", bib)
         self.assertIn("keywords = {kairo:P-0203}", bib)
+
+    def test_a_published_venue_without_its_year_is_cited_as_the_preprint(self):
+        code, bib, _ = self.run_cli("--only", "P-0206")
+        self.assertEqual(code, 0)
+        self.assertIn("@misc{doe2031preprint,", bib)                 # never booktitle + the preprint's year
+        self.assertNotIn("booktitle", bib)
+        self.assertIn("year = {2031}", bib)
+        self.assertIn("Invented Systems Conf", bib)
+        self.assertIn("año de la versión publicada no consta", bib)
 
     def test_csl_json_and_out_file(self):
         out = self.vault / "refs.json"

@@ -151,6 +151,32 @@ class CheckSota(unittest.TestCase):
         code, out = self.run_cli()
         self.assertEqual([p.get("number") for p in out["problems"]], ["4×"])
 
+    def test_numbers_with_a_unit_suffix_are_checked_whatever_their_size(self):
+        paper = (self.vault / "Papers" / "P-0101 toy.md")
+        paper.write_text(PAPER.replace("using 1,024 shots", "with a 530B-parameter toy on 80GB devices, using 1,024 shots"),
+                         encoding="utf-8")
+        self.write("## X\n\n- A 530B toy trained on 80 GB devices — P-0101 §3.2\n"
+                   "- A 175B toy — P-0101 §3.2\n- An 8B toy — P-0101 §3.2\n")
+        code, out = self.run_cli()
+        self.assertEqual(sorted(p.get("number") for p in out["problems"]), ["175B", "8B"])
+
+    def test_a_spanish_decimal_comma_is_the_same_number(self):
+        self.write("## X\n\n- El decodificador alcanza un umbral del 1,1% a distancia 15 — P-0101 §3.2\n"
+                   "- Y del 2,5% en otro caso — P-0101 §3.2\n")
+        code, out = self.run_cli()
+        self.assertEqual([p.get("number") for p in out["problems"]], ["2,5%"])
+
+    def test_a_section_locator_does_not_borrow_text_that_only_mentions_it(self):
+        paper = (self.vault / "Papers" / "P-0101 toy.md")
+        paper.write_text(PAPER + "\n### 5 Discussion\n\nAs shown in Section 3, a rate of 0.77 is possible elsewhere.\n",
+                         encoding="utf-8")
+        self.write("## X\n\n- A rate of 0.77 — P-0101 §3\n")
+        code, out = self.run_cli()
+        self.assertEqual([p.get("number") for p in out["problems"]], ["0.77"])
+        # with no structural §3 at all, an inline mention is still what the locator reaches
+        units = cs.resolve_citation(str(self.vault), "P-0101", "§7")["units"]
+        self.assertEqual(units, [])
+
     def test_the_support_packet_pairs_each_sentence_with_its_source_text(self):
         packet = self.vault / "packet.md"
         code, out = self.run_cli("--packet", str(packet), "--section", "Lo establecido vs. lo debatido")
@@ -163,6 +189,21 @@ class CheckSota(unittest.TestCase):
         self.assertEqual(out["assertions"], 9)
         code, out = self.run_cli("--packet", str(packet), "--section", "No such section")
         self.assertEqual(code, 2)
+
+    def test_a_large_packet_is_split_into_parts_that_cover_every_sentence(self):
+        packet = self.vault / "packet.md"
+        code, out = self.run_cli("--packet", str(packet), "--section", "Lo establecido vs. lo debatido",
+                                 "--max-chars", "1500")
+        self.assertEqual(code, 0, out)
+        self.assertGreater(len(out["packets"]), 1)
+        self.assertEqual(out["packet"], str(packet))
+        total = 0
+        for i, p in enumerate(out["packets"], 1):
+            text = Path(p).read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("# Paquete de verificación"))
+            self.assertIn(f"- Parte: {i} de {len(out['packets'])}", text)
+            total += text.count("#### Afirmación ")
+        self.assertEqual((total, out["assertions"]), (9, 9))
 
 
 if __name__ == "__main__":

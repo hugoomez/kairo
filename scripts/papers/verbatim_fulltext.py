@@ -12,7 +12,9 @@ by the paper's own section / figure / table / appendix numbering:
 Nothing is paraphrased or reconstructed:
   - HTML: text copied as rendered; math is the source's own LaTeX (`alttext`),
     as `$…$`; tables as `| cell | … |` rows; footnotes inline as
-    `[nota al pie: …]`. Math with no LaTeX, and LaTeXML error nodes, become
+    `[nota al pie: …]`; a cell spanning columns or rows is repeated in each
+    position it covers, so every column stays aligned with its header. Math with
+    no LaTeX, and LaTeXML error nodes, become
     `[extracción dañada]`. The abstract (already in `## Resumen`), front
     matter, navigation and bibliography are left out.
   - PDF: prose lines as extracted (ligature glyphs → plain letters). Headings
@@ -58,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
 import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
 
-__version__ = "1.1.0"   # 1.1.0: Roman/lettered PDF headings, PDF table rows, one footnote mark, net.py
+__version__ = "1.2.0"   # 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
@@ -170,11 +172,45 @@ def _owner_figure(n):
     return p
 
 
+def _span(td, attr: str) -> int:
+    try:
+        return max(1, min(int(td.attrs.get(attr) or 1), 50))
+    except ValueError:
+        return 1
+
+
+def _fill_carried(cells: list[str], col: int, carry: dict[int, list]) -> int:
+    """Put the cells that rows above span into (rowspan) from column `col` on; the next free column."""
+    while col in carry:
+        text, left = carry[col]
+        cells.append(text)
+        if left <= 1:
+            del carry[col]
+        else:
+            carry[col][1] = left - 1
+        col += 1
+    return col
+
+
 def _table(t, out: list[str]) -> None:
+    """Rows as `| … |`. A cell spanning columns (colspan) or rows (rowspan) is
+    repeated in every position it covers, so each column keeps its own header
+    and a number never shifts into the next column (multi-level headers)."""
     rows = []
+    carry: dict[int, list] = {}                      # column → [text, rows still covered]
     for tr in _iter(t, lambda x: x.tag == "tr"):
-        cells = [norm(text_of(td)) for td in tr.children
-                 if not isinstance(td, str) and td.tag in ("td", "th")]
+        tds = [td for td in tr.children if not isinstance(td, str) and td.tag in ("td", "th")]
+        cells: list[str] = []
+        col = 0
+        for td in tds:
+            col = _fill_carried(cells, col, carry)
+            text = norm(text_of(td))
+            for _ in range(_span(td, "colspan")):
+                cells.append(text)
+                if _span(td, "rowspan") > 1:
+                    carry[col] = [text, _span(td, "rowspan") - 1]
+                col += 1
+        _fill_carried(cells, col, carry)
         if any(cells):
             rows.append("| " + " | ".join(cells) + " |")
     out.append("\n".join(rows) if rows else DAMAGED + " (tabla)")
@@ -540,7 +576,8 @@ def fuente_line(url: str, version: str, kind: str, sha: str, date: str) -> str:
     how = {"arxiv-html": "HTML de arXiv (LaTeXML)", "ar5iv": "HTML de ar5iv (LaTeXML)",
            "pdf": ("PDF de arXiv" if "arxiv.org" in url else "PDF") + ", texto extraído con pdftotext"
            }.get(kind, kind)
-    rules = ("ecuaciones como su LaTeX fuente ($…$); tablas como filas «| … |»; notas al pie "
+    rules = ("ecuaciones como su LaTeX fuente ($…$); tablas como filas «| … |» (una celda que abarca varias "
+             "columnas o filas se repite en cada una); notas al pie "
              "en línea; se omiten el abstract (en ## Resumen) y la bibliografía"
              if kind != "pdf" else
              "ligaduras tipográficas normalizadas a letras; las filas de cada tabla, tal como "
