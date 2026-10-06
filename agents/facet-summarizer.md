@@ -126,7 +126,8 @@ you have not just re-read in this pass.
 - Debatido: <claim A> — P-XXXX §5  vs  <claim B> — P-YYYY §4
 
 ### 6. Huecos identificados
-- <gap> — implied by P-XXXX §7 ("future work") / absent from all assigned papers
+- Declarado: <gap> — P-XXXX §7 (the paper says it is open: future work, a stated limitation)
+- No en estos papers: <gap> — none of P-XXXX, P-YYYY addresses it (your assigned papers only; never "nobody has")
 
 ### 7. Herramientas/benchmarks/datasets estándar
 - <tool/benchmark/dataset> — P-XXXX §4 (used), P-YYYY Tabla 1 (reported on)

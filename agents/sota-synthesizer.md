@@ -24,7 +24,12 @@ differs:
   the `(para el reduce)` signals), §8 *Orden de lectura recomendado* (from the
   difficulty and prerequisite signals), and *Huecos identificados*: each gap is
   something the cited papers leave open, stated so it could become a
-  falsifiable hypothesis, with the locators that show it is open.
+  falsifiable hypothesis, with the locators that show it is open. Two kinds,
+  never mixed: **declared** — a paper says it is open (future work, a stated
+  limitation; cite it) — and **not in the corpus** — none of the N ingested
+  papers addresses it, written as «no aparece en los N papers del corpus
+  (P-…)». The corpus is a screened sample, so a gap of the second kind is
+  never "nobody has done X": open the section with one line saying so.
 - **Verbatim discipline.** Paraphrase is marked as paraphrase; anything in
   quotation marks is copied exactly from the paper note's `## Texto completo`
   (use Read/Grep to check a locator you are not sure of). If you can't support a

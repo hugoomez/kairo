@@ -1,6 +1,7 @@
 """Tests for lit_search.py (invented papers, no network)."""
 
 import contextlib
+import hashlib
 import io
 import json
 import shutil
@@ -626,7 +627,12 @@ class Matching(Base):
                              "--screened-by", "claude-opus-5-5")
         self.assertEqual(code, 0, res)
         self.assertEqual(res["screened_by"], "claude-opus-5-5")
-        self.assertIn("**Cribado por:** claude-opus-5-5", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+        md = (self.run_dir / "busqueda.md").read_text(encoding="utf-8")
+        self.assertIn("**Cribado por:** claude-opus-5-5", md)
+        # the screener's instructions are part of the record: the plugin version and the prompt's hash
+        version = json.loads((HERE.parent.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+        prompt = hashlib.sha256((HERE.parent.parent / "agents" / "screener.md").read_bytes()).hexdigest()[:12]
+        self.assertIn(f"(Kairo {version}, prompt `agents/screener.md` sha256 {prompt};", md)
         shutil.rmtree(self.run_dir)
         self.run_search()
         self.cli("retraction", "--run", str(self.run_dir))

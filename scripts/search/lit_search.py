@@ -1143,6 +1143,21 @@ def degraded_lines(queries: list[dict]) -> list[str]:
     return out
 
 
+def screener_record() -> str:
+    """The plugin version and the screener prompt's hash: the instructions the
+    screening model followed are part of what makes a run reproducible."""
+    root = HERE.parent.parent
+    try:
+        version = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError):
+        version = "versión no consta"
+    try:
+        sha = hashlib.sha256((root / "agents" / "screener.md").read_bytes()).hexdigest()[:12]
+    except OSError:
+        sha = "no consta"
+    return f"Kairo {version}, prompt `agents/screener.md` sha256 {sha}"
+
+
 def busqueda_md(plan: dict, queries: list[dict], counts: dict) -> str:
     L = [f"### Búsqueda ejecutada — {plan['date']}", ""]
     deg = degraded_lines(queries)
@@ -1158,7 +1173,7 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict) -> str:
                                                   if plan["arxiv_categories"] else ""),
           "**Fechas:** arXiv = envío de la v1; Semantic Scholar, OpenAlex y Crossref = fecha de publicación.",
           "**Cribado por:** " + (plan.get("screened_by") or "no consta")
-          + " (el modelo que decidió cada candidato; los conteos son del script)",
+          + f" ({screener_record()}; el modelo que decidió cada candidato; los conteos son del script)",
           "**Criterios de inclusión:** " + ("; ".join(plan["include"]) or "—"),
           "**Criterios de exclusión:** " + ("; ".join(plan["exclude"]) or "—"),
           "**Fuera de alcance:** " + ("; ".join(plan["scope_out"]) or "—"),
