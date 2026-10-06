@@ -12,7 +12,9 @@ by the paper's own section / figure / table / appendix numbering:
 Nothing is paraphrased or reconstructed:
   - HTML: text copied as rendered; math is the source's own LaTeX (`alttext`),
     as `$…$`; tables as `| cell | … |` rows; footnotes inline as
-    `[nota al pie: …]`; a cell spanning columns or rows is repeated in each
+    `[nota al pie: …]`; text a reader never sees (white, display:none, zero
+    size or opacity — the usual carrier of a prompt injection) is kept inside
+    `[texto oculto en la fuente: …]`; a cell spanning columns or rows is repeated in each
     position it covers, so every column stays aligned with its header. Math with
     no LaTeX, and LaTeXML error nodes, become
     `[extracción dañada]`. The abstract (already in `## Resumen`), front
@@ -60,7 +62,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
 import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
 
-__version__ = "1.2.0"   # 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
+__version__ = "1.3.0"   # 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
@@ -119,12 +121,29 @@ def norm(s: str) -> str:
     return re.sub(r"[ \t\r\n]+", " ", s.replace(" ", " ")).strip()
 
 
+HIDDEN = "[texto oculto en la fuente: {}]"
+_HIDDEN_STYLE = re.compile(r"display:none|visibility:hidden|opacity:0(?:\.0+)?(?:;|$)"
+                           r"|font-size:0(?:\.0+)?(?:px|pt|em|rem|%)?(?:;|$)"
+                           r"|(?<![-\w])color:(?:#fff(?:fff)?|white|rgb\(255,255,255\))(?:;|$)")
+
+
+def hidden(n) -> bool:
+    """A node a reader never sees: white text, display:none, zero size or opacity.
+    Its text is kept — verbatim is verbatim — but inside HIDDEN, so no reader
+    (human or model) takes it for the paper's visible prose."""
+    style = (n.attrs.get("style") or "").lower().replace(" ", "")
+    return bool(style and _HIDDEN_STYLE.search(style))
+
+
 def text_of(n) -> str:
     """Inline text of a node, verbatim, with math as $alttext$."""
     if isinstance(n, str):
         return n
     if n.tag in ("script", "style"):
         return ""
+    if hidden(n):
+        inner = norm("".join(text_of(c) for c in n.children))
+        return f" {HIDDEN.format(inner)} " if inner else ""
     if n.tag == "math":
         alt = n.attrs.get("alttext")
         return f"${alt}$" if alt else DAMAGED
@@ -262,6 +281,10 @@ def _walk(n, out: list[str]) -> None:
         if isinstance(c, str):
             continue
         if any(c.has(k) for k in _SKIP) or c.tag in ("nav", "header", "footer", "script", "style"):
+            continue
+        if hidden(c):
+            if norm(text_of(c)):
+                out.append(norm(text_of(c)))
             continue
         if c.tag == "h1" and c.has("ltx_title_document"):
             continue

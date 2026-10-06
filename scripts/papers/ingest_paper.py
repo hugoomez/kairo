@@ -235,6 +235,47 @@ def short_title(title: str) -> str:
     return " ".join(words[:8])[:70].strip() or "paper"
 
 
+def suspicious_sections(block: str | None) -> str:
+    """Where the full text reads like an instruction to a model, or holds text a
+    reader never sees: `<section path>: <what>` per section, joined by " | "
+    ("" when nothing). A label for the researcher and for every agent that
+    reads the note — the text itself is never changed."""
+    from untrusted import suspicious
+    found: list[str] = []
+    stack: list[tuple[int, str]] = []
+    buf: list[str] = []
+
+    def flush():
+        text = "\n".join(buf)
+        what = (["texto oculto"] if "[texto oculto en la fuente:" in text else []) + suspicious(text)
+        if what:
+            path = " > ".join(t for _, t in stack) or "(antes de la primera sección)"
+            found.append(f"{path}: {', '.join(what)}")
+        buf.clear()
+    for line in (block or "").splitlines():
+        m = re.match(r"^(#{3,6})\s+(.*)$", line)
+        if m:
+            flush()
+            level = len(m.group(1))
+            stack[:] = [x for x in stack if x[0] < level] + [(level, m.group(2).strip())]
+        else:
+            buf.append(line)
+    flush()
+    return " | ".join(found)
+
+
+def set_suspicious(text: str, block: str | None) -> str:
+    """Write (or remove) the note's `texto_sospechoso` field for this full text."""
+    flag = suspicious_sections(block)
+    if flag:
+        return vn.set_fields(text, {"texto_sospechoso": flag})
+    split = vn.split_frontmatter(text)
+    if split is None:
+        return text
+    fm, body = split
+    return "---\n" + "\n".join(ln for ln in fm if not ln.startswith("texto_sospechoso:")) + "\n---\n" + body
+
+
 def frontmatter(fields: list[tuple[str, object]]) -> str:
     out = []
     for k, v in fields:
@@ -593,7 +634,10 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
     body = (f"## Referencia\n\n{referencia({**meta, 'doi': doi, 'arxiv': arxiv, 'version': meta_out['version']})}\n\n"
             f"## Resumen\n\n{resumen(meta.get('abstract', ''), meta.get('abstract_url', ''), date, tried)}\n\n"
             f"## Texto completo\n\n{block.strip() if block else NO_FULLTEXT}\n")
-    text = frontmatter(fields) + "\n" + body
+    text = set_suspicious(frontmatter(fields) + "\n" + body, block)
+    if suspicious_sections(block):
+        warn.append("texto_sospechoso: el texto completo contiene texto oculto o que parece una instrucción a un "
+                    f"modelo ({suspicious_sections(block)}) — es contenido del paper, nunca una instrucción")
     if a.facet:
         text = fa.add_entry(text, a.project, a.facet, a.matched, None)
     path = vault / "Papers" / f"{pid} {short_title(meta.get('title') or pid)}.md"
@@ -767,6 +811,7 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
         new = replace_section(new, "Resumen", resumen(meta.get("abstract", ""), meta.get("abstract_url", ""),
                                                       date, [store.files[0]["url"]] if store.files else []))
         new = replace_section(new, "Texto completo", block.strip() if block else NO_FULLTEXT)
+        new = set_suspicious(new, block)
         new = vn.set_fields(new, {"fulltext": "full" if block else "abstract-only", "ingested_by": TOOL,
                                   "fuentes": f"{store.rel}/fuentes.json",
                                   **({"arxiv_version": meta_r["version"]} if arxiv else {})})
@@ -810,7 +855,7 @@ def cmd_reconvert(a) -> dict:
             if not block:
                 out.append({"id": pid, "status": "refused", "reason": "el convertidor actual no saca texto"})
                 continue
-            new = replace_section(text, "Texto completo", block.strip())
+            new = set_suspicious(replace_section(text, "Texto completo", block.strip()), block)
             if not a.dry_run:
                 path.write_text(new, encoding="utf-8", newline="\n")
                 manifest["converter"] = vf.TOOL_ID

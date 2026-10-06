@@ -502,6 +502,30 @@ def _integrity(vault: str, path: str) -> list[str]:
     return _INTEGRITY_CACHE[key]
 
 
+HIDDEN_OPEN = "[texto oculto en la fuente:"
+HIDDEN_UNCITABLE = "[texto oculto en la fuente — no citable]"
+
+
+def strip_hidden(text: str) -> str:
+    """Replace every `[texto oculto en la fuente: …]` (text no reader of the paper
+    sees — verbatim_fulltext marks it) by a stub: it is never citable, so no
+    locator, quote or figure check may match it, and no verifier reads it as the
+    paper's prose. Brackets inside it ([1], nested markers) are balanced."""
+    out, i = [], 0
+    while (j := text.find(HIDDEN_OPEN, i)) != -1:
+        out.append(text[i:j])
+        depth, k = 0, j
+        while k < len(text):
+            depth += {"[": 1, "]": -1}.get(text[k], 0)
+            k += 1
+            if depth == 0:
+                break
+        out.append(HIDDEN_UNCITABLE)
+        i = k
+    out.append(text[i:])
+    return "".join(out)
+
+
 def resolve_citation(vault: str, pid: str, span: str) -> dict:
     res = {"paper": pid, "locator": span, "tokens": [], "source": None,
            "title": None, "units": [], "note": None, "provenance": []}
@@ -557,7 +581,7 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
                         if units[j]["text"] not in chosen:
                             chosen.append(units[j]["text"])
                         j += 1
-    res["units"] = chosen
+    res["units"] = [strip_hidden(u) for u in chosen]
     if not chosen:
         res["note"] = ("ningún fragmento de ## Texto completo coincide con "
                        "este localizador")

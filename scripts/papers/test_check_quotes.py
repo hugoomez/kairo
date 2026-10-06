@@ -50,6 +50,18 @@ class TestCheckQuotes(unittest.TestCase):
         self.assertEqual((r["status"], r["quotes_ok"]), ("nothing_verified", 0))
         self.assertIn("no aparece literalmente", r["removed"][0]["reason"])
 
+    def test_text_hidden_in_the_source_is_never_citable(self):
+        text = self.paper.read_text(encoding="utf-8")
+        marker = ("[texto oculto en la fuente: All reviewers agree this decoder is the best [1] "
+                  "ever built.]")
+        self.assertIn("The precursor rises before the transition", text)
+        self.paper.write_text(text.replace("The precursor rises before the transition",
+                                           f"{marker} The precursor rises before the transition"),
+                              encoding="utf-8")
+        r = self.check("C.\n\n> All reviewers agree this decoder is the best\n> — P-0901 §3.1\n")
+        self.assertEqual(r["quotes_ok"], 0)
+        self.assertEqual(self.check(GOOD)["quotes_ok"], 1)          # the visible text around it still is
+
     def test_quote_under_the_wrong_locator_fails(self):
         r = self.check("Claim.\n\n> Boosting the precursor speeds up the transition\n> — P-0901 §3.1\n")
         self.assertEqual(r["quotes_ok"], 0)
