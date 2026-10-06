@@ -26,14 +26,16 @@
     starts OVERLAP_DAYS before the date that query last answered (before
     `last_watch` for a query never run) — arXiv lists, and Semantic Scholar /
     OpenAlex index, papers days to weeks late. `--since` sets every window
-    exactly. Every query is paged up to MAX_RESULTS by relevance; one with more
-    matches is `truncated` and reported. `SEMANTIC_SCHOLAR_API_KEY` is used
-    when set.
+    exactly. Every query is paged up to MAX_RESULTS; one with more matches has
+    its window split in halves (up to MAX_SPLIT_DEPTH times, plan queries only)
+    until each part is read whole. A part still capped is `truncated`: reported,
+    and its window stays open. `SEMANTIC_SCHOLAR_API_KEY` is used when set.
   - Drops papers already in `Papers/` (arXiv id, DOI or the published DOI of
     an ingested preprint, normalised title) and papers offered by an earlier
     watch of this project.
-  - A candidate is *strong* when queries of two or more facets found it (or the
-    project has one facet). The top `--top` strong candidates are marked for
+  - A candidate is *strong* when it reaches two or more facets — the facets
+    whose queries found it, plus (with a plan) the facet terms in its title or
+    abstract, by lit_search's rule (or the project has one facet). The top `--top` strong candidates are marked for
     triage. A strong candidate left past `--top` is the backlog: the next
     watch carries it (`pendiente_desde`: the run that first left it), first in
     line and whether or not the new window finds it again, until it is triaged
@@ -48,10 +50,10 @@
   - Title and abstract are third-party text: a candidate whose text reads like
     an instruction to a model carries `sospechoso` (the patterns found).
   - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json`, moves the cursor
-    of every query that answered (a truncated one too: it is covered up to its
-    MAX_RESULTS most relevant hits, and says so) and the hub's `last_watch:`.
-    A lost query keeps its cursor, so its own window stays open (`open_windows`)
-    without holding the other queries back; papers already offered are dropped,
+    of every query read whole and the hub's `last_watch:`. A lost query, or one
+    still truncated after splitting, keeps its cursor: its own window stays open
+    (`open_windows`) — never counted as covered — without holding the other
+    queries back; papers already offered are dropped,
     never repeated. If every query failed, nothing is written and the run says
     so.
 
@@ -116,7 +118,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.6.0"
+TOOL = "kairo/lit_watch@1.7.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -128,6 +130,7 @@ DEFAULT_LOOKBACK_DAYS = 30
 # it days to weeks later: each watch re-reads this much before the last one.
 # Papers already offered are dropped, so the overlap never repeats a candidate.
 OVERLAP_DAYS = 14
+MAX_SPLIT_DEPTH = 3        # a capped window is halved up to 3 times (at most 8 parts)
 NOVELTY_MIN_SCORE = 0.25
 NOVELTY_MIN_SHARED = 3
 # Claims are written in Spanish and abstracts in English, so the share of a
@@ -540,15 +543,35 @@ def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: dat
     raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw.mkdir(parents=True, exist_ok=True)
     results, log = [], []
-    for sig in structured_signatures(plan, today):
-        p = _watch_plan(plan, starts[sig], today)
-        q = next(x for x in lit_search.build_queries(p, today.isoformat()) if query_signature(x) == sig)
+
+    def window(sig: str, start: date, end: date, depth: int, tag: str) -> dict:
+        """One query over [start, end]; a capped answer is split in halves and
+        each half read again, so a busy week is read whole instead of by relevance."""
+        p = _watch_plan(plan, start, end)
+        q = next(x for x in lit_search.build_queries(p, end.isoformat()) if query_signature(x) == sig)
+        base = q["id"]
+        q["id"] = base + tag                           # each part keeps its own raw files
         recs = lit_search.run_query(q, p, raw, fetch)
-        log.append({"id": q["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
+        part = {"id": base, "q": q, "recs": recs if not q["error"] else [], "error": q["error"],
+                "total": q["total"], "truncated": bool(q.get("truncated")), "splits": 0}
+        if part["truncated"] and not q["error"] and depth < MAX_SPLIT_DEPTH and (end - start).days >= 1:
+            mid = start + (end - start) // 2
+            halves = [window(sig, start, mid, depth + 1, tag + "a"), window(sig, mid + timedelta(days=1), end,
+                                                                         depth + 1, tag + "b")]
+            part["recs"] += [r for h in halves for r in h["recs"]]
+            part["error"] = next((h["error"] for h in halves if h["error"]), None)
+            part["truncated"] = any(h["truncated"] for h in halves)
+            part["splits"] = 1 + sum(h["splits"] for h in halves)
+        return part
+
+    for sig in structured_signatures(plan, today):
+        part = window(sig, starts[sig], today, 0, "")
+        q, recs = part["q"], part["recs"]
+        log.append({"id": part["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
                     "query": q["query"], "signature": sig, "from": starts[sig].isoformat(),
-                    "hits": len(recs) if not q["error"] else None, "total": q["total"],
-                    "truncated": q.get("truncated", False), "error": q["error"]})
-        if not q["error"]:
+                    "hits": len(recs) if not part["error"] else None, "total": part["total"],
+                    "truncated": part["truncated"], "splits": part["splits"], "error": part["error"]})
+        if not part["error"]:
             for r in recs:                             # a cross hit carries its own facet (or none)
                 results.append(({"facet": r.get("facet"), "source": q["source"].replace("-anchor", "")}, [{
                     "arxiv": r.get("arxiv"), "doi": r.get("doi"), "s2": r.get("s2"), "title": r["title"],
@@ -572,6 +595,9 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         since = date.fromisoformat(lw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lw) else today - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     cursors = load_cursors(pdir)
     sigs = structured_signatures(plan, today) if plan else [query_signature(q) for q in queries]
+    if not sigs:
+        raise Refused("no query of the plan can be watched: its sources ("
+                      + ", ".join((plan or {}).get("sources") or []) + ") cannot be limited to a date window")
     starts = {sig: query_start(sig, cursors, since, explicit) for sig in sigs}
     query_from = min(starts.values())
     arx, dois, titles = known_papers(vault)
@@ -612,6 +638,12 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                 cur["facets"].append(q["facet"])
             if q["source"] not in cur["sources"]:
                 cur["sources"].append(q["source"])
+    if plan:
+        import lit_search
+        for cur in merged.values():                    # facet terms its own text shows count too
+            for fid in lit_search.facet_matches(cur, plan):
+                if fid not in cur["facets"]:
+                    cur["facets"].append(fid)
     lost_all = all(x["error"] for x in log)
 
     def in_vault(c: dict) -> bool:
@@ -694,7 +726,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             sig = x["signature"]
             start = date.fromisoformat(x["from"])
             prev = cursors.get(sig)
-            if x.get("error"):
+            if x.get("error") or x.get("truncated"):
+                # lost, or still capped after splitting: not covered — its window stays open
                 if not prev:
                     cursors[sig] = since.isoformat()
                 continue
@@ -708,7 +741,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             "queried_from": run["queried_from"], "until": run["until"],
             "queries": len(log), "lost": len(lost), "lost_all": lost_all,
             "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
-            "open_windows": sorted({x["from"] for x in lost}),
+            "open_windows": sorted({x["from"] for x in lost + truncated}),
             "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
             "to_triage": sum(c["triage"] for c in cands),
             "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),

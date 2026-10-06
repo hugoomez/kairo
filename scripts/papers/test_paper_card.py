@@ -219,6 +219,46 @@ class PaperCard(unittest.TestCase):
         self.assertEqual(card["citing_source"], "OpenAlex")
         self.assertEqual(card["citing"][0]["title"], "Newest citing toy paper")
 
+    def test_citations_of_the_preprint_and_the_published_work_are_both_counted(self):
+        """OpenAlex may keep the arXiv preprint and the published paper as two works:
+        the citing papers of both are one list."""
+        published = {**OPENALEX, "id": "https://openalex.org/W1", "cited_by_count": 10}
+        preprint = {**OPENALEX, "id": "https://openalex.org/W2", "doi": "https://doi.org/10.48550/arxiv.0000.44444",
+                    "cited_by_count": 40, "primary_location": {"source": {"type": "repository",
+                                                                          "display_name": "arXiv"}}}
+        cites = [{"id": "https://openalex.org/W8", "title": "A paper citing the preprint", "publication_year": 2033,
+                  "publication_date": "2033-03-01", "authorships": []}]
+        base = self._with(lists={"cites:W1|W2": cites})
+        seen = []
+
+        def fetch(url, headers):
+            seen.append(urllib.parse.unquote(url))
+            if "api.openalex.org/works/doi:10.0000/sc.444" in urllib.parse.unquote(url):
+                return json.dumps(published).encode()
+            if "api.openalex.org/works/doi:10.48550/arXiv.0000.44444" in urllib.parse.unquote(url):
+                return json.dumps(preprint).encode()
+            if url.startswith("https://export.arxiv.org"):
+                return ATOM.replace("<arxiv:comment>", "<arxiv:doi>10.0000/sc.444</arxiv:doi><arxiv:comment>").encode()
+            return base(url, headers)
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=fetch)
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual(card["citations"]["openalex_works"], {"W1": 10, "W2": 40})
+        self.assertTrue(any("cites:W1|W2" in u for u in seen))
+        self.assertEqual(card["citing"][0]["title"], "A paper citing the preprint")
+        self.assertEqual(card["citations"]["openalex"], 1)          # the union OpenAlex counted, not 10 + 40
+
+    def test_a_failed_page_of_citing_papers_is_said_to_be_incomplete(self):
+        def fetch(url, headers):
+            if "/citations" in url:
+                raise pc.net.HttpError(url, 429, "Too Many Requests")
+            return web()(url, headers)
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=fetch)
+        card = json.loads(out)
+        self.assertTrue(card["citing_incomplete"])
+        code, md = self.run_cli("--arxiv", "0000.44444", fetch=fetch)
+        self.assertIn("incompleta", md)
+
     def test_unknown_paper(self):
         def nothing(url, headers):
             raise pc.net.HttpError(url, 404, "not found")

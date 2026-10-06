@@ -25,6 +25,9 @@ opus = "claude-opus-5-5"
 sonnet = "claude-sonnet-5-5"
 
 # --- jobs the interface launches --------------------------------------------
+# The Kairo interface (a separate application, not part of this plugin) launches
+# these by task id; inside Claude Code the skills run on the session's model and
+# only the agents and tools below take their model from this file.
 [tasks.hypothesis_generation]
 kind = "job"
 tier = "opus"

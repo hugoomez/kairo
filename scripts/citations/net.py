@@ -47,7 +47,17 @@ from pathlib import Path
 
 __version__ = "1.1.0"   # 1.1.0: per-host spacing shared across processes
 
-USER_AGENT = "kairo-citations/1.0 (research vault citation check; https://github.com/ -- see plugin README)"
+PROJECT_URL = "https://github.com/hugoomez/kairo"
+
+
+def user_agent(product: str) -> str:
+    """An agent the APIs can identify and contact (arXiv, Crossref and OpenAlex ask
+    for one): the tool, the project's URL and `KAIRO_MAILTO` when set."""
+    mailto = (os.environ.get("KAIRO_MAILTO") or "").strip()
+    return f"{product} (+{PROJECT_URL}; research use" + (f"; mailto:{mailto}" if mailto else "") + ")"
+
+
+USER_AGENT = user_agent("kairo-citations/1.1")
 
 # minimum seconds between two requests to the same host
 HOST_SPACING = {
@@ -195,7 +205,7 @@ def _curl(url: str, headers: dict[str, str], timeout: float, max_bytes: int) -> 
 def get(url: str, headers: dict[str, str] | None = None, timeout: float = 30.0,
         retry: bool = True, max_bytes: int = DEFAULT_MAX_BYTES) -> bytes:
     """GET `url` and return the body. Raises HttpError on a final failure."""
-    h = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "gzip"}
+    h = {"User-Agent": user_agent("kairo-citations/1.1"), "Accept": "*/*", "Accept-Encoding": "gzip"}
     h.update(headers or {})
     req = urllib.request.Request(url, headers=h)
     waits = list(BACKOFF) + [None] if retry else [None]

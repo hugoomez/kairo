@@ -29,7 +29,8 @@ Sources and how each facet is queried
     arxiv     one OR-group over ti:/abs: per facet (+ categories, + submittedDate window),
               sorted by relevance, paged by 100 up to per_query
     s2        /paper/search takes plain keywords only: one query per term and synonym,
-              `year=` window, paged by 100 up to per_query; plus one /paper/search/bulk
+              `publicationDateOrYear=<from>:<to>` window (exact dates), paged by 100 up
+              to per_query; plus one /paper/search/bulk
               anchor pass per facet (OR-group with `|`, sort=citationCount:desc, top `anchors`)
     openalex  /works?search=<"t1" OR "t2">, from/to_publication_date filter, paged
               (OPENALEX_API_KEY optional)
@@ -54,14 +55,19 @@ show); a Semantic Scholar or Crossref cross hit (keyword ranking, not AND) only
 with the facets whose terms its title or abstract contains.
 Facet terms are matched as whole-word sequences after light suffix stripping
 (`stem`): "decoder" matches "decoders" and "decoding", "parallelism" matches
-"tensor-parallel"; two different words are never joined.
+"tensor-parallel", a short acronym its plural ("LLM" ~ "LLMs"); two different
+words are never joined. A multi-word term also matches its content words
+close together in another order ("toy model training" ~ "training of toy
+models", within its length + NEAR_SLACK words).
 A query whose source reports more matches than were fetched is `truncated`;
 a query that failed after retries is `lost`. Both are listed as degraded
 coverage, never hidden.
 
 Dedup: records sharing a normalised DOI, an arXiv id, or a normalised title
 (≥ 4 words) are one candidate; a preprint and its published version found
-separately are merged and both identifiers kept. Each candidate keeps, per
+separately are merged and both identifiers kept. A title never joins two
+records with different DOIs (a conference paper and its journal extension
+stay two candidates, each with its own year and venue). Each candidate keeps, per
 facet, the term that matched it (the query term for per-term queries; for an
 OR-group, the first facet term found in its title or abstract, else the
 OR-group itself).
@@ -72,7 +78,9 @@ facet terms in its title or abstract — is excluded mechanically by `screen`
 (reason `prefiltro`, counted on its own line), unless decisions.json decides
 it explicitly. Anchor candidates are exempt, and so is a candidate with no
 abstract (common for publisher records) that shows one facet term in its
-title — the snowball's rule. `show` lists only the candidates
+title — the snowball's rule. `screen` lists every prefiltered-out
+candidate by title in `prefiltrados.md`, so a human can scan what nobody read.
+`show` lists only the candidates
 that pass (`--all` for every one) and pages with `--offset`; `retraction`
 checks only those (`--keys` adds any other one the model wants to include).
 
@@ -121,7 +129,7 @@ import net  # noqa: E402
 import retraction  # noqa: E402
 from untrusted import suspicious  # noqa: E402
 
-TOOL = "kairo/lit_search@1.2.0"
+TOOL = "kairo/lit_search@1.3.0"
 SOURCES = ("arxiv", "s2", "openalex", "crossref", "openreview", "dblp")
 # DBLP's API now sits behind an anti-bot challenge, which Kairo never works
 # around: it stays available on request but is not a default source. Crossref
@@ -176,8 +184,11 @@ _SUFFIXES = ("izations", "ization", "isations", "isation", "ations", "ation", "i
 
 
 def stem(w: str) -> str:
-    if len(w) <= 4 or any(ch.isdigit() for ch in w):
+    if any(ch.isdigit() for ch in w):
         return w
+    if len(w) <= 4:
+        # a short acronym's plural is the acronym ("llms", "gpus" → "llm", "gpu")
+        return w[:-1] if len(w) >= 3 and w.endswith("s") and not w.endswith("ss") else w
     for s in _SUFFIXES:
         if w.endswith(s) and len(w) - len(s) >= 3:
             if s == "es" and not w[:-2].endswith(("s", "x", "ch", "sh", "z")):
@@ -272,10 +283,11 @@ def arxiv_cross_query(plan: dict, until: str) -> str:
     return _arxiv_filters("(" + " AND ".join(_arxiv_group(f) for f in plan["facets"]) + ")", plan, until)
 
 
-def s2_year(plan: dict) -> str:
-    a = plan["from"][:4] if plan.get("from") else ""
-    b = plan["to"][:4] if plan.get("to") else ""
-    return f"{a}-{b}" if (a or b) else ""
+def s2_window(plan: dict) -> str:
+    """Semantic Scholar's `publicationDateOrYear` range (`from:to`, either end open):
+    exact dates, so a weekly watch is not a whole year ranked by relevance."""
+    a, b = plan.get("from") or "", plan.get("to") or ""
+    return f"&publicationDateOrYear={a}:{b}" if (a or b) else ""
 
 
 def in_window(date: str | None, year, plan: dict) -> bool:
@@ -474,13 +486,11 @@ def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tup
                 + f"&start={start}&max_results={size}&sortBy=relevance&sortOrder=descending",
                 {"Accept": "application/atom+xml"})
     if source == "s2":
-        y = s2_year(plan)
         return (f"{S2}/paper/search?query={urllib.parse.quote(query)}&offset={start}&limit={size}"
-                f"&fields={S2_FIELDS}" + (f"&year={y}" if y else ""), _s2_headers())
+                f"&fields={S2_FIELDS}" + s2_window(plan), _s2_headers())
     if source == "s2-anchor":
-        y = s2_year(plan)
         return (f"{S2}/paper/search/bulk?query={urllib.parse.quote(query)}&sort=citationCount:desc"
-                f"&fields={S2_FIELDS}" + (f"&year={y}" if y else ""), _s2_headers())
+                f"&fields={S2_FIELDS}" + s2_window(plan), _s2_headers())
     if source == "openalex":
         flt = []
         if plan.get("from"):
@@ -637,13 +647,23 @@ def dedup(records: list[dict]) -> list[dict]:
             i = parent[i]
         return i
     owner: dict[str, int] = {}
+    dois_of: dict[int, set[str]] = {}            # root → the DOIs its records carry
     for i, r in enumerate(records):
         find(i)
+        dois_of.setdefault(i, {r["doi"]} if r.get("doi") else set())
         for k in record_keys(r):
-            if k in owner:
-                parent[find(i)] = find(owner[k])
-            else:
+            if k not in owner:
                 owner[k] = i
+                continue
+            a, b = find(i), find(owner[k])
+            if a == b:
+                continue
+            # one title, two different DOIs: a conference paper and its journal
+            # extension are two works — a title never joins them (an identifier would)
+            if k.startswith("title:") and dois_of[a] and dois_of[b] and not dois_of[a] & dois_of[b]:
+                continue
+            parent[a] = b
+            dois_of[b] |= dois_of.pop(a)
     groups: dict[int, list[dict]] = {}
     for i, r in enumerate(records):
         groups.setdefault(find(i), []).append(r)
@@ -782,14 +802,41 @@ def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
                           for q in queries if q.get("truncated")]}
 
 
+_GLUE = {"of", "the", "for", "and", "in", "on", "a", "an", "to", "with", "by"}
+NEAR_SLACK = 3                       # extra words a multi-word term may be spread over
+
+
+def _near(term: list[str], hay: list[str]) -> bool:
+    """Every content word of `term` within len(term) + NEAR_SLACK consecutive words of
+    `hay`, in any order ("toy model training" ~ "training of toy models")."""
+    want = [w for w in term if w not in _GLUE]
+    if len(want) < 2:
+        return False
+    span = len(term) + NEAR_SLACK
+    for i, w in enumerate(hay):
+        if w in want and set(want) <= set(hay[i:i + span]):
+            return True
+    return False
+
+
+def term_in(t: str, hay_words: list[str]) -> bool:
+    """A facet term in a text already put through `stems`: as a phrase, or its
+    words close together in another order."""
+    ts = stems(t)
+    if not ts:
+        return False
+    return f" {ts} " in f" {' '.join(hay_words)} " or _near(ts.split(), hay_words)
+
+
 def facet_matches(c: dict, plan: dict, title_only: bool = False) -> dict[str, str]:
-    """Per facet, the first of its terms found in the title (+ abstract) as whole words."""
+    """Per facet, the first of its terms found in the title (+ abstract): whole words,
+    as a phrase or with its words close together in any order."""
     text = c.get("title", "") if title_only else c.get("title", "") + " " + (c.get("abstract") or "")
-    hay = f" {stems(text)} "
+    hay = stems(text).split()
     out = {}
     for f in plan["facets"]:
         for t in terms(f):
-            if stems(t) and f" {stems(t)} " in hay:
+            if term_in(t, hay):
                 out[f["id"]] = t
                 break
     return out
@@ -832,6 +879,41 @@ def _snowball_pages(run: Path, q: dict, pid: str, rel: str, fetch: Fetch) -> lis
     else:
         q["truncated"] = True                  # more neighbours than SNOWBALL_CAP: say so
     return items
+
+
+def _openalex_neighbours(run: Path, q: dict, pid: str, rel: str, plan: dict, fetch: Fetch) -> list[dict]:
+    """A paper's references (`cited_by:`) or citing papers (`cites:`) from OpenAlex,
+    in the plan's window, cursor-paged up to SNOWBALL_CAP (more is truncated)."""
+    kind, val = pid.split(":", 1)
+    doi = val if kind == "DOI" else f"10.48550/arXiv.{val}"
+    raw = fetch(f"https://api.openalex.org/works/doi:{urllib.parse.quote(doi, safe='/')}"
+                + ("?" + _oa_key().lstrip("&") if _oa_key() else ""), {})
+    wid = (json.loads(raw).get("id") or "").rsplit("/", 1)[-1]
+    if not wid:
+        raise ValueError(f"OpenAlex has no work for {pid}")
+    flt = [f"{'cited_by' if rel == 'references' else 'cites'}:{wid}"]
+    if plan.get("from"):
+        flt.append(f"from_publication_date:{plan['from']}")
+    if plan.get("to"):
+        flt.append(f"to_publication_date:{plan['to']}")
+    recs: list[dict] = []
+    cursor = "*"
+    q["truncated"] = False
+    while cursor:
+        if len(recs) >= SNOWBALL_CAP:
+            q["truncated"] = True
+            break
+        url = (f"https://api.openalex.org/works?filter={','.join(flt)}&per-page=200&cursor={urllib.parse.quote(cursor)}"
+               f"&select={OA_SELECT}" + _oa_key())
+        data = fetch(url, {})
+        name = f"{q['id']}-{len(q['raw']) + 1}.json"
+        (run / "raw" / name).write_bytes(data)
+        q["raw"].append({"file": name, "url": net.redact(url), "sha256": hashlib.sha256(data).hexdigest()})
+        got, total = parse_openalex(data)
+        recs += got
+        q["total"] = total
+        cursor = (json.loads(data).get("meta") or {}).get("next_cursor") if got else None
+    return recs
 
 
 def seed_id(seed: str) -> str:
@@ -893,9 +975,18 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             except (net.HttpError, json.JSONDecodeError, ValueError) as e:
                 q["error"] = net.redact(str(e))[:200]
                 queries.append(q)
-                continue
-            papers = [it.get("citedPaper" if rel == "references" else "citingPaper") or {} for it in items]
-            recs, _ = parse_s2(json.dumps({"data": papers}).encode())
+                # Semantic Scholar did not answer: the same neighbours from OpenAlex, said so
+                q = {**q, "id": f"S{len(queries) + 1:03d}", "source": "openalex", "query": f"{pid}/{rel}",
+                     "raw": [], "error": None, "total": None, "fetched": 0, "fallback_for": q["id"]}
+                try:
+                    recs = _openalex_neighbours(run, q, pid, rel, plan, fetch)
+                except (net.HttpError, json.JSONDecodeError, ValueError, KeyError) as e2:
+                    q["error"] = net.redact(str(e2))[:200]
+                    queries.append(q)
+                    continue
+            else:
+                papers = [it.get("citedPaper" if rel == "references" else "citingPaper") or {} for it in items]
+                recs, _ = parse_s2(json.dumps({"data": papers}).encode())
             q["fetched"] = len(recs)
             q["total"] = len(recs) if not q["truncated"] else None
             kept = 0
@@ -905,7 +996,7 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                     continue
                 kept += 1
                 for fid, t in fm.items():
-                    new_records.append({**r, "query": q["id"], "facet": fid, "source": "s2", "anchor": False,
+                    new_records.append({**r, "query": q["id"], "facet": fid, "source": q["source"], "anchor": False,
                                         "rank": rank, "matched": t, "snowball_from": k,
                                         "sin_abstract": not r.get("abstract")})
             q["kept"] = kept
@@ -994,9 +1085,25 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
                            "lost": sorted(s for s, ch in (r.get("checks") or {}).items()
                                           if (ch or {}).get("state") == "lost")}
     if prev:
-        res = {**prev, "results": prev["results"] + res["results"],
-               "counts": {s: {k: prev["counts"][s][k] + res["counts"][s][k] for k in prev["counts"][s]}
-                          for s in prev["counts"]}}
+        # a re-checked candidate replaces its earlier result: its earlier contribution
+        # to the counts comes off first, so a re-check is never counted twice
+        again = {r["id"] for r in res["results"]}
+        counts = {s: dict(prev["counts"][s]) for s in prev["counts"]}
+        for r in prev["results"]:
+            if r.get("id") not in again:
+                continue
+            for s, ch in (r.get("checks") or {}).items():
+                if s not in counts:
+                    continue
+                st = (ch or {}).get("state")
+                if st in ("ok", "not_found"):
+                    counts[s]["checked"] -= 1
+                    if (ch or {}).get("flag") in ("retracted", "withdrawn"):
+                        counts[s]["removed"] -= 1
+                elif st == "lost":
+                    counts[s]["lost"] -= 1
+        res = {**prev, "results": [r for r in prev["results"] if r.get("id") not in again] + res["results"],
+               "counts": {s: {k: counts[s][k] + res["counts"][s][k] for k in counts[s]} for s in counts}}
     res["checked_keys"] = sorted(c["key"] for c in cands if "retraction" in c)
     save(run / "candidates.json", cands)
     save(run / "retraction.json", res)
@@ -1097,9 +1204,23 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
     save(run / "plan.json", plan)
     (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts), encoding="utf-8", newline="\n")
     (run / "ranked.md").write_text(ranked_md(cands, plan), encoding="utf-8", newline="\n")
+    (run / "prefiltrados.md").write_text(prefiltered_md(cands), encoding="utf-8", newline="\n")
     return {"tool": TOOL, "counts": counts, "screened_by": plan["screened_by"],
             "busqueda": (run / "busqueda.md").as_posix(),
             "ranked": (run / "ranked.md").as_posix()}
+
+
+def prefiltered_md(cands: list[dict]) -> str:
+    """Every candidate the mechanical prefilter set aside, by title: nobody read them,
+    so they are listed where a human can scan them, never left as a bare count."""
+    out = ["## Excluidos por el prefiltro mecánico", "",
+           "Nadie (ni modelo ni persona) leyó estos candidatos: alcanzan menos facetas de las necesarias en "
+           "sus consultas y en su título / resumen. Un término mal elegido en el plan los deja aquí: repásalos "
+           "por título; para incluir uno, decídelo en decisions.json (tras `retraction --keys <key>`).", ""]
+    rows = [c for c in cands if (c.get("screen") or {}).get("reason") == PREFILTER]
+    out += [f"- {c['title'] or '(sin título)'} ({c.get('year') or 's. f.'}) — facetas: "
+            f"{', '.join(sorted(c['facets'])) or 'ninguna'} · `{c['key']}`" for c in rows] or ["- ninguno"]
+    return "\n".join(out) + "\n"
 
 
 def cmd_agree(first: Path, second: Path) -> dict:
@@ -1192,7 +1313,8 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict) -> str:
           + f" (total {c['identificados_total']})",
           f"- Tras deduplicación: {c['tras_deduplicacion']}",
           f"- Excluidos por el prefiltro mecánico (alcanzan menos de min(2, facetas) facetas en consultas y "
-          f"título/resumen; nadie los leyó): {c.get('prefiltro', 0)} → quedan {c.get('tras_prefiltro', '—')}",
+          f"título/resumen; nadie los leyó; sus títulos, en `prefiltrados.md`): {c.get('prefiltro', 0)} → "
+          f"quedan {c.get('tras_prefiltro', '—')}",
           f"- Tras cribado por retracción/retirada: {c['tras_retraccion']}",
           f"  - Crossref (DOI): revisados {c['retraccion']['crossref']['checked']}, retirados "
           f"{c['retraccion']['crossref']['removed']}, perdidos {c['retraccion']['crossref']['lost']}",

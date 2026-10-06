@@ -136,7 +136,7 @@ class Run(Base):
         self.assertIn("submittedDate:[203001010000 TO 203106012359]", arx)
         self.assertTrue(any("from_publication_date%3A2030-01-01" in u or "from_publication_date:2030-01-01" in u
                             for u in web.urls if "openalex" in u))
-        self.assertTrue(any("year=2030-" in u for u in web.urls if "semanticscholar" in u))
+        self.assertTrue(any("publicationDateOrYear=2030-01-01:" in u for u in web.urls if "semanticscholar" in u))
 
     def test_paging_truncation_and_window(self):
         _, out = self.run_search()
@@ -567,7 +567,7 @@ class Matching(Base):
     def test_a_boolean_cross_hit_is_credited_with_every_facet(self):
         """arXiv and OpenAlex cross queries AND every facet: their hits reached all of them."""
         plan = ls.load_plan(self.plan)
-        r = {"title": "Fast decoding for a toy code", "abstract": ""}
+        r = {"title": "Fast methods for a toy code", "abstract": ""}
         q = {"id": "Q9", "facet": "*", "source": "openalex", "pass": "cross", "query": "x", "terms": [], "raw": []}
         recs = ls.run_query(q, plan, self.tmp, lambda u, h: json.dumps({"meta": {"count": 1}, "results": [
             {"id": "https://openalex.org/W9", "title": r["title"], "publication_date": "2031-01-01",
@@ -638,6 +638,124 @@ class Matching(Base):
         self.cli("retraction", "--run", str(self.run_dir))
         code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(p))
         self.assertIn("**Cribado por:** no consta", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
+
+class SeniorAuditFixes(Base):
+    Noisy = CrossAndPrefilter.Noisy
+    """Recall and record fixes from the 2026-10-06 audit (invented papers)."""
+
+    def test_semantic_scholar_is_windowed_by_date_not_by_year(self):
+        plan = ls.load_plan_dict({**PLAN, "from": "2030-10-06", "to": "2031-01-15"})
+        url, _ = ls.page_urls("s2", "toy code", plan, 0, 100)
+        self.assertIn("publicationDateOrYear=2030-10-06:2031-01-15", url)
+        self.assertNotIn("&year=", url)
+        url, _ = ls.page_urls("s2-anchor", '("toy code")', plan, 0, 100)
+        self.assertIn("publicationDateOrYear=2030-10-06:2031-01-15", url)
+        open_end = ls.load_plan_dict({**PLAN, "from": "2030-10-06"})
+        self.assertIn("publicationDateOrYear=2030-10-06:", ls.page_urls("s2", "toy code", open_end, 0, 100)[0])
+
+    def test_short_acronym_plurals_match_their_singular(self):
+        plan = {"facets": [{"id": "A", "term": "TPU kernels", "synonyms": []},
+                           {"id": "B", "term": "XYZ training", "synonyms": []}]}
+        c = {"title": "", "abstract": "Fast TPUs kernels for XYZs training."}
+        self.assertEqual(set(ls.facet_matches(c, plan)), {"A", "B"})
+
+    def test_a_multiword_term_matches_its_words_in_another_order(self):
+        plan = {"facets": [{"id": "A", "term": "toy model training", "synonyms": []}]}
+        near = {"title": "", "abstract": "We study the training of toy models on invented clusters."}
+        self.assertEqual(ls.facet_matches(near, plan), {"A": "toy model training"})
+        far = {"title": "", "abstract": "A toy example. Much later, and unrelated, a model of something. "
+                                        "Then in another part we discuss training schedules."}
+        self.assertEqual(ls.facet_matches(far, plan), {})
+
+    def test_prefiltered_titles_are_listed_for_a_human_to_scan(self):
+        self.run_search(self.Noisy())
+        self.cli("retraction", "--run", str(self.run_dir))
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        d = {c["key"]: {"decision": "exclude", "reason": "relevancia baja", "why": "Invented, not relevant here."}
+             for c in cands if c["prefilter"]["pass"] and c.get("doi") != "10.0000/sc.1"}
+        p = self.tmp / "d.json"
+        p.write_text(json.dumps(d), encoding="utf-8")
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(p))
+        self.assertEqual(code, 0, res)
+        listed = (self.run_dir / "prefiltrados.md").read_text(encoding="utf-8")
+        only_a = next(c for c in cands if c.get("doi") == "10.0000/only.a")
+        self.assertIn(only_a["title"], listed)
+        self.assertIn(only_a["key"], listed)
+        self.assertIn("prefiltrados.md", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
+    def test_two_different_dois_with_one_title_stay_two_candidates(self):
+        base = {"arxiv": None, "facet": "A", "matched": "toy code", "date": None, "authors": [], "abstract": "",
+                "citations": None, "url": None, "anchor": False}
+        recs = [{**base, "title": "Scalable toy decoding on invented machines", "doi": "10.0000/conf.1",
+                 "source": "crossref", "rank": 1, "year": 2030, "venue": "Invented Conf", "query": "Q1"},
+                {**base, "title": "Scalable Toy Decoding on Invented Machines", "doi": "10.0000/jour.9",
+                 "source": "openalex", "rank": 2, "year": 2031, "venue": "Invented Journal", "query": "Q2"},
+                {**base, "title": "Scalable toy decoding on invented machines", "doi": None, "arxiv": "0000.12345",
+                 "source": "arxiv", "rank": 3, "year": 2030, "venue": None, "query": "Q3"}]
+        cands = ls.dedup(recs)
+        by_doi = {c["doi"]: c for c in cands if c["doi"]}
+        self.assertEqual(set(by_doi), {"10.0000/conf.1", "10.0000/jour.9"})
+        self.assertEqual(by_doi["10.0000/conf.1"]["year"], 2030)
+        self.assertEqual(by_doi["10.0000/jour.9"]["year"], 2031)
+        # the DOI-less preprint still joins one of them by title, never both
+        self.assertEqual(sum(1 for c in cands if c.get("arxiv") == "0000.12345"), 1)
+        self.assertEqual(len(cands), 2)
+
+    def test_the_snowball_falls_back_to_openalex_when_semantic_scholar_is_lost(self):
+        class S2Down(FakeWeb):
+            def __call__(self, url, headers):
+                if "api.openalex.org/works/doi:" in urllib.parse.unquote(url):
+                    self.urls.append(url)
+                    return json.dumps({"id": "https://openalex.org/W77", "title": "Old seed"}).encode()
+                if "api.openalex.org/works?" in url and "cites:W77" in urllib.parse.unquote(url):
+                    self.urls.append(url)
+                    return json.dumps({"meta": {"count": 1, "next_cursor": None}, "results": [
+                        {"id": "https://openalex.org/W78", "doi": "https://doi.org/10.0000/oa.snow",
+                         "title": "A toy code paper with a toy decoder, citing the seed",
+                         "publication_date": "2031-02-02", "publication_year": 2031, "authorships": [],
+                         "abstract_inverted_index": {"toy": [0], "code": [1], "decoder": [2]}}]}).encode()
+                return super().__call__(url, headers)
+        self.run_search()
+        web = S2Down(fail_hosts=("api.semanticscholar.org",))
+        code, out = self.cli("snowball", "--run", str(self.run_dir), "--seeds", "DOI:10.0000/old.seed",
+                             "--direction", "citations", web=web)
+        self.assertEqual(code, 0, out)
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        self.assertIn("10.0000/oa.snow", [c.get("doi") for c in cands])
+        qs = json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+        snow = [q for q in qs if q["pass"].startswith("snowball")]
+        self.assertEqual([(q["source"], bool(q["error"])) for q in snow], [("s2", True), ("openalex", False)])
+        self.assertTrue(any("from_publication_date:2030-01-01" in urllib.parse.unquote(u)
+                            for u in web.urls if "cites:W77" in urllib.parse.unquote(u)))
+
+    def test_a_retraction_recheck_is_not_counted_twice(self):
+        self.run_search()
+        calls = []
+
+        def first(cands, mailto=None):
+            calls.append(len(cands))
+            lost = {"crossref": {"state": "lost", "flag": None}, "arxiv": {"state": "ok", "flag": None}}
+            return {"results": [{"id": c["id"], "status": "clear", "evidence": [], "notice_for": [],
+                                 "checks": lost} for c in cands],
+                    "counts": {"crossref": {"checked": 0, "removed": 0, "lost": len(cands)},
+                               "arxiv": {"checked": len(cands), "removed": 0, "lost": 0}}}
+        ls.check_retraction.run = first
+        self.cli("retraction", "--run", str(self.run_dir))
+        n = calls[0]
+        key = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))[0]["key"]
+
+        def second(cands, mailto=None):
+            ok = {"crossref": {"state": "ok", "flag": None}, "arxiv": {"state": "ok", "flag": None}}
+            return {"results": [{"id": c["id"], "status": "clear", "evidence": [], "notice_for": [],
+                                 "checks": ok} for c in cands],
+                    "counts": {"crossref": {"checked": len(cands), "removed": 0, "lost": 0},
+                               "arxiv": {"checked": len(cands), "removed": 0, "lost": 0}}}
+        ls.check_retraction.run = second
+        self.cli("retraction", "--run", str(self.run_dir), "--keys", key)
+        counts = json.loads((self.run_dir / "retraction.json").read_text(encoding="utf-8"))["counts"]
+        self.assertEqual(counts["crossref"], {"checked": 1, "removed": 0, "lost": n - 1})
+        self.assertEqual(counts["arxiv"], {"checked": n, "removed": 0, "lost": 0})
 
 
 if __name__ == "__main__":

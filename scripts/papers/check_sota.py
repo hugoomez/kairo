@@ -79,7 +79,7 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.2.0"
+TOOL = "kairo/check_sota@1.3.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
@@ -136,7 +136,30 @@ def _canon(tok: str) -> str:
     return t.rstrip("%")
 
 
+_SCI_TOK = re.compile(r"^(\d+(?:\.\d+)?)(?:e|×10\^?)([-−]?\d+)$", re.IGNORECASE)
+# how a paper writes 1e-7 or 2.5e-3: $10^{-7}$, 2.5\times 10^{-3}, 2.5 × 10^-3, 2.5e-3
+_SCI_TEXT = re.compile(r"(?:(\d+(?:\.\d+)?)\s*(?:\\times|\\cdot|×|·)\s*)?10\s*\^\s*\{?\s*([-−–]?\d+)\s*\}?"
+                       r"|(\d+(?:\.\d+)?)[eE]([-−]?\d+)")
+
+
+def _sci_values(text: str) -> list[float]:
+    out = []
+    for m in _SCI_TEXT.finditer(text):
+        mant, exp = (m.group(1), m.group(2)) if m.group(2) else (m.group(3), m.group(4))
+        try:
+            out.append(float(mant or 1) * 10 ** int(exp.replace("−", "-").replace("–", "-")))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return out
+
+
 def number_in(tok: str, texts: list[str]) -> bool:
+    sci = _SCI_TOK.match(_canon(tok))
+    if sci:
+        # one value, however it is written: the sentence's 1e-7 is the paper's $10^{-7}$
+        v = float(sci.group(1)) * 10 ** int(sci.group(2).replace("−", "-"))
+        if any(abs(x - v) <= 1e-9 * abs(v) for t in texts for x in _sci_values(t)):
+            return True
     want = _canon(tok)
     unit = SUFFIX.search(tok) if not MULT.search(tok) else None
     if unit:
@@ -200,39 +223,95 @@ def paper_text(vault: str, pid: str) -> list[str] | None:
     return [secs.get("Resumen", ""), secs.get("Texto completo", "")]
 
 
-def cited_units(vault: str, project: str | None, block: str, start: int, report: dict) -> tuple[list, list[str]]:
-    """Check every citation in `block`; return (its matches, the text they point at)."""
+def cited_units(vault: str, project: str | None, block: str, start: int, report: dict,
+                per: list | None = None) -> tuple[list, list[str]]:
+    """Check every citation in `block`; return (its matches, the text they point at).
+    `per`, when given, gets one (match, its own units) pair per citation."""
     cites = list(CITE.finditer(block))
     units: list[str] = []
     for m in cites:
-        pid, span = m.group(1), m.group(2).strip(" ,;")
-        report["citations"] += 1
-        where = {"citation": m.group(0).strip(), "offset": start + m.end()}
-        path = find_paper(vault, pid)
-        if not path:
-            report["problems"].append({**where, "severity": "crítico", "reason": f"{pid} no existe en Papers/"})
-            continue
-        fm, _ = split_frontmatter(read_text(path))
-        if project and project not in paper_projects(vault, pid):
-            report["problems"].append({**where, "severity": "importante",
-                                       "reason": f"{pid} no es un paper del proyecto {project}"})
-        status = (fm_scalar(fm, "resolution_status") or "").strip()
-        if status in BAD_STATUS:
-            report["problems"].append({**where, "severity": "crítico", "reason": BAD_STATUS[status]})
-        if not span:
-            report["without_locator"].append(pid)
-            res = resolve_citation(vault, pid, "§Resumen")
-            units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
-            continue
-        res = resolve_citation(vault, pid, span)
-        if res["note"] and not res["units"]:
-            report["problems"].append({**where, "severity": "crítico",
-                                       "reason": f"el localizador no señala texto: {res['note']}"})
-        if res["provenance"]:
-            report["problems"].append({**where, "severity": "crítico",
-                                       "reason": "el texto citado no es del paper: " + "; ".join(res["provenance"])})
-        units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
+        mark = len(units)
+        _one_citation(vault, project, m, start, report, units)
+        if per is not None:
+            per.append((m, units[mark:]))
     return cites, units
+
+
+def _one_citation(vault: str, project: str | None, m, start: int, report: dict, units: list[str]) -> None:
+    """Check one citation; add the text it points at to `units`."""
+    pid, span = m.group(1), m.group(2).strip(" ,;")
+    report["citations"] += 1
+    where = {"citation": m.group(0).strip(), "offset": start + m.end()}
+    path = find_paper(vault, pid)
+    if not path:
+        report["problems"].append({**where, "severity": "crítico", "reason": f"{pid} no existe en Papers/"})
+        return
+    fm, _ = split_frontmatter(read_text(path))
+    if project and project not in paper_projects(vault, pid):
+        report["problems"].append({**where, "severity": "importante",
+                                   "reason": f"{pid} no es un paper del proyecto {project}"})
+    status = (fm_scalar(fm, "resolution_status") or "").strip()
+    if status in BAD_STATUS:
+        report["problems"].append({**where, "severity": "crítico", "reason": BAD_STATUS[status]})
+    if not span:
+        report["without_locator"].append(pid)
+        res = resolve_citation(vault, pid, "§Resumen")
+        units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
+        return
+    res = resolve_citation(vault, pid, span)
+    if res["note"] and not res["units"]:
+        report["problems"].append({**where, "severity": "crítico",
+                                   "reason": f"el localizador no señala texto: {res['note']}"})
+    if res["provenance"]:
+        report["problems"].append({**where, "severity": "crítico",
+                                   "reason": "el texto citado no es del paper: " + "; ".join(res["provenance"])})
+    units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
+
+
+_SENTENCE = re.compile(r"(?:[^.;!?]|[.](?=\d))+(?:[.;!?]|$)")      # a decimal point ends no sentence
+
+
+def check_attributed(block: str, per: list, offset: int, report: dict) -> None:
+    """Every figure against the paper whose citation follows it in its sentence (see below
+    for the order): a figure of one cited paper never passes as another's."""
+    if len({m.group(1) for m, _ in per}) < 2:
+        check_numbers(block, [u for _, us in per for u in us],
+                      ", ".join(m.group(0).strip() for m, _ in per), offset, report)
+        return
+    every = [u for _, us in per for u in us]
+    masked = CITE.sub(lambda c: " " * len(c.group(0)), block)       # same offsets, citations blanked
+    for sm in _SENTENCE.finditer(block):
+        if not sm.group(0).strip():
+            continue
+        mine = [x for x in per if sm.start() <= x[0].start() < sm.end()]
+        for tok, pos in _numbers_at(masked[sm.start():sm.end()], sm.start()):
+            # its sentence's next citation, else that sentence's last one, else the
+            # paragraph's next citation (one that closes the bullet), else the last before
+            owner = next((x for x in mine if x[0].start() >= pos), None) \
+                or next((x for x in reversed(mine) if x[0].start() < pos), None) \
+                or next((x for x in per if x[0].start() >= pos), None) \
+                or [x for x in per if x[0].start() < pos][-1]
+            report["numbers_checked"] += 1
+            if number_in(tok, owner[1]):
+                continue
+            cit = owner[0].group(0).strip()
+            why = (f"la cifra «{tok}» es de otro paper citado en el mismo párrafo, no de {cit}"
+                   if number_in(tok, every) else f"la cifra «{tok}» no aparece en el texto citado")
+            report["problems"].append({"citation": cit, "offset": offset, "severity": "importante",
+                                       "number": tok, "reason": why})
+
+
+def _numbers_at(text: str, base: int) -> list[tuple[str, int]]:
+    """`numbers(text)` with each figure's offset (base + its position in `text`)."""
+    wanted = numbers(text)
+    out, used = [], 0
+    for tok in wanted:
+        i = text.find(tok, used)
+        if i < 0:
+            i = text.find(tok)
+        out.append((tok, base + max(i, 0)))
+        used = max(i, 0) + len(tok)
+    return out
 
 
 def check_numbers(block: str, units: list[str], citation: str, offset: int, report: dict) -> None:
@@ -273,8 +352,9 @@ def check(vault: str, project: str | None, text: str) -> dict:
     for start, end, block in blocks(text):
         if not CITE.search(block):
             continue
-        cites, units = cited_units(vault, project, block, start, report)
-        check_numbers(block, units, ", ".join(c.group(0).strip() for c in cites), end, report)
+        per: list = []
+        cited_units(vault, project, block, start, report, per)
+        check_attributed(block, per, end, report)
     check_tables(vault, project, text, report)
     report["without_locator"] = sorted(set(report["without_locator"]))
     return report

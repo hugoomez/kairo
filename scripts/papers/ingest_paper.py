@@ -83,7 +83,7 @@ import verbatim_fulltext as vf  # noqa: E402
 from fill_abstract import from_inverted_index, from_jats  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/ingest_paper@1.1.0"
+TOOL = "kairo/ingest_paper@1.1.1"
 FUENTES_DIR = "_fuentes"
 NO_ABSTRACT = "No disponible — ningún abstract recuperado"
 NO_FULLTEXT = "No disponible — solo abstract."
@@ -607,6 +607,12 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
         kind = "pdf-oa" if block else kind
         if why:
             warn.append(why)
+    if not block and kind == "pdf" and not vf.pdftotext_available():
+        warn.append("se descargó el PDF, pero pdftotext no está instalado (poppler: `choco install poppler`, "
+                    "`brew install poppler`, `apt install poppler-utils`): instálalo y vuelve a ingerir con "
+                    "`rebuild --only <P-id>`")
+    if not block:
+        kind = ""                          # nothing was converted: the note is abstract-only, and says so
     if not block and not a.no_fulltext:
         warn.append("sin texto completo abierto: la nota queda abstract-only (añade el PDF con --pdf-text)")
     meta_out = {**meta, "version": (a.version or meta.get("version") or "")}

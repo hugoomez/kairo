@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -390,10 +391,12 @@ class TestQueriesAndCoverage(TestLitWatch):
         self.assertEqual(code, 0, res)
         self.assertEqual(sum(1 for u in net.urls if "arxiv" in u), 5)    # 5 pages of 100 = MAX_RESULTS
         self.assertTrue(res["truncated"])
-        # capped by relevance at MAX_RESULTS: reported as truncated, but covered — the
-        # window moves on instead of growing every week
+        # capped at MAX_RESULTS: reported as truncated and never counted as covered —
+        # the arXiv query keeps its window open; the query read whole moves on
         self.assertTrue(res["last_watch_moved"])
-        self.assertIn("2031-03-01", lit_watch.load_cursors(self.p).values())
+        cursors = lit_watch.load_cursors(self.p)
+        self.assertEqual(next(v for k, v in cursors.items() if k.startswith("arxiv|")), "2031-02-01")
+        self.assertIn("2031-03-01", cursors.values())
 
     def test_a_structured_plan_is_preferred_and_run_over_the_window(self):
         run = self.p / "_busquedas" / "2031-01-15"
@@ -451,6 +454,88 @@ class TestQueriesAndCoverage(TestLitWatch):
         self.assertEqual(res["suspicious"], 1)
         run = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         self.assertTrue(run["candidates"][0]["sospechoso"])
+
+
+class TestSeniorAuditCoverage(TestLitWatch):
+    """A capped query is never counted as covered (2026-10-06 audit)."""
+
+    def plan(self, sources=("arxiv", "s2")):
+        run = self.p / "_busquedas" / "2031-01-15"
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "plan.json").write_text(json.dumps({
+            "description": "x", "facets": [{"id": "A", "term": "fictional widgets", "synonyms": []},
+                                           {"id": "B", "term": "synthetic spin", "synonyms": []}],
+            "sources": list(sources), "from": "2020-01-01", "per_query": 100, "anchors": 10, "cross": False,
+            "arxiv_categories": [], "include": [], "exclude": [], "scope_out": []}), encoding="utf-8")
+
+    def test_a_capped_legacy_query_keeps_its_window_open(self):
+        class Busy(FakeNet):
+            def __call__(self, url, headers):
+                self.urls.append(url)
+                if "arxiv" in url:
+                    body = atom([(f"2031.{i:05d}", f"Widget paper {i}", "Widgets.") for i in range(10, 110)])
+                    return body.decode().replace(
+                        '<feed xmlns="http://www.w3.org/2005/Atom">',
+                        '<feed xmlns="http://www.w3.org/2005/Atom" xmlns:o="http://a9.com/-/spec/opensearch/1.1/">'
+                        '<o:totalResults>900</o:totalResults>').encode()
+                return json.dumps({"total": 0, "data": []}).encode()
+        code, res = self.delta(Busy())
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["truncated"])
+        cursors = lit_watch.load_cursors(self.p)
+        arxiv_sig = next(s for s in cursors if s.startswith("arxiv|"))
+        self.assertEqual(cursors[arxiv_sig], "2031-02-01")         # where it was: not covered up to today
+        self.assertTrue(res["open_windows"])
+
+    def test_a_capped_window_is_split_until_each_part_is_read_whole(self):
+        class Dense(FakeNet):
+            """More than the cap in a long window; a short one is read whole."""
+            def __call__(self, url, headers):
+                self.urls.append(url)
+                if "arxiv" in url:
+                    q = urllib.parse.unquote(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["search_query"][0])
+                    a, b = re.search(r"submittedDate:\[(\d{8})0000 TO (\d{8})2359\]", q).groups()
+                    days = (date.fromisoformat(f"{b[:4]}-{b[4:6]}-{b[6:]}")
+                            - date.fromisoformat(f"{a[:4]}-{a[4:6]}-{a[6:]}")).days
+                    total = 900 if days > 10 else 3
+                    ents = [(f"2031.{int(a[-4:]) * 10 + i:05d}", f"Widget paper {a}-{i}", "Widgets and synthetic spin.")
+                            for i in range(3)]
+                    return atom(ents).decode().replace(
+                        '<feed xmlns="http://www.w3.org/2005/Atom">',
+                        '<feed xmlns="http://www.w3.org/2005/Atom" xmlns:o="http://a9.com/-/spec/opensearch/1.1/">'
+                        f'<o:totalResults>{total}</o:totalResults>').encode()
+                return json.dumps({"total": 0, "data": []}).encode()
+        self.plan(sources=("arxiv",))
+        code, res = self.delta(Dense())
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["truncated"], [])                     # every part read whole
+        self.assertNotIn("2031-03-01", res["open_windows"])
+        self.assertTrue(all(v == "2031-03-01" for v in lit_watch.load_cursors(self.p).values()))
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertTrue(all(x["splits"] >= 1 for x in data["queries"]))
+
+    def test_only_unwindowable_sources_is_refused_not_an_outage(self):
+        self.plan(sources=("openreview",))
+        code, res = self.delta()
+        self.assertEqual(code, 2, res)
+        self.assertIn("openreview", res["error"])
+
+    def test_a_facet_named_in_the_abstract_counts_for_strength(self):
+        class OneFacet(FakeNet):
+            def __call__(self, url, headers):
+                self.urls.append(url)
+                if "arxiv" in url and "widgets" in urllib.parse.unquote(url):
+                    return atom([("2031.00444", "A new widget design",
+                                  "Fictional widgets measured under synthetic spin conditions.")])
+                if "arxiv" in url:
+                    return atom([])
+                return json.dumps({"total": 0, "data": []}).encode()
+        self.plan(sources=("arxiv",))
+        _, res = self.delta(OneFacet())
+        c = next(c for c in json.loads(self.run_file(res).read_text(encoding="utf-8"))["candidates"]
+                 if c["key"] == "arxiv:2031.00444")
+        self.assertEqual(sorted(c["facets"]), ["A", "B"])
+        self.assertTrue(c["strong"])
 
 
 class TestTopicWatch(unittest.TestCase):

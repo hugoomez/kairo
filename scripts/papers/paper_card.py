@@ -8,14 +8,17 @@ was retracted, who cites it, and its BibTeX — all from public records.
 Sources (no model involved, each answer kept with --raw-dir):
   - arXiv: the API entry (title, authors, journal_ref, declared DOI) and the
     abstract page's submission history — every version with its date;
-  - OpenAlex: the work (by DOI, or the arXiv DOI 10.48550/arXiv.<id>): its
-    locations (repository vs journal / conference), cited_by_count;
+  - OpenAlex: the work (by DOI, and by the arXiv DOI 10.48550/arXiv.<id>): its
+    locations (repository vs journal / conference), cited_by_count — when
+    OpenAlex keeps the preprint and the published paper as two works, both are
+    counted (`openalex_works`) and the citing list covers both (`cites:W1|W2`);
   - Crossref (a non-arXiv DOI): container title, issue date, and the
     `is-preprint-of` / `has-preprint` relations publishers register;
   - OpenReview: an accepted record with exactly this title (ICLR, NeurIPS,
     ICML, MLSys, TMLR — venues with no DOI) gives the venue and its year;
   - Semantic Scholar: citation count and the list of citing papers
-    (the newest first, up to --citations);
+    (the newest first, up to --citations); a page that does not come marks
+    the list `citing_incomplete`;
   - the shared retraction / withdrawal check (Crossref + arXiv).
 
 "Published version" lists every piece of evidence separately (arXiv
@@ -60,7 +63,7 @@ import resolve_refs as rr  # noqa: E402
 import retraction  # noqa: E402
 from fill_abstract import from_jats  # noqa: E402
 
-TOOL = "kairo/paper_card@1.1.0"
+TOOL = "kairo/paper_card@1.2.0"
 S2 = "https://api.semanticscholar.org/graph/v1"
 Fetch = Callable[[str, dict], bytes]
 
@@ -138,11 +141,22 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
     oa_key = os.environ.get("OPENALEX_API_KEY")
     crossref_msg = None
     oa_ids = ([f"doi:{doi}"] if doi else []) + ([f"doi:10.48550/arXiv.{arxiv}"] if arxiv else [])
+    # OpenAlex may hold the preprint and the published paper as two works, each
+    # with its own citations: every one of them is counted and listed, never only the first
+    works: dict[str, int | None] = {}
+    oa_raw: list[bytes] = []
     for oid in oa_ids:
         raw = c.get("openalex.json", f"https://api.openalex.org/works/{urllib.parse.quote(oid, safe=':/')}"
                     + (f"?api_key={urllib.parse.quote(oa_key)}" if oa_key else ""))
-        if not raw:
-            continue
+        if raw:
+            oa_raw.append(raw)
+            w = json.loads(raw)
+            wid = (w.get("id") or "").rsplit("/", 1)[-1]
+            if wid and wid not in works:
+                works[wid] = w.get("cited_by_count")
+    if works:
+        card["citations"]["openalex_works"] = works
+    for raw in oa_raw[:1]:                  # identity and published version: the first work that answered
         w = json.loads(raw)
         card["citations"]["openalex"] = w.get("cited_by_count")
         ident.setdefault("title", w.get("title"))
@@ -171,7 +185,6 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                     card["published"].append({"source": "OpenAlex", "doi": doi or "",
                                               "venue": "tiene preprint en arXiv: " + arxiv})
                     break
-        break
     if doi:
         raw = c.get("crossref.json", retraction.CROSSREF_WORK.format(urllib.parse.quote(doi, safe="/:;()")),
                     {"Accept": "application/json"})
@@ -204,9 +217,11 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             if pv.get("name") and (pv.get("type") or "") in ("journal", "conference"):
                 card["published"].append({"source": "Semantic Scholar", "doi": "", "venue": pv["name"]})
         if n_cit and ident.get("openalex"):
-            # OpenAlex sorts the citing works by date itself: the newest really are the newest
+            # OpenAlex sorts the citing works by date itself: the newest really are the newest;
+            # `cites:W1|W2` lists the papers citing any of the paper's works, each once
+            cited = "|".join(works) or ident["openalex"]
             raw = c.get("openalex-citing.json",
-                        f"https://api.openalex.org/works?filter=cites:{ident['openalex']}"
+                        f"https://api.openalex.org/works?filter=cites:{cited}"
                         f"&sort=publication_date:desc&per-page={min(max(n_cit, 1), 100)}"
                         "&select=id,doi,title,publication_year,publication_date,authorships,primary_location,locations"
                         + (f"&api_key={urllib.parse.quote(oa_key)}" if oa_key else ""))
@@ -214,6 +229,8 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             if data.get("results"):
                 card["citing_source"] = "OpenAlex"
                 card["citing_total_listed"] = (data.get("meta") or {}).get("count") or len(data["results"])
+                if len(works) > 1:
+                    card["citations"]["openalex"] = card["citing_total_listed"]     # the union, not a sum
                 for w in data["results"][:n_cit]:
                     d = retraction.normalize_doi(w.get("doi"))
                     card["citing"].append({
@@ -233,6 +250,7 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                             f"{S2}/paper/{urllib.parse.quote(s2_id, safe=':/')}/citations?offset={offset}&limit=100"
                             "&fields=title,year,publicationDate,venue,externalIds,authors", hdr)
                 if not raw:
+                    card["citing_incomplete"] = True          # a page did not come: the list is partial
                     break
                 data = json.loads(raw)
                 for it in data.get("data") or []:
@@ -339,6 +357,12 @@ def markdown(card: dict) -> str:
     L += ["", "## Citas", "",
           f"- OpenAlex: {cit.get('openalex', '—')} · Semantic Scholar: {cit.get('semantic_scholar', '—')}"
           f" (influyentes: {cit.get('semantic_scholar_influential', '—')})"]
+    if len(cit.get("openalex_works") or {}) > 1:
+        L.append("- OpenAlex guarda este paper como varios trabajos (preprint y versión publicada): "
+                 + ", ".join(f"{w} {n}" for w, n in cit["openalex_works"].items())
+                 + "; los que citan a cualquiera de ellos se cuentan una vez")
+    if card.get("citing_incomplete"):
+        L.append("- ⚠️ Lista de citantes incompleta: una página de Semantic Scholar no respondió")
     if card["citing"]:
         scope = (f"entre las {card.get('citing_total_listed', 0)} primeras que devuelve Semantic Scholar"
                  if card.get("citing_truncated") else f"de {card.get('citing_total_listed', 0)}")

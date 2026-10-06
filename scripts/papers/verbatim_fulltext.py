@@ -68,7 +68,7 @@ DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
 UNSECTIONED_HEADING = "Texto (sin secciones numeradas en la fuente)"
 UNSECTIONED_MIN_WORDS = 800
-UA = {"User-Agent": f"Mozilla/5.0 ({TOOL_ID}; research use)"}
+UA = {"User-Agent": net.user_agent(TOOL_ID)}
 
 # --------------------------------------------------------------------------
 # HTML (LaTeXML) → verbatim body
@@ -580,6 +580,11 @@ def fetch_arxiv(aid: str, pause: float = 3.0, version: str = "") -> dict | None:
                 shown = ver or "?"
             return {"kind": kind, "url": url, "version": shown, "bytes": body}
     return None
+
+
+def pdftotext_available() -> bool:
+    """Whether poppler's `pdftotext` is on PATH: without it a PDF gives no text."""
+    return shutil.which("pdftotext") is not None
 
 
 def pdf_bytes_to_text(data: bytes) -> str | None:

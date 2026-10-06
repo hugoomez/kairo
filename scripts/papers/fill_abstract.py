@@ -44,7 +44,7 @@ from send_guard import is_flagged  # noqa: E402, I001
 TOOL = "kairo/fill_abstract@1.0.0"
 MIN_WORDS = 20
 MISSING = "No disponible"
-UA = {"User-Agent": f"Mozilla/5.0 ({TOOL}; research use)"}
+UA = {"User-Agent": net.user_agent(TOOL)}
 
 
 def from_inverted_index(ii: dict | None) -> str:

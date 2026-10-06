@@ -98,6 +98,17 @@ class TestNet(unittest.TestCase):
         self.assertEqual(self.sleeps, [2.5])
 
 
+class TestUserAgent(unittest.TestCase):
+    def test_the_agent_names_the_project_and_a_contact_when_there_is_one(self):
+        with mock.patch.dict("os.environ", {"KAIRO_MAILTO": "lab@example.invalid"}):
+            ua = net.user_agent("kairo-test/1.0")
+        self.assertTrue(ua.startswith("kairo-test/1.0 (+https://github.com/hugoomez/kairo"), ua)
+        self.assertIn("mailto:lab@example.invalid", ua)
+        self.assertNotIn("Mozilla", ua)
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertNotIn("mailto", net.user_agent("kairo-test/1.0"))
+
+
 class TestVaultNotes(unittest.TestCase):
     NOTE = ('---\nid: P-0001\ntitle: "Hello: world"\nauthors: ["Doe, Jane", "Roe, R."]\n'
             'doi:\nlinked_papers: [P-0001, P-0002]\n---\n\n## Body\ntext\n')

@@ -49,7 +49,7 @@ vault (Smart Connections MCP directly).
 | Source | How each facet is queried | Notes |
 |---|---|---|
 | arXiv | one OR-group over `ti:`/`abs:`, + `cat:` categories, + `submittedDate` window; by relevance, paged by 100 | 3 s between calls, serial (enforced in `net.py`) |
-| Semantic Scholar | `/paper/search` takes **plain keywords only**: one query per term and synonym, `year=` window, paged; plus one `/paper/search/bulk` **anchor pass** per facet (`"a" \| "b"`, `sort=citationCount:desc`, top `anchors`) | keyless pool often answers `429`; `SEMANTIC_SCHOLAR_API_KEY` fixes it |
+| Semantic Scholar | `/paper/search` takes **plain keywords only**: one query per term and synonym, `publicationDateOrYear` window (exact dates), paged; plus one `/paper/search/bulk` **anchor pass** per facet (`"a" \| "b"`, `sort=citationCount:desc`, top `anchors`) | keyless pool often answers `429`; `SEMANTIC_SCHOLAR_API_KEY` fixes it |
 | OpenAlex | `search="t1" OR "t2"`, `from/to_publication_date` filter, paged | list calls cost $0.001 against a free daily budget ($0.10 keyless, $1 with `OPENALEX_API_KEY`) |
 | Crossref | one query per term, `from-pub-date` / `until-pub-date` | the ACM / IEEE / Springer / APS proceedings and journals (SC, IPDPS, ISC, QCE, PRX Quantum…) with DOI and venue; `KAIRO_MAILTO` joins the polite pool |
 | OpenReview | `/notes/search` (API 2), one plain-keyword query per term and synonym, paged by `offset`; no date filter, so the window is applied to each record | ICLR / NeurIPS / ICML / MLSys / TMLR papers that have no DOI, **with their decision**: a venue is kept only when the paper was accepted (`Submitted to …`, `Withdrawn`, `Rejected` stay in `openreview_venue`, never as a venue); also the DBLP records its authors imported (year only). Keyless, 1 request/s |
@@ -125,12 +125,17 @@ min(2, facets) facets, counting both the facets whose queries found them and
 the facet terms in their title or abstract (anchors are exempt, and so is a
 candidate with no abstract whose title shows one facet term). Terms match
 their inflections ("decoder" ↔ "decoders", "decoding"; "parallelism" ↔
-"tensor-parallel"), but not a synonym you did not list: put acronym ↔
-expansion pairs and spelling variants in the plan's `synonyms`. An arXiv or
+"tensor-parallel"; "LLM" ↔ "LLMs"), and a multi-word term its words close
+together in another order ("LLM training" ↔ "training of LLMs"), but not a
+synonym you did not list nor a paraphrase ("intra-layer model parallelism" is
+not "tensor parallelism"): put acronym ↔ expansion pairs, spelling variants
+and the field's other names for the same thing in the plan's `synonyms`. An arXiv or
 OpenAlex cross-pass hit is credited with every facet (its query required all
 of them). They are
 excluded by `screen` with reason `prefiltro`, counted on their own PRISMA
-line, unless you decide one explicitly (see step 5). If **two or more** Semantic Scholar queries came back `HTTP 429`, tell
+line and listed by title in the run's `prefiltrados.md`, unless you decide one
+explicitly (see step 5). Tell the researcher that file exists: scanning its
+titles is how a badly chosen facet term shows. If **two or more** Semantic Scholar queries came back `HTTP 429`, tell
 the researcher now that a free `SEMANTIC_SCHOLAR_API_KEY` removes it (see
 **Configuración opcional**) and offer to re-run.
 
@@ -153,7 +158,10 @@ candidate (ingest it directly if the researcher wants it in the vault), and its
 queries carry `seed` in `queries.json`.
 
 It pages Semantic Scholar references and citations of each key (up to 2000
-per direction; more is reported as truncated) and keeps neighbours whose
+per direction; more is reported as truncated); when Semantic Scholar does not
+answer (keyless `429`), the same direction comes from OpenAlex (`cites:` /
+`cited_by:`, in the window) as its own query with `fallback_for` naming the
+lost one and keeps neighbours whose
 title/abstract match **≥ 2 facets** (any facet for a one-facet plan) and fall
 in the window; a neighbour with **no abstract** (common for publisher records)
 is kept when one facet term is in its title, since a title alone rarely

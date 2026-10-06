@@ -81,6 +81,19 @@ class Base(unittest.TestCase):
 
 
 class Add(Base):
+    def test_a_pdf_that_cannot_be_converted_says_pdftotext_is_missing(self):
+        def pdf_only(aid, version="", pause=0):
+            return {"kind": "pdf", "url": f"https://arxiv.org/pdf/{aid}v2", "version": "v2",
+                    "bytes": b"%PDF-1.4 invented"}
+        orig = ip.vf.shutil.which
+        ip.vf.shutil.which = lambda name: None
+        try:
+            code, out = self.add("--arxiv", "0000.11111", fetch_arxiv=pdf_only)
+        finally:
+            ip.vf.shutil.which = orig
+        self.assertEqual((code, out["fulltext"]), (0, "abstract-only"), out)
+        self.assertTrue(any("pdftotext" in w and "poppler" in w for w in out["warnings"]), out["warnings"])
+
     def test_writes_the_whole_note_from_the_fetched_records(self):
         code, out = self.add("--arxiv", "0000.11111", "--facet", "A", "--matched", "toy code")
         self.assertEqual(code, 0, out)

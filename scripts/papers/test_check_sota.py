@@ -206,5 +206,44 @@ class CheckSota(unittest.TestCase):
         self.assertEqual((total, out["assertions"]), (9, 9))
 
 
+class SeniorAuditFigures(CheckSota):
+    """A figure belongs to the paper whose citation follows it (2026-10-06 audit)."""
+
+    def add_paper(self, pid, body):
+        (self.vault / "Papers" / f"{pid} extra.md").write_text(
+            PAPER.replace("P-0101", pid).split("## Texto completo")[0]
+            + "## Texto completo\n\n> Fuente: invented\n\n### 3 Results\n\n#### 3.2 Threshold\n\n" + body + "\n",
+            encoding="utf-8")
+
+    def test_a_figure_from_another_cited_paper_is_misattributed(self):
+        self.add_paper("P-0104", "The rival decoder reaches a threshold of 3.3% on invented codes.")
+        self.write("## X\n\n- The toy decoder reaches 3.3% (P-0101 §3.2) and the rival 1.1% (P-0104 §3.2).\n")
+        code, out = self.run_cli()
+        self.assertEqual(code, 3, out)
+        got = {(p["citation"], p.get("number")) for p in out["problems"]}
+        self.assertEqual(got, {("P-0101 §3.2", "3.3%"), ("P-0104 §3.2", "1.1%")})
+        self.assertTrue(all("otro paper citado" in p["reason"] for p in out["problems"]))
+
+    def test_each_figure_checked_against_its_own_citation_passes(self):
+        self.add_paper("P-0104", "The rival decoder reaches a threshold of 3.3% on invented codes.")
+        self.write("## X\n\n- The toy decoder reaches 1.1% (P-0101 §3.2) and the rival 3.3% (P-0104 §3.2).\n")
+        code, out = self.run_cli()
+        self.assertEqual((code, out["problems"]), (0, []))
+
+    def test_a_sentence_without_its_own_citation_belongs_to_the_next_one(self):
+        self.add_paper("P-0104", "The rival decoder reaches a threshold of 3.3% on invented codes.")
+        self.write("## X\n\n- The toy decoder reaches 1.1% (P-0101 §3.2). The rival reaches 3.3%. "
+                   "Both use invented codes (P-0104 §3.2).\n")
+        code, out = self.run_cli()
+        self.assertEqual((code, out["problems"]), (0, []))
+
+    def test_scientific_notation_matches_whatever_way_it_is_written(self):
+        self.add_paper("P-0105", "The logical error rate falls to $10^{-7}$, and to $2.5\\times 10^{-3}$ at d = 3.")
+        self.write("## X\n\n- Logical error rate 1e-7, and 2.5 × 10^-3 at small distance — P-0105 §3.2\n"
+                   "- A made-up rate of 3e-5 — P-0105 §3.2\n")
+        code, out = self.run_cli()
+        self.assertEqual([p.get("number") for p in out["problems"]], ["3e-5"])
+
+
 if __name__ == "__main__":
     unittest.main()

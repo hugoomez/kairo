@@ -18,7 +18,10 @@ plain Markdown with YAML frontmatter — but nothing here depends on it.
 ## Quickstart (15 minutes)
 
 1. **Prerequisites:** Claude Code on a Pro / Max / Team plan, `git`, Python 3.10+
-   (as `python`) and Node 20+ on your PATH.
+   (as `python`) and Node 20+ on your PATH. Strongly recommended: poppler's
+   `pdftotext` (`choco install poppler`, `brew install poppler`, `apt install
+   poppler-utils`) — without it a paper whose only open text is a PDF is
+   ingested abstract-only (ingestion says so).
 2. **Install the plugin** in Claude Code:
    ```
    /plugin marketplace add hugoomez/kairo
@@ -129,7 +132,7 @@ claude --plugin-dir /path/to/kairo
 | `kairo:idea` | Captures an idea verbatim in `Ideas/I-XXXX.md` and commits it alone — nothing else. Also `kairo-idea <text>` from any terminal (`scripts/ideas/`, needs `KAIRO_VAULT`). Matching an idea to projects and turning it into a hypothesis (always through `hypothesis-cycle`) happen later, when the researcher chooses. |
 | `kairo:theorem` | States (verbatim), proves and verifies lemmas and theorems as `Claims/` nodes with `depends_on`. A `lema` / `teorema` reaches `probado` only through `scripts/ledger/claim_gate.py`, on its current text: the fresh verifier on the proof (statement + proof + the dependencies' statements), the researcher's sign-off on the statement **and** the proof (`signoff.py`, refused inside agent sessions), and a numerical sanity check on small cases (`numeric_check.py`) or a signed-off reason why none is feasible — plus every dependency established. Lean is optional and never replaces the sign-off. The skill never signs off and never runs the check itself. |
 | `kairo:ask-corpus` | Answers a question from one project's own papers, only with verbatim quotes + locators (`P-XXXX §3.2`). `scripts/papers/check_quotes.py` lists the papers that may be quoted (never `send: never`, never the model-written reading notes, only the project's), then checks every quote character for character (whitespace aside) against the cited section with the fresh-verifier's resolver — an ellipsis may shorten a sentence, never join distant text or drop a negation; a claim with no quote or a failing quote is removed and reported. "No está en el corpus" is a valid answer. The saved answer is `escrito_por: modelo`, `citable: false`. |
-| `kairo:lit-watch` | Weekly literature watch for one project. `scripts/watch/lit_watch.py delta` re-runs the project's own recorded queries (the latest `_busquedas/<run>/plan.json`, else Estado-del-arte's "Búsqueda ejecutada → Consultas") on every source the search used, each over its own window — 14 days before the date that query last answered (`_vigilancia/cursores.json`; late listing / indexing) — paging each query up to 500 results by relevance (a capped one is reported `truncated`, and counted as covered); a lost query keeps its own window open without holding the others back; it drops papers already in `Papers/` (including the published version of an ingested preprint) or offered before (a weak candidate comes back once, when it turns strong), and marks strong candidates (found by ≥ 2 facets) for triage with a stemmed word-overlap novelty prefilter per hypothesis (plus each hypothesis's three closest candidates, so a Spanish claim still meets an English abstract). The skill writes one triage line per strong candidate and records novelty threats: a model's judgement, written to the hypothesis's `## Revisión de vigencia` only with a sentence that is verbatim in the abstract (the script refuses otherwise). Never changes a status; ingests (create-project step 6) only what the researcher chose, or with `paper_ingestion: autonomo`. |
+| `kairo:lit-watch` | Weekly literature watch for one project. `scripts/watch/lit_watch.py delta` re-runs the project's own recorded queries (the latest `_busquedas/<run>/plan.json`, else Estado-del-arte's "Búsqueda ejecutada → Consultas") on every source the search used, each over its own window — 14 days before the date that query last answered (`_vigilancia/cursores.json`; late listing / indexing) — paging each query up to 500 results (a capped one has its window split in halves until each part is read whole; one still capped is reported `truncated` and keeps its window open — never counted as covered); a lost query keeps its own window open without holding the others back; it drops papers already in `Papers/` (including the published version of an ingested preprint) or offered before (a weak candidate comes back once, when it turns strong), and marks strong candidates (found by ≥ 2 facets) for triage with a stemmed word-overlap novelty prefilter per hypothesis (plus each hypothesis's three closest candidates, so a Spanish claim still meets an English abstract). The skill writes one triage line per strong candidate and records novelty threats: a model's judgement, written to the hypothesis's `## Revisión de vigencia` only with a sentence that is verbatim in the abstract (the script refuses otherwise). Never changes a status; ingests (create-project step 6) only what the researcher chose, or with `paper_ingestion: autonomo`. |
 | `kairo:repo-steward` | Administers an applied project's code repository (outside the vault): health checks against its `CONVENTIONS.md` (tests, lint, types, CI, dependencies) → `_repo-health.md`; the code↔science trace from `Motivated-By:` commit trailers (`trace_code.py` → `_codigo-ciencia.md`); reviews against the project's goals; ADR proposals. Never pushes, never creates a remote. |
 
 ### Subagents
@@ -476,6 +479,19 @@ against the frozen preregistration and the trace. A `crítico` finding blocks th
 transition and sets `needs_human_review: true` on the hypothesis; it never
 changes `status` (`update-confidence` remains the only writer). Without
 `--apply` it is a dry run, for auditing past experiments.
+
+---
+
+## What leaves your machine
+
+Everything a skill reads goes to the Claude model you run it with. Beyond
+that, the literature search, watch, ingestion and citation checks send their
+**queries** to the public APIs (arXiv, Semantic Scholar, OpenAlex, Crossref,
+OpenReview): the facet terms are written from your project's purpose, so they
+say what you work on, though never a note's text. Paper identifiers (DOI,
+arXiv id, title) go to the same services when a paper is ingested or
+checked. `send: never` notes are never looked up. The second critic (v2,
+opt-in) sends a hypothesis's claim to DeepInfra — see its section below.
 
 ---
 
