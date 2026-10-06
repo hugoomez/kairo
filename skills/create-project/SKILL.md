@@ -143,8 +143,9 @@ similarity cutoff (default ≈ 0.7 — tune, don't dump the whole list).
 
 Invoke the **`literature-search`** skill with its run directory at
 `Projects/<slug>/_busquedas/<YYYY-MM-DD>/` (lit-watch later re-runs that plan).
-Input = **Propósito** + **Vocabulario conocido** + **Papers semilla** (seed
-keys for the snowball) + the **`Alcance: Fuera`** clauses verbatim (they go
+Input = **Propósito** + **Vocabulario conocido** + **Papers semilla** (passed
+to the snowball as `--seeds arXiv:<id> | DOI:<doi>`, whether or not the search
+found them — seeds are usually older than the window) + the **`Alcance: Fuera`** clauses verbatim (they go
 into the plan's `scope_out`, so scope exclusions stay separate from low
 relevance) + any recency the brief states (the plan's `from`).
 

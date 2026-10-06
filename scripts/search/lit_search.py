@@ -3,7 +3,8 @@
 paged, deduplicated and counted by this script, never by a model.
 
     lit_search.py run        --plan plan.json --out <run dir> [--vault <vault>]
-    lit_search.py snowball   --run <run dir> --keys K1 [K2 …] [--direction both|references|citations]
+    lit_search.py snowball   --run <run dir> [--keys K1 …] [--seeds arXiv:<id>|DOI:<doi> …]
+                             [--direction both|references|citations]
                              [--vault <vault>]
     lit_search.py retraction --run <run dir> [--mailto you@example.org] [--keys K1 …]
     lit_search.py screen     --run <run dir> --decisions decisions.json [--screened-by <model id>]
@@ -767,21 +768,60 @@ def _snowball_pages(run: Path, q: dict, pid: str, rel: str, fetch: Fetch) -> lis
     return items
 
 
-def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault: Path | None = None) -> dict:
+def seed_id(seed: str) -> str:
+    """`arXiv:<id>` or `DOI:<doi>` → the Semantic Scholar paper id, normalised."""
+    m = re.fullmatch(r"\s*(arxiv|doi):\s*(\S+)\s*", seed or "", re.I)
+    kind, val = (m.group(1).lower(), m.group(2)) if m else ("", "")
+    aid = retraction.normalize_arxiv(val) if kind == "arxiv" else None
+    if aid and re.fullmatch(r"\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7}", aid):
+        return "arXiv:" + aid
+    doi = retraction.normalize_doi(val) if kind == "doi" else None
+    if doi and re.fullmatch(r"10\.\d{4,9}/\S+", doi):
+        return "DOI:" + doi
+    raise Refused(f"seed {seed!r}: give it as arXiv:<id> or DOI:<doi>")
+
+
+def _prev_owner(cands: list[dict]) -> dict[str, str]:
+    """Every identifier of an existing candidate → its key, so a candidate the
+    snowball finds again keeps its key (and its decisions-to-be) when the new
+    record brings one more identifier."""
+    own: dict[str, str] = {}
+    for c in cands:
+        ids = [f"doi:{d}" for d in [c.get("doi")] + list((c.get("other_ids") or {}).get("doi") or []) if d]
+        ids += [f"arxiv:{a.lower()}" for a in [c.get("arxiv")] + list((c.get("other_ids") or {}).get("arxiv") or [])
+                if a]
+        for i in ids:
+            own.setdefault(i, c["key"])
+    return own
+
+
+def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault: Path | None = None,
+                 seeds: list[str] | None = None) -> dict:
+    """Snowball from candidates (`keys`) and/or from seed papers given by id
+    (`seeds`), which need not be candidates: a seed older than the window is
+    the usual root, and only its in-window neighbours are kept."""
     plan, queries, cands = load(run / "plan.json"), load(run / "queries.json"), load(run / "candidates.json")
     by_key = {c["key"]: c for c in cands}
     missing = [k for k in keys if k not in by_key]
     if missing:
         raise Refused(f"unknown candidate keys: {missing}")
-    new_records = []
+    roots: list[tuple[str, str | None, bool]] = []          # (snowball_from, S2 paper id, is a seed)
     for k in keys:
         c = by_key[k]
-        pid = f"DOI:{c['doi']}" if c.get("doi") else f"arXiv:{c['arxiv']}" if c.get("arxiv") else None
+        roots.append((k, f"DOI:{c['doi']}" if c.get("doi") else f"arXiv:{c['arxiv']}" if c.get("arxiv") else None,
+                      False))
+    roots += [(pid, pid, True) for pid in (seed_id(s) for s in seeds or [])]
+    if not roots:
+        raise Refused("give --keys and/or --seeds")
+    new_records = []
+    for k, pid, is_seed in roots:
         if not pid:
             continue
         for rel in (("references", "citations") if direction == "both" else (direction,)):
             q = {"id": f"S{len(queries) + 1:03d}", "facet": "*", "source": "s2", "pass": f"snowball-{rel}",
                  "query": f"{pid}/{rel}", "terms": [], "raw": [], "error": None, "total": None, "fetched": 0}
+            if is_seed:
+                q["seed"] = pid
             try:
                 items = _snowball_pages(run, q, pid, rel, fetch)
             except (net.HttpError, json.JSONDecodeError, ValueError) as e:
@@ -817,6 +857,12 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                         "rank": c["best_rank"], "matched": t})
     merged = dedup(old + new_records)
     prev = {c["key"]: c for c in cands}
+    owner = _prev_owner(cands)
+    for c in merged:
+        ids = [f"doi:{d}" for d in [c.get("doi")] + list((c.get("other_ids") or {}).get("doi") or []) if d]
+        ids += [f"arxiv:{a.lower()}" for a in [c.get("arxiv")] + list((c.get("other_ids") or {}).get("arxiv") or [])
+                if a]
+        c["key"] = next((owner[i] for i in ids if i in owner), c["key"])
     for c in merged:
         p = prev.get(c["key"])
         if p:
@@ -1139,7 +1185,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
     r.add_argument("--vault", type=Path)
     s = sub.add_parser("snowball")
     s.add_argument("--run", type=Path, required=True)
-    s.add_argument("--keys", nargs="+", required=True)
+    s.add_argument("--keys", nargs="+", default=[], help="candidate keys of this run")
+    s.add_argument("--seeds", nargs="+", default=[], help="seed papers by id (arXiv:<id> | DOI:<doi>), "
+                   "candidates or not — e.g. the brief's Papers semilla, older than the window")
     s.add_argument("--direction", choices=("both", "references", "citations"), default="both")
     s.add_argument("--vault", type=Path)
     rt = sub.add_parser("retraction")
@@ -1165,7 +1213,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
         if a.cmd == "run":
             out = cmd_run(a.plan, a.out, a.vault, fetch, today)
         elif a.cmd == "snowball":
-            out = cmd_snowball(a.run, a.keys, a.direction, fetch, a.vault)
+            out = cmd_snowball(a.run, a.keys, a.direction, fetch, a.vault, a.seeds)
         elif a.cmd == "retraction":
             out = cmd_retraction(a.run, a.mailto, a.keys)
         elif a.cmd == "agree":

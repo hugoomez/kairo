@@ -251,6 +251,57 @@ class Screen(Base):
 
 
 class Snowball(Base):
+    def test_a_seed_outside_the_search_is_a_snowball_root(self):
+        """Seed papers (the brief's «Papers semilla») are usually older than the
+        window, so the search never returns them: they still root the snowball,
+        and only their in-window neighbours are kept."""
+        self.run_search()
+        web = FakeWeb()
+        code, out = self.cli("snowball", "--run", str(self.run_dir), "--seeds", "arXiv:1999.00001",
+                             "DOI:10.0000/Old.Seed", "--direction", "references", web=web)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(any("/paper/arXiv:1999.00001/references" in u for u in web.urls))
+        self.assertTrue(any("/paper/DOI:10.0000/old.seed/references" in u for u in web.urls))
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        snow = next(c for c in cands if c.get("doi") == "10.0000/snow")
+        self.assertTrue(snow["snowball"])
+        self.assertNotIn("1999.00001", [c.get("arxiv") for c in cands])     # the seed itself is not a candidate
+        qs = json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+        self.assertEqual({q["seed"] for q in qs if q["pass"].startswith("snowball")},
+                         {"arXiv:1999.00001", "DOI:10.0000/old.seed"})
+
+    def test_a_malformed_seed_is_refused(self):
+        self.run_search()
+        for bad in ("Panteleev 2021", "arXiv:not-an-id", "DOI:nonsense"):
+            code, out = self.cli("snowball", "--run", str(self.run_dir), "--seeds", bad)
+            self.assertEqual(code, 2, (bad, out))
+            self.assertIn("seed", out["refused"])
+
+    def test_a_search_candidate_rediscovered_by_the_snowball_keeps_its_key_and_provenance(self):
+        class SameAgain(FakeWeb):
+            def __call__(self, url, headers):
+                if "/citations" in url or "/references" in url:
+                    self.urls.append(url)
+                    return json.dumps({"data": [{"citingPaper": {
+                        "paperId": "s5", "title": "Toy code paper number 5 with toy decoder",
+                        "abstract": "We study a toy code and a toy decoder.", "year": 2030,
+                        "publicationDate": "2030-05-01",
+                        "externalIds": {"ArXiv": "0000.00005", "DOI": "10.0000/pub.5"}, "authors": []}}]}).encode()
+                return super().__call__(url, headers)
+        web = SameAgain()
+        self.run_search(web)
+        before = next(c for c in json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+                      if c.get("arxiv") == "0000.00005")
+        code, out = self.cli("snowball", "--run", str(self.run_dir), "--keys", before["key"],
+                             "--direction", "citations", web=web)
+        self.assertEqual((code, out["added"]), (0, 0), out)
+        after = next(c for c in json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+                     if c.get("arxiv") == "0000.00005")
+        self.assertEqual(after["key"], before["key"])
+        self.assertNotIn("snowball", after)
+        self.assertTrue(set(before["queries"]) < set(after["queries"]))
+        self.assertEqual(after["doi"], "10.0000/pub.5")
+
     def test_snowball_adds_multi_facet_neighbours_and_invalidates_retraction(self):
         self.run_search()
         self.cli("retraction", "--run", str(self.run_dir))

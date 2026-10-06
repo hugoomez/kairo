@@ -136,11 +136,20 @@ the researcher now that a free `SEMANTIC_SCHOLAR_API_KEY` removes it (see
 ### 3. Snowball (citation graph)
 
 Read the strongest candidates (`lit_search.py show --run <run dir>` prints the
-compact list with abstracts) and snowball from them plus any seed papers:
+compact list with abstracts) and snowball from them **and from every seed
+paper** the caller gave (create-project's *Papers semilla*):
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" snowball --run <run dir> --keys <key> [<key> …] --vault <vault>
+python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" snowball --run <run dir> --keys <key> [<key> …]   --seeds arXiv:<id> DOI:<doi> … --vault <vault>
 ```
+
+A seed does not have to be a candidate: the foundational papers of a field are
+usually older than the window, so the search never returns them, yet their
+citations inside the window are exactly the recent work that builds on them.
+Give each seed as `arXiv:<id>` or `DOI:<doi>` (look a title up first with
+`scripts/papers/paper_card.py --title`); the seed itself is not added as a
+candidate (ingest it directly if the researcher wants it in the vault), and its
+queries carry `seed` in `queries.json`.
 
 It pages Semantic Scholar references and citations of each key (up to 2000
 per direction; more is reported as truncated) and keeps neighbours whose
