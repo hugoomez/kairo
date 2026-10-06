@@ -226,16 +226,26 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/sample_size.py \
     --p1 <baseline> --p2 <smallest meaningful> --alpha <alpha> --power <power> --json
 ```
 
-(or `--h <h>` if the effect is given directly, e.g. for a design that isn't
-naturally two proportions). Take `n_per_group` / `n_total` verbatim — this
+(or `--h <h>` if the effect is given directly). For a **continuous** metric
+(`metric_kind: continuous`, below) give the SESOI as Cohen's `d` — the
+smallest meaningful difference divided by the expected SD across seeds, the
+SD taken from a pilot, a rung or the cited paper and named — with
+`--d <d>` (add `--paired` when both arms run on the same seeds: N is then
+pairs of seeds). Take `n_per_group` / `n_total` verbatim — this
 becomes the stopping rule's fixed N in step 3b, replacing a
 domain-judgement-chosen figure. Record the exact command, its output, and the
 SESOI/alpha/power inputs in `## Plan de análisis` (step 3b).
 
-**c. Analysis plan.** Ask the researcher: `frequentist` (the existing
-`two_proportion_test.py` mechanical test — default) or `bayesian` (a Bayes
-factor via `scripts/analysis/bayes_factor_proportions.py`). Set
-`analysis_plan: frequentist` or `analysis_plan: bayesian` in frontmatter.
+**c. Metric kind and analysis plan.** First the kind of primary metric —
+`metric_kind: proportion` (successes out of trials) or `metric_kind:
+continuous` (one value per seed or run: accuracy, loss, throughput, time to
+solution, speedup). Then ask the researcher: `frequentist` (default) or
+`bayesian`. Set both fields in frontmatter. The script each pair runs:
+
+| `analysis_plan` | `proportion` | `continuous` |
+|---|---|---|
+| `frequentist` | `two_proportion_test.py` | `mean_difference.py` — Welch's t, `--paired` when both arms share seeds, `--log` for a ratio (speedup, throughput, time: thresholds then are ratios, e.g. `T_apoyo` 1.10 = 10 % better) |
+| `bayesian` | `bayes_factor_proportions.py` | **none** — say so and use `frequentist`; never freeze a plan no script can apply |
 
 - **`frequentist`:** step 3b states alpha and the min/floor effect thresholds,
   as today.
@@ -638,6 +648,8 @@ disclosed as such when results are reported.
   `frequentist` mechanical test, run by `run-experiment` step 5.
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py` — the
   `bayesian` mechanical test, run by `run-experiment` step 5.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/mean_difference.py` — the
+  `frequentist` test for `metric_kind: continuous` (step 1c).
 - `paper-to-tool` — builds the validated `Tools/P-XXXX/<method>` tools that
   step 3f uses or offers; `TOOL.md`'s `## Especificación exacta` is what
   step 3f copies into `## Variables`.

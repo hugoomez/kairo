@@ -22,7 +22,8 @@ throttle, so every citation script talks to public APIs the same way:
     (polite pool), OpenAlex 0.1 s (10 rps). The spacing holds across
     processes: each host's last request time is shared through
     `~/.kairo/throttle/` (`KAIRO_THROTTLE_DIR`), under a lock file; if that
-    place cannot be used, the spacing falls back to this process alone.
+    place cannot be used, the spacing falls back to this process alone, and if
+    the lock stays busy past its deadline the request waits the full spacing.
 
 Secrets: `redact()` strips `api_key=` values from any URL before it is put in
 an error message or log line. Never print a raw request URL that may carry a
@@ -45,7 +46,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "1.1.0"   # 1.1.0: per-host spacing shared across processes
+__version__ = "1.2.0"   # 1.2.0: a busy shared lock waits the full spacing; 1.1.0: shared across processes
 
 PROJECT_URL = "https://github.com/hugoomez/kairo"
 
@@ -113,9 +114,13 @@ def redact(text: str) -> str:
     return _KEY_RE.sub(r"\1***", text)
 
 
+BUSY = "busy"                      # the shared lock stayed held past its deadline
+
+
 @contextlib.contextmanager
 def _host_lock(host: str):
-    """Yields the host's shared state file, or None when it cannot be used."""
+    """Yields the host's shared state file; None when the shared place cannot be
+    used at all; BUSY when another process kept the lock past the deadline."""
     try:
         SHARED_DIR.mkdir(parents=True, exist_ok=True)
     except (OSError, AttributeError):
@@ -135,7 +140,7 @@ def _host_lock(host: str):
             except OSError:
                 pass
             if time.monotonic() > deadline:
-                yield None                          # never block a run on a stuck lock
+                yield BUSY                          # never block a run on a stuck lock …
                 return
             _poll(0.05)
         except OSError:
@@ -160,6 +165,9 @@ def _throttle(url: str) -> None:
         last = _last_call.get(host)
         if last is not None:
             wait = spacing - (monotonic() - last)
+        if state == BUSY:
+            # … but never skip the spacing: another process may have called just now
+            wait, state = spacing, None
         if state is not None:
             try:
                 other = float(state.read_text(encoding="utf-8").strip())

@@ -158,6 +158,12 @@ file = "agents/second-critic.md"
 tier = "sonnet"
 label = "Envoltorio del segundo crítico (el juicio lo da DeepSeek en DeepInfra)"
 
+[tasks.corpus_reader]
+kind = "agent"
+file = "agents/corpus-reader.md"
+tier = "sonnet"
+label = "Lector del corpus (ask-corpus): lee los papers y redacta citas literales, sin shell ni red"
+
 [tasks.screener]
 kind = "agent"
 file = "agents/screener.md"

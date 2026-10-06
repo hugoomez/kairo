@@ -68,7 +68,11 @@ ESTIMATORS = {
     "trimmed_mean": ("trimmed mean", "media recortada"),
     "max": ("maximum", "máximo", "best"),
 }
-ANALYSIS_SCRIPTS = {"frequentist": "two_proportion_test", "bayesian": "bayes_factor_proportions"}
+# (analysis_plan, metric_kind) -> the script that must have produced the result;
+# metric_kind absent = proportion (notes written before the field existed)
+ANALYSIS_SCRIPTS = {("frequentist", "proportion"): "two_proportion_test",
+                    ("bayesian", "proportion"): "bayes_factor_proportions",
+                    ("frequentist", "continuous"): "mean_difference"}
 
 
 class AuditError(Exception):
@@ -507,13 +511,19 @@ def check_metric(chk: Check, eid: str, fm: dict, body: str, analysis, live: bool
                 chk.find("crítico", f"{eid} ## Plan de análisis",
                          f"{group}.{k} = {v} is not the frozen value", f"{group}_not_frozen")
     plan_kind = str(fm.get("analysis_plan", "")).strip()
+    metric_kind = str(fm.get("metric_kind") or "proportion").strip()
     script = str(analysis.get("script") or "")
-    if plan_kind in ANALYSIS_SCRIPTS:
-        if ANALYSIS_SCRIPTS[plan_kind] in script:
-            chk.ok(f"script {script} matches analysis_plan: {plan_kind}")
+    want = ANALYSIS_SCRIPTS.get((plan_kind, metric_kind))
+    if plan_kind in ("frequentist", "bayesian") and not want:
+        chk.find("crítico", f"{eid} analysis_plan",
+                 f"no mechanical script exists for analysis_plan: {plan_kind} with metric_kind: {metric_kind}",
+                 "no_analysis_script")
+    elif want:
+        if want in script:
+            chk.ok(f"script {script} matches analysis_plan: {plan_kind} ({metric_kind})")
         else:
             chk.find("crítico", f"{eid} analysis_plan",
-                     f"analysis_plan is {plan_kind} ({ANALYSIS_SCRIPTS[plan_kind]}.py) but the result "
+                     f"analysis_plan is {plan_kind} for a {metric_kind} metric ({want}.py) but the result "
                      f"came from {script or 'an unnamed script'}", "wrong_analysis_script")
 
 

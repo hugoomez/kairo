@@ -79,7 +79,7 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.3.0"
+TOOL = "kairo/check_sota@1.4.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
@@ -113,6 +113,9 @@ def numbers(sentence: str) -> list[str]:
     s = re.sub(r"\b(?:H|E|C|PROJ|ADR|F)-\d+\b", " ", s)
     s = re.sub(r"\d{4}-\d{2}-\d{2}", " ", s)
     s = re.sub(r"§\s*[\w.]+", " ", s)
+    # a label is not a figure: "Figura 12", "Table 3", "Eq. (4)" (e.g. «en figura: Figura 12»)
+    s = re.sub(r"\b(?:Tablas?|Tables?|Figuras?|Figures?|Figs?\.?|Ec\.?|Eqs?\.?|Ecuaci[oó]n|Equation|"
+               r"Ap[eé]ndice|Appendix|Secci[oó]n|Section|Sec\.)\s*\(?[A-Z]?\d+(?:\.\d+)*\)?", " ", s)
     out = []
     for m in NUMBER.finditer(s):
         tok = m.group(0).strip().rstrip(".,")
@@ -174,11 +177,34 @@ def number_in(tok: str, texts: list[str]) -> bool:
         core = re.sub(r"[^\d.]", "", MULT.sub("", tok))
         rx = re.compile(rf"(?<![\d.]){re.escape(core)}\s*(?:×|x\b|times\b|-?fold\b|veces\b)", re.IGNORECASE)
         return any(rx.search(re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)) for t in texts)
-    core = re.sub(r"[^\d.]", "", want.split("×")[0])
-    for t in texts:
-        canon = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t.replace("−", "-")).replace(" ", "").replace(" ", "")
-        if want in canon or (core and re.search(rf"(?<![\d.]){re.escape(core)}(?![\d])", canon)):
-            return True
+    core = re.sub(r"[^\d.]", "", want.split("×")[0]).strip(".")
+    pct = tok.strip().endswith("%")
+    return bool(core) and any(_figure_in(core, pct, t) for t in texts)
+
+
+# A number right after one of these is a label, not a figure: "Table 12", "Eq. (12)", "§4.2".
+_LABEL_BEFORE = re.compile(
+    r"(?:\b(?:tables?|tablas?|figures?|figuras?|figs?|sections?|secciones|sección|secs?|eqs?|ecs?|equations?|"
+    r"ecuaci[oó]n(?:es)?|appendix|ap[eé]ndices?|algorithms?|algoritmos?|theorems?|teoremas?|lemmas?|lemas?|"
+    r"definitions?|definici[oó]n|corollary|corolario|propositions?|proposici[oó]n|chapters?|cap[ií]tulos?|"
+    r"steps?|lines?|refs?)\.?|§)\s*\(?\s*$", re.IGNORECASE)
+_REF_BEFORE = re.compile(r"\[[\d,\s–-]*$")         # "[12]", "[3, 12, 15]": reference numbers
+_REF_AFTER = re.compile(r"^[\d,\s–-]*\]")
+_PCT_AFTER = re.compile(r"^\s*(?:\\?%|per\s?cent\b|por\s+ciento\b)", re.IGNORECASE)
+
+
+def _figure_in(core: str, pct: bool, text: str) -> bool:
+    """`core` as a whole number in `text` — never a digit run inside another number,
+    never a label or reference number; with `pct`, followed by a percent sign or word."""
+    t = text.replace("−", "-")
+    t = re.sub(r"(?<=\d)[,\u2009\u202f](?=\d{3}(?!\d))", "", t)       # thousands separators
+    for m in re.finditer(rf"(?<![\d.]){re.escape(core)}(?!\d|\.\d)", t):
+        before, after = t[max(0, m.start() - 30):m.start()], t[m.end():m.end() + 20]
+        if _LABEL_BEFORE.search(before) or (_REF_BEFORE.search(before) and _REF_AFTER.match(after)):
+            continue
+        if pct and not _PCT_AFTER.match(after):
+            continue
+        return True
     return False
 
 

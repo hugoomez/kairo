@@ -5,7 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from sample_size import cohens_h, required_n
+import sample_size as ss  # noqa: E402
+from sample_size import cohens_h, required_n  # noqa: E402
 
 
 class TestCohensH(unittest.TestCase):
@@ -55,6 +56,21 @@ class TestRequiredN(unittest.TestCase):
     def test_rejects_bad_power(self):
         with self.assertRaises(ValueError):
             required_n(0.2, 0.05, 1.0)
+
+
+class ContinuousMetric(unittest.TestCase):
+    def test_cohen_1988_table_2_4_1(self):
+        self.assertEqual(ss.required_n_d(0.5, 0.05, 0.80)["n_per_group"], 64)
+        self.assertEqual(ss.required_n_d(0.8, 0.05, 0.80)["n_per_group"], 26)
+        self.assertEqual(ss.required_n_d(0.2, 0.05, 0.80)["n_per_group"], 394)
+
+    def test_paired_counts_pairs(self):
+        r = ss.required_n_d(0.5, 0.05, 0.80, paired=True)
+        self.assertEqual((r["n_pairs"], r["n_total"]), (34, 34))
+
+    def test_rejects_zero_d(self):
+        with self.assertRaises(ValueError):
+            ss.required_n_d(0.0, 0.05, 0.8)
 
 
 if __name__ == "__main__":

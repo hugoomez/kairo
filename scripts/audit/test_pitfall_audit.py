@@ -364,6 +364,27 @@ class Metric(Base):
         rep = self.run_audit()
         self.assertIn("wrong_analysis_script", self.kinds(rep, "metric", "crítico"))
 
+    def test_a_continuous_metric_is_analysed_by_mean_difference(self):
+        """metric_kind: continuous (accuracy per seed, throughput, speedup) is the
+        frequentist plan's mean_difference.py; the proportion test there is the wrong one."""
+        self.exp.write_text(EXP.replace("analysis_plan: frequentist", "analysis_plan: frequentist\nmetric_kind: continuous"),
+                            encoding="utf-8", newline="\n")
+        self.fill_trace()
+        self.write_json(self.exp_dir / "trazas" / "E-0901.analysis.json",
+                        analysis_record(script="mean_difference.py@1.0.0"))
+        self.assertNotIn("wrong_analysis_script", self.kinds(self.run_audit(), "metric"))
+        self.write_json(self.exp_dir / "trazas" / "E-0901.analysis.json",
+                        analysis_record(script="two_proportion_test.py@1.0.0"))
+        self.assertIn("wrong_analysis_script", self.kinds(self.run_audit(), "metric", "crítico"))
+
+    def test_a_bayesian_plan_for_a_continuous_metric_has_no_script(self):
+        self.exp.write_text(EXP.replace("analysis_plan: frequentist", "analysis_plan: bayesian\nmetric_kind: continuous"),
+                            encoding="utf-8", newline="\n")
+        self.fill_trace()
+        self.write_json(self.exp_dir / "trazas" / "E-0901.analysis.json",
+                        analysis_record(script="bayes_factor_proportions.py@1.0.0"))
+        self.assertIn("no_analysis_script", self.kinds(self.run_audit(), "metric", "crítico"))
+
     def test_reconstructed_record_blocks_only_a_live_transition(self):
         self.fill_trace()
         self.write_json(self.exp_dir / "trazas" / "E-0901.analysis.json",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Literature watch: what is new since the last watch, and does it threaten a hypothesis?
 
-    lit_watch.py delta   --vault <vault> --project-dir <dir> [--since YYYY-MM-DD] [--top 10]
+    lit_watch.py delta   --vault <vault> --project-dir <dir> [--since YYYY-MM-DD] [--top 10] [--no-citations]
     lit_watch.py triage  --project-dir <dir> --run <file> --key <k> --why "<one line>"
     lit_watch.py threat  --vault <vault> --project-dir <dir> --run <file> --key <k>
                          --hypothesis H-XXXX --sentence "<verbatim from the abstract>"
@@ -15,27 +15,47 @@
 
 `delta` (mechanical, network):
   - Re-runs the project's own recorded queries, restricted to the window:
-    the latest `_busquedas/<run>/plan.json` written by lit_search.py (every
-    source it used — arXiv, Semantic Scholar, OpenAlex, Crossref, DBLP — and
-    its cross pass; no anchor pass),
+    the latest `_busquedas/<run>/plan.json` written by lit_search.py (the
+    sources it used that can be limited to a date window — arXiv, Semantic
+    Scholar, OpenAlex, Crossref; OpenReview cannot and is left out, said so in
+    `sources_left_out` — and its cross pass; no anchor pass),
     or, for projects searched before it existed, every row of the
     "Consultas (verbatim)" tables in `Estado-del-arte.md` (a `|` escaped or
     inside `code` stays in its cell; Semantic Scholar OR-groups become one
     plain-keyword query per alternative; anchor rows are not re-run).
-  - Each query has its own window, kept in `_vigilancia/cursores.json`: it
-    starts OVERLAP_DAYS before the date that query last answered (before
-    `last_watch` for a query never run) — arXiv lists, and Semantic Scholar /
-    OpenAlex index, papers days to weeks late. `--since` sets every window
-    exactly. Every query is paged up to MAX_RESULTS; one with more matches has
-    its window split in halves (up to MAX_SPLIT_DEPTH times, plan queries only)
-    until each part is read whole. A part still capped is `truncated`: reported,
-    and its window stays open. `SEMANTIC_SCHOLAR_API_KEY` is used when set.
+  - Citations (unless `--no-citations`): the works OpenAlex lists as citing
+    the project's own papers (their `openalex_id`) or the seeds its search
+    snowballed from, published in the window — one `cites:W1|W2|…` query per
+    group of roots. Each such candidate carries `cita_a` (the P-ids / seeds it
+    cites). A seed is resolved to its OpenAlex work (arXiv DOI, else the
+    journal DOI its arXiv record declares) and remembered in
+    `_vigilancia/raices-citas.json`; an unknown one is asked again after 30
+    days. `send: never` papers are never roots.
+  - Each query (and each citation root) has its own window, kept in
+    `_vigilancia/cursores.json`: it starts a source-specific overlap before the
+    date that query last answered (before `last_watch` for a query never run):
+    arXiv 14 days (it windows by submission date) and Crossref 14 days (a
+    watch windows it by DOI registration date, so proceedings deposited weeks
+    after their publication date are still caught); OpenAlex, Semantic Scholar
+    and citations 60 days, because they can only filter by publication date
+    and index late (OVERLAP_BY_SOURCE). `--since` sets every window exactly.
+  - Every query is paged up to MAX_RESULTS. An arXiv or OpenAlex query with
+    more matches has its window split in halves (up to MAX_SPLIT_DEPTH times,
+    plan queries only) until each part is read whole; a part still capped is
+    `truncated`: reported, and its window stays open. Semantic Scholar and
+    Crossref rank keyword matches by relevance and count loose matches in
+    their totals: their top results are read and they are never `truncated`.
+  - A candidate that came without an abstract gets one from OpenAlex by DOI
+    (lit_search.enrich_abstracts; recorded under `abstract_lookups`).
+    `SEMANTIC_SCHOLAR_API_KEY` / `OPENALEX_API_KEY` are used when set.
   - Drops papers already in `Papers/` (arXiv id, DOI or the published DOI of
     an ingested preprint, normalised title) and papers offered by an earlier
     watch of this project.
   - A candidate is *strong* when it reaches two or more facets — the facets
     whose queries found it, plus (with a plan) the facet terms in its title or
-    abstract, by lit_search's rule (or the project has one facet). The top `--top` strong candidates are marked for
+    abstract, by lit_search's rule (or the project has one facet) — or when it
+    cites the project's papers and shows one facet, or cites two of them.
+    The top `--top` strong candidates are marked for
     triage. A strong candidate left past `--top` is the backlog: the next
     watch carries it (`pendiente_desde`: the run that first left it), first in
     line and whether or not the new window finds it again, until it is triaged
@@ -118,7 +138,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.7.0"
+TOOL = "kairo/lit_watch@1.8.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -130,6 +150,13 @@ DEFAULT_LOOKBACK_DAYS = 30
 # it days to weeks later: each watch re-reads this much before the last one.
 # Papers already offered are dropped, so the overlap never repeats a candidate.
 OVERLAP_DAYS = 14
+# Per source, how far before its last answer a query re-reads. arXiv windows by
+# submission date and Crossref (in a watch) by DOI registration date, so two weeks
+# of listing lag is enough. OpenAlex and Semantic Scholar can only filter by
+# publication date (OpenAlex's creation-date filter is a paid feature, checked
+# 2026-10-06) and index papers weeks after that date: they re-read two months.
+OVERLAP_BY_SOURCE = {"arxiv": 14, "crossref": 14, "openalex": 60, "s2": 60, "citas": 60}
+CITES_CHUNK = 50           # roots per OpenAlex `cites:` query (its OR filter takes up to 100)
 MAX_SPLIT_DEPTH = 3        # a capped window is halved up to 3 times (at most 8 parts)
 NOVELTY_MIN_SCORE = 0.25
 NOVELTY_MIN_SHARED = 3
@@ -376,8 +403,10 @@ def s2_delta(q: str, since: date, fetch: Fetch, log: dict | None = None) -> list
             break
         offset += PAGE
     if log is not None:
+        # relevance-ranked keyword search: its total counts loose matches, not coverage
         log["total"] = max(total, len(items))
-        log["truncated"] = total > len(items)
+        log["truncated"] = False
+        log["ranked"] = True
     out = []
     for p in items:
         ext = p.get("externalIds") or {}
@@ -515,7 +544,7 @@ def query_start(sig: str, cursors: dict[str, str], base: date, explicit: bool) -
         return base
     cur = cursors.get(sig)
     last = date.fromisoformat(cur) if cur and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cur) else base
-    return last - timedelta(days=OVERLAP_DAYS)
+    return last - timedelta(days=OVERLAP_BY_SOURCE.get(sig.split("|", 1)[0], OVERLAP_DAYS))
 
 
 # Sources whose search can neither filter nor sort by date: a window would read
@@ -527,7 +556,7 @@ NOT_WINDOWABLE = {"openreview": "su búsqueda no filtra ni ordena por fecha: una
 def _watch_plan(plan: dict, start: date, today: date) -> dict:
     srcs = [x for x in plan.get("sources") or [] if x not in NOT_WINDOWABLE]
     return {**plan, "sources": srcs, "from": start.isoformat(), "to": today.isoformat(), "anchors": 0,
-            "per_query": MAX_RESULTS}
+            "per_query": MAX_RESULTS, "window_by": "indexed", "pub_floor": plan.get("from")}
 
 
 def structured_signatures(plan: dict, today: date) -> list[str]:
@@ -581,7 +610,183 @@ def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: dat
     return results, log, {f["id"] for f in plan["facets"]}
 
 
-def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date) -> dict:
+# --------------------------------------------------------------------------
+# Citations: new papers that cite the project's own papers and seeds
+# --------------------------------------------------------------------------
+
+ROOTS_FILE = "raices-citas.json"
+SEED_RETRY_DAYS = 30       # a seed OpenAlex did not know is asked again after this
+
+
+def _openalex_work(doi: str, fetch: Fetch) -> str | None:
+    """The OpenAlex work id for a DOI, or None when OpenAlex has none (404)."""
+    try:
+        w = json.loads(fetch("https://api.openalex.org/works/doi:" + urllib.parse.quote(doi, safe="/")
+                             + _oa_key("?"), {}))
+    except net.HttpError as e:
+        if e.not_found:
+            return None
+        raise
+    return (w.get("id") or "").rsplit("/", 1)[-1] or None
+
+
+def _arxiv_declared_doi(aid: str, fetch: Fetch) -> str | None:
+    """The journal DOI an arXiv record declares (`arxiv:doi`), if any."""
+    root = ET.fromstring(fetch("https://export.arxiv.org/api/query?id_list=" + urllib.parse.quote(aid), {}))
+    for e in root.findall(f"{ATOM}entry"):
+        d = (e.findtext("{http://arxiv.org/schemas/atom}doi") or "").strip()
+        if d:
+            return d.lower()
+    return None
+
+
+def resolve_seed(seed: str, fetch: Fetch) -> str | None:
+    """A seed (`arXiv:<id>` / `DOI:<doi>`) → its OpenAlex work. OpenAlex often keeps a
+    preprint only under its published version and answers 404 for the arXiv DOI:
+    the DOI the arXiv record declares is tried next."""
+    kind, val = seed.split(":", 1)
+    if kind.lower() == "doi":
+        return _openalex_work(val, fetch)
+    wid = _openalex_work(f"10.48550/arXiv.{val}", fetch)
+    if wid:
+        return wid
+    journal = _arxiv_declared_doi(val, fetch)
+    return _openalex_work(journal, fetch) if journal else None
+
+
+def _seeds(pdir: Path, plan_run: str | None) -> list[str]:
+    """The seed papers the project's literature search snowballed from (`arXiv:<id>`, `DOI:<doi>`)."""
+    if not plan_run:
+        return []
+    try:
+        qs = json.loads((pdir / plan_run / "queries.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return sorted({q["seed"] for q in qs if isinstance(q, dict) and q.get("seed")})
+
+
+def _oa_key(sep: str) -> str:
+    k = os.environ.get("OPENALEX_API_KEY")
+    return f"{sep}api_key={urllib.parse.quote(k)}" if k else ""
+
+
+def citation_roots(vault: Path, pdir: Path, plan_run: str | None, fetch: Fetch,
+                   errors: list[str], today: date | None = None) -> dict[str, str]:
+    """OpenAlex work id → what it is to the project (`P-XXXX`, or the seed's id).
+
+    The project's ingested papers carry `openalex_id` (resolve_refs.py, at
+    ingestion). A seed is resolved through OpenAlex (its arXiv DOI, else the
+    journal DOI its arXiv record declares) and remembered in
+    `_vigilancia/raices-citas.json`; one OpenAlex does not know is asked again
+    after SEED_RETRY_DAYS. `send: never` papers are never sent."""
+    today = today or date.today()
+    proj = (hub_field(pdir, "id") or "").strip()
+    roots: dict[str, str] = {}
+    for f in sorted((vault / "Papers").glob("P-*.md")):
+        if is_model_notes(f.resolve()) or is_flagged(f):
+            continue
+        text, _ = read_text(f)
+        parts = split_frontmatter(text)
+        if not parts:
+            continue
+        fm = parts[0]
+        wid = (fm_get(fm, "openalex_id") or "").strip().strip("\"'")
+        if proj and proj in re.findall(r"PROJ-[\w-]+", fm_get(fm, "projects") or "")                 and re.fullmatch(r"W\d+", wid):
+            roots[wid] = fm_get(fm, "id") or f.stem.split(" ")[0]
+    cache_f = pdir / "_vigilancia" / ROOTS_FILE
+    try:
+        cache = json.loads(cache_f.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    changed = False
+    for seed in _seeds(pdir, plan_run):
+        entry = cache.get(seed)
+        if entry is not None and not isinstance(entry, dict):
+            entry = {"w": entry, "checked": None}          # written before the date was kept
+        stale = entry is None or (not entry.get("w") and (
+            not entry.get("checked")
+            or (today - date.fromisoformat(entry["checked"])).days >= SEED_RETRY_DAYS))
+        if stale:
+            try:
+                entry = {"w": resolve_seed(seed, fetch), "checked": today.isoformat()}
+            except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as e:
+                errors.append(f"semilla {seed}: {net.redact(str(e))[:120]}")
+                continue
+            cache[seed] = entry
+            changed = True
+        if entry.get("w"):
+            roots.setdefault(entry["w"], seed)
+    if changed:
+        cache_f.parent.mkdir(exist_ok=True)
+        cache_f.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8", newline="\n")
+    return roots
+
+
+def citation_delta(roots: dict[str, str], starts: dict[str, date], today: date, pdir: Path,
+                   fetch: Fetch) -> tuple[list, list[dict]]:
+    """The works citing any root, published in each root's window: one OpenAlex
+    `cites:W1|W2|…` query per group of roots sharing a start, cursor-paged up to
+    MAX_RESULTS (more keeps those roots' windows open). Each citing work records
+    which roots it cites (`cita_a`)."""
+    import lit_search
+    raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
+    raw.mkdir(parents=True, exist_ok=True)
+    by_start: dict[date, list[str]] = {}
+    for wid in sorted(roots):
+        by_start.setdefault(starts[f"citas|{wid}"], []).append(wid)
+    results, log = [], []
+    n = 0
+    for start, wids in sorted(by_start.items()):
+        for i in range(0, len(wids), CITES_CHUNK):
+            chunk = wids[i:i + CITES_CHUNK]
+            n += 1
+            entry = {"id": f"C{n:03d}", "facet": None, "source": "openalex", "pass": "citas",
+                     "query": "cites:" + "|".join(chunk), "signatures": [f"citas|{w}" for w in chunk],
+                     "signature": f"citas|{chunk[0]}", "from": start.isoformat(), "hits": None, "total": None,
+                     "truncated": False, "error": None, "raw": []}
+            recs: list[dict] = []
+            cursor = "*"
+            try:
+                while cursor:
+                    url = ("https://api.openalex.org/works?filter=" + urllib.parse.quote(
+                        f"cites:{'|'.join(chunk)},from_publication_date:{start.isoformat()},"
+                        f"to_publication_date:{today.isoformat()}", safe=":,|")
+                        + f"&per-page=200&cursor={urllib.parse.quote(cursor)}"
+                        + f"&select={lit_search.OA_SELECT},referenced_works" + _oa_key("&"))
+                    data = fetch(url, {})
+                    name = f"{entry['id']}-{len(entry['raw']) + 1}.json"
+                    (raw / name).write_bytes(data)
+                    entry["raw"].append({"file": name, "url": net.redact(url),
+                                         "sha256": hashlib.sha256(data).hexdigest()})
+                    page = json.loads(data)
+                    got, total = lit_search.parse_openalex(data)
+                    entry["total"] = total
+                    for r, w in zip(got, page.get("results") or []):
+                        refs = {x.rsplit("/", 1)[-1] for x in w.get("referenced_works") or []}
+                        r["cita_a"] = sorted(roots[x] for x in refs & set(chunk))
+                        recs.append(r)
+                    cursor = (page.get("meta") or {}).get("next_cursor") if got else None
+                    if len(recs) >= MAX_RESULTS and cursor:
+                        entry["truncated"] = True
+                        break
+            except (net.HttpError, json.JSONDecodeError, ValueError) as e:
+                entry["error"] = net.redact(str(e))[:200]
+                recs = []
+            entry["hits"] = len(recs) if not entry["error"] else None
+            log.append(entry)
+            if recs:
+                results.append(({"facet": None, "source": "openalex-citas"}, [{
+                    "arxiv": r.get("arxiv"), "doi": r.get("doi"), "title": r["title"],
+                    "abstract": r.get("abstract") or "", "authors": (r.get("authors") or [])[:8],
+                    "date": r.get("date") or (str(r["year"]) if r.get("year") else None), "url": r.get("url"),
+                    "venue": r.get("venue"), "citations": r.get("citations"), "cita_a": r["cita_a"]}
+                    for r in recs]))
+    return results, log
+
+
+def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
+          citations: bool = True) -> dict:
     if not hub_path(pdir).is_file():
         raise Refused(f"{pdir} is not a project folder (no _hub.md)")
     plan, plan_run = structured_plan(pdir)
@@ -598,7 +803,10 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     if not sigs:
         raise Refused("no query of the plan can be watched: its sources ("
                       + ", ".join((plan or {}).get("sources") or []) + ") cannot be limited to a date window")
+    root_errors: list[str] = []
+    roots = citation_roots(vault, pdir, plan_run, fetch, root_errors, today) if citations else {}
     starts = {sig: query_start(sig, cursors, since, explicit) for sig in sigs}
+    starts.update({f"citas|{w}": query_start(f"citas|{w}", cursors, since, explicit) for w in roots})
     query_from = min(starts.values())
     arx, dois, titles = known_papers(vault)
     seen_before, backlog = earlier_keys(pdir)
@@ -622,6 +830,10 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
                 entry["error"] = net.redact(str(exc))[:200]
             log.append(entry)
+    if roots:
+        cit_results, cit_log = citation_delta(roots, starts, today, pdir, fetch)
+        results += cit_results
+        log += cit_log
     for q, got in results:
         for c in got:
             if not c["title"]:
@@ -634,12 +846,19 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             for field in ("abstract", "doi", "arxiv", "url", "citations"):
                 if not cur.get(field) and c.get(field):
                     cur[field] = c[field]
+            if c.get("cita_a"):
+                cur["cita_a"] = sorted(set(cur.get("cita_a") or []) | set(c["cita_a"]))
             if q["facet"] and q["facet"] != "*" and q["facet"] not in cur["facets"]:
                 cur["facets"].append(q["facet"])
             if q["source"] not in cur["sources"]:
                 cur["sources"].append(q["source"])
+    import lit_search
+    enrich_log: list[dict] = []
+    raw_dir = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    lit_search.enrich_abstracts([c for c in merged.values() if not (c.get("arxiv") and c["arxiv"].lower() in arx)
+                                 and not (c.get("doi") and c["doi"] in dois)], plan or {}, raw_dir, enrich_log, fetch)
     if plan:
-        import lit_search
         for cur in merged.values():                    # facet terms its own text shows count too
             for fid in lit_search.facet_matches(cur, plan):
                 if fid not in cur["facets"]:
@@ -653,7 +872,10 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     for c in merged.values():
         if in_vault(c):
             continue
-        c["strong"] = len(c["facets"]) >= 2 or len(facets_all) == 1
+        # strong: two facets; or it cites the project's papers and shows a facet (or cites two of them)
+        cites = c.get("cita_a") or []
+        c["strong"] = len(c["facets"]) >= 2 or len(facets_all) == 1 or \
+            bool(cites and (c["facets"] or len(cites) >= 2))
         if c["key"] in seen_before:
             # offered before: a weak candidate that is now strong comes back, once;
             # a strong one left past --top comes back until it is triaged
@@ -711,6 +933,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
            "lost": [f"{x.get('id', x['facet'])} {x['source']}: {x['error']}" for x in lost],
            "sources_left_out": [f"{x}: {NOT_WINDOWABLE[x]}" for x in (plan or {}).get("sources") or []
                                 if x in NOT_WINDOWABLE],
+           "citation_roots": len(roots), "citation_root_errors": root_errors, "abstract_lookups": enrich_log,
            "queries": log, "candidates": cands, "threats": []}
     out = None
     moved = False
@@ -723,16 +946,16 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         # without holding every other query back. With --since, a cursor moves only
         # when the run reached back to it (no gap is skipped).
         for x in log:
-            sig = x["signature"]
-            start = date.fromisoformat(x["from"])
-            prev = cursors.get(sig)
-            if x.get("error") or x.get("truncated"):
-                # lost, or still capped after splitting: not covered — its window stays open
-                if not prev:
-                    cursors[sig] = since.isoformat()
-                continue
-            if not explicit or not prev or start <= date.fromisoformat(prev):
-                cursors[sig] = today.isoformat()
+            for sig in x.get("signatures") or [x["signature"]]:
+                start = date.fromisoformat(x["from"])
+                prev = cursors.get(sig)
+                if x.get("error") or x.get("truncated"):
+                    # lost, or still capped after splitting: not covered — its window stays open
+                    if not prev:
+                        cursors[sig] = since.isoformat()
+                    continue
+                if not explicit or not prev or start <= date.fromisoformat(prev):
+                    cursors[sig] = today.isoformat()
         save_cursors(pdir, cursors)
         text, nl = read_text(hub_path(pdir))
         write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
@@ -748,6 +971,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             "carried": sum(1 for c in cands if c.get("pendiente_desde")),
             "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
             "novelty_candidates": sum(1 for c in cands if c["novelty"]),
+            "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
+            "citation_root_errors": root_errors,
             "suspicious": sum(1 for c in cands if c.get("sospechoso"))}
 
 
@@ -917,6 +1142,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--project-dir", required=True, type=Path)
     p.add_argument("--since", default=None)
     p.add_argument("--top", type=int, default=10)
+    p.add_argument("--no-citations", action="store_true",
+                   help="skip the pass over new papers citing the project's papers and seeds")
     for name in ("triage", "threat", "decide", "threat-decide", "check"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
@@ -949,7 +1176,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
             out = cmd_init(a.vault.resolve(), a.slug, a.plan, today or date.today())
         elif a.cmd == "delta":
             since = date.fromisoformat(a.since) if a.since else None
-            out = delta(a.vault.resolve(), a.project_dir.resolve(), since, a.top, fetch, today or date.today())
+            out = delta(a.vault.resolve(), a.project_dir.resolve(), since, a.top, fetch, today or date.today(),
+                        citations=not a.no_citations)
         else:
             a.project_dir = a.project_dir.resolve()
             run_file = a.run if a.run.is_absolute() else (a.vault or Path.cwd()) / a.run

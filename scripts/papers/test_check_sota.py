@@ -237,12 +237,50 @@ class SeniorAuditFigures(CheckSota):
         code, out = self.run_cli()
         self.assertEqual((code, out["problems"]), (0, []))
 
+    def test_a_value_only_in_a_figure_is_named_not_checked_as_a_number(self):
+        """A comparison cell for a value a paper gives only in a plot says where it is
+        («en figura: P-0101 Figura 12»); the figure's label is not a figure to check."""
+        self.write("## Tabla comparativa\n\n| paper | umbral | fuente |\n|---|---|---|\n"
+                   "| P-0101 | en figura: Figura 12 (no extraído) | P-0101 §3.2 |\n")
+        code, out = self.run_cli()
+        self.assertEqual(out["problems"], [])
+
     def test_scientific_notation_matches_whatever_way_it_is_written(self):
         self.add_paper("P-0105", "The logical error rate falls to $10^{-7}$, and to $2.5\\times 10^{-3}$ at d = 3.")
         self.write("## X\n\n- Logical error rate 1e-7, and 2.5 × 10^-3 at small distance — P-0105 §3.2\n"
                    "- A made-up rate of 3e-5 — P-0105 §3.2\n")
         code, out = self.run_cli()
         self.assertEqual([p.get("number") for p in out["problems"]], ["3e-5"])
+
+
+class NumberMatching(unittest.TestCase):
+    """A figure matches a figure: not a digit run inside another number, not a
+    table / figure / section / equation label, not a reference number."""
+
+    def test_a_decimal_never_matches_inside_another_number(self):
+        self.assertFalse(cs.number_in("1.5", ["the invented decoder reaches 11.53 on the toy task"]))
+        self.assertFalse(cs.number_in("1.5", ["version 21.5.3 of the toy library"]))
+        self.assertTrue(cs.number_in("1.5", ["a 1.5 speedup on the toy task"]))
+
+    def test_a_percentage_must_be_a_percentage(self):
+        self.assertFalse(cs.number_in("12%", ["see Table 12 for the toy results"]))
+        self.assertFalse(cs.number_in("12%", ["we use 12 toy GPUs"]))
+        for t in ("improves by 12% over the toy baseline", "12 % fewer errors", "12 percent fewer",
+                  "a 12\\% reduction", "un 12 por ciento menos"):
+            self.assertTrue(cs.number_in("12%", [t]), t)
+        self.assertTrue(cs.number_in("1,1%", ["a 1.1% gain"]))
+
+    def test_labels_and_reference_numbers_are_not_figures(self):
+        for t in ("as shown in Table 12.", "see Figure 12", "in Section 12", "Eq. (12) gives", "Fig. 12",
+                  "prior work [12] showed", "prior work [3, 12, 15] showed", "Theorem 12 holds",
+                  "Tabla 12 resume", "§12 trata"):
+            self.assertFalse(cs.number_in("12", [t]), t)
+        self.assertTrue(cs.number_in("12", ["the toy code uses 12 qubits per block"]))
+        self.assertTrue(cs.number_in("12", ["Table 3 reports 12 logical qubits"]))   # the label elsewhere is fine
+
+    def test_thousands_separators_still_match(self):
+        self.assertTrue(cs.number_in("10000", ["over 10,000 toy samples"]))
+        self.assertTrue(cs.number_in("10,000", ["over 10000 toy samples"]))
 
 
 if __name__ == "__main__":

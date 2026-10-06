@@ -123,6 +123,32 @@ class ExportBib(unittest.TestCase):
         ms = [{"authors": ["Jane Doe"], "year": "2031", "title": "Toy codes"}] * 3
         self.assertEqual(eb.keys_for(ms), ["doe2031codes", "doe2031codesa", "doe2031codesb"])
 
+    def test_a_published_version_names_the_preprint_version_its_locators_come_from(self):
+        """Kairo's locators (§4.2, Tabla 3) point at the preprint text that was ingested;
+        the entry cites the published version and says which text was read, in a field
+        bibliography styles do not print, and the report lists it."""
+        code, bib, err = self.run_cli("--only", "P-0201")
+        self.assertEqual(code, 0)
+        self.assertIn("kairoread = {arXiv:0000.22222v3}", bib)
+        self.assertNotIn("note =", bib)                                  # nothing printed in the bibliography
+        rep = json.loads(err)
+        self.assertEqual(rep["locators_from_preprint"],
+                         [{"id": "P-0201", "read": "arXiv:0000.22222v3", "cited": "10.0000/jour.9"}])
+        out = self.vault / "refs.json"
+        self.run_cli("--only", "P-0201", "--format", "csl-json", "--out", str(out))
+        item = json.loads(out.read_text(encoding="utf-8"))[0]
+        self.assertEqual(item["custom"]["kairo-read-version"], "arXiv:0000.22222v3")
+
+    def test_a_key_does_not_change_with_the_subset_exported(self):
+        twin = ('---\nid: P-0200\ntitle: "An Unpublished Toy Preprint"\nauthors: ["Jane Doe"]\nyear: 2031\n'
+                'venue: "arXiv preprint"\narxiv: 0000.11111\nprojects: [PROJ-201]\n---\n')
+        (self.vault / "Papers" / "P-0200 twin.md").write_text(twin, encoding="utf-8")
+        _, whole, _ = self.run_cli("--project", "PROJ-201")
+        _, alone, _ = self.run_cli("--only", "P-0203")
+        self.assertIn("@misc{doe2031unpublished,", whole)                  # P-0200 came first: the bare key
+        self.assertIn("@misc{doe2031unpublisheda,", whole)                 # P-0203 its twin
+        self.assertIn("@misc{doe2031unpublisheda,", alone)                 # same key when exported alone
+
 
 if __name__ == "__main__":
     unittest.main()

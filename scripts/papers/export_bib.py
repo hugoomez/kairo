@@ -8,11 +8,15 @@ Built only from each note's frontmatter, which ingest_paper.py / resolve_refs.py
 filled from the fetched records (never typed by a model). One entry per note:
 
   - citation key: the note's `zotero_key` (Better BibTeX) when it has one, else
-    <first-author surname><year><first title word>, made unique with a, b, …;
+    <first-author surname><year><first title word>, made unique with a, b, … in
+    P-id order over the whole vault — the same key whatever subset is exported;
   - a preprint with a known published version (`published_doi`,
     `published_venue`) is exported as that version, with the arXiv id kept as
     `eprint` — cite what was peer-reviewed, keep the link to the text you read;
-  - `keywords = {kairo:P-XXXX}` ties each entry back to its note;
+  - `keywords = {kairo:P-XXXX}` ties each entry back to its note; an entry cited as
+    its published version also carries `kairoread = {arXiv:<id>v<N>}` (a field no
+    style prints): the text the vault's locators point at — the report lists these
+    as `locators_from_preprint`, to check against the published text;
   - the entry type follows the type the publisher registered (`venue_type`:
     Crossref `journal-article` / `proceedings-article` / …, OpenAlex source
     `journal` / `conference`); only a note without one falls back to reading
@@ -42,7 +46,7 @@ sys.path.insert(0, str(HERE.parent / "security"))
 import vaultnotes as vn  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/export_bib@1.2.0"
+TOOL = "kairo/export_bib@1.3.0"
 WARN = {"mismatch": "ATENCIÓN: referencia en conflicto en Kairo (resolution_status: mismatch); no citar sin revisar",
         "retracted": "ATENCIÓN: paper RETRACTADO", "withdrawn": "ATENCIÓN: preprint RETIRADO por sus autores"}
 PROCEEDINGS = re.compile(r"\b(proc(?:eedings)?|conference|symposium|workshop|SC\d*|IPDPS|ISC|NeurIPS|ICML|ICLR|"
@@ -144,12 +148,21 @@ def base_key(m: dict) -> str:
     return f"{first or 'anon'}{year or ''}{word.lower()}"
 
 
+def read_version(m: dict) -> str | None:
+    """The preprint text Kairo ingested, when the entry cites another (published)
+    version: every locator in the vault (§4.2, Tabla 3) points at this text."""
+    m = effective(m)
+    if m.get("arxiv") and (m.get("published_doi") or m.get("published_venue")):
+        return f"arXiv:{m['arxiv']}{m.get('arxiv_version') or ''}"
+    return None
+
+
 def notes(m: dict) -> str:
     """The entry's `note`: a reference warning and / or the unpublished-year note."""
     return "; ".join(n for n in (WARN.get(m.get("status") or ""), m.get("pub_note")) if n)
 
 
-def bibtex_entry(m: dict, key: str) -> str:
+def bibtex_entry(m: dict, key: str, read_field: bool = True) -> str:
     m = effective(m)
     kind, venue_field = entry_type(m)
     venue = m.get("published_venue") or (m["venue"] if m.get("venue") != "arXiv preprint" else "")
@@ -173,6 +186,9 @@ def bibtex_entry(m: dict, key: str) -> str:
         fields.append(("url", "{" + m["url"] + "}"))
     if notes(m):
         fields.append(("note", "{" + _latex(notes(m)) + "}"))
+    if read_field and read_version(m):
+        # a field no bibliography style prints: which text the vault's locators refer to
+        fields.append(("kairoread", "{" + read_version(m) + "}"))
     if m.get("id"):
         fields.append(("keywords", "{kairo:" + m["id"] + "}"))
     body = ",\n".join(f"  {k} = {v}" for k, v in fields if v not in ("{}",))
@@ -204,6 +220,8 @@ def csl_item(m: dict, key: str) -> dict:
         item["number"] = f"arXiv:{m['arxiv']}"
     if notes(m):
         item["note"] = notes(m)
+    if read_version(m):
+        item["custom"] = {"kairo-read-version": read_version(m)}
     item["keyword"] = f"kairo:{m['id']}"
     return item
 
@@ -255,14 +273,23 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"tool": TOOL, "error": "no Papers/ folder"}), file=sys.stderr)
         return 2
     metas, skipped = collect(a.vault, a.project, a.only)
-    keys = keys_for(metas)
+    # keys are assigned over the whole vault in P-id order, so a paper keeps its key
+    # whatever subset is exported (a later twin gets the suffix, never an earlier one)
+    every, _ = collect(a.vault, None, None)
+    by_id = dict(zip((m["id"] for m in every), keys_for(every)))
+    keys = [by_id[m["id"]] for m in metas]
     if a.format == "bibtex":
         text = "\n".join(bibtex_entry(m, k) for m, k in zip(metas, keys))
     else:
         text = json.dumps([csl_item(m, k) for m, k in zip(metas, keys)], ensure_ascii=False, indent=2) + "\n"
     report = {"tool": TOOL, "entries": len(metas), "skipped_send_never": skipped,
               "flagged": [{"id": m["id"], "status": m["status"]} for m in metas if m["status"] in WARN],
-              "as_published_version": [m["id"] for m in metas if m.get("published_doi") or m.get("published_venue")]}
+              "as_published_version": [m["id"] for m in metas if m.get("published_doi") or m.get("published_venue")],
+              # cited as the published version, read (and located) in the preprint: check
+              # a locator against the published text before quoting it in a manuscript
+              "locators_from_preprint": [{"id": m["id"], "read": read_version(m),
+                                          "cited": effective(m).get("published_doi") or effective(m).get("published_venue")}
+                                         for m in metas if read_version(m)]}
     if a.out:
         a.out.write_text(text, encoding="utf-8", newline="\n")
         report["out"] = str(a.out)

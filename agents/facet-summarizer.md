@@ -142,7 +142,7 @@ you have not just re-read in this pass.
 - P-XXXX assumes familiarity with <X>; read P-YYYY first
 
 ### (para el reduce) comparativa                      # only if you were given comparison fields
-- P-XXXX — <field>: <value exactly as the paper gives it, with its unit> (Tabla 3) · <field>: no consta · …
+- P-XXXX — <field>: <value exactly as the paper gives it, with its unit> (Tabla 3) · <field>: en figura: Figura 4 (no extraído) · <field>: no consta · …
 
 ### (para el reduce) omitidas por send: never        # only if any
 - P-XXXX
@@ -152,8 +152,11 @@ you have not just re-read in this pass.
 `(comparativa)` line per assigned paper (or per method a paper reports): each
 field's value copied from the text under the locator you give — a figure
 exactly as printed, with its unit, never converted, rounded or computed — or
-`no consta` when the paper does not report it. A value read off a plot is
-`no consta` too: only text and table cells count.
+`no consta` when the paper does not report it. A value the paper gives only
+in a plot is never read off it (only text and table cells are verbatim): write
+`en figura: Figura N (no extraído)` with the figure's own number, so the
+researcher knows the result exists and where to read it — `no consta` means
+the paper does not report it at all.
 
 Include only the sections that have real content. Keep each bullet to one line.
 Never dump a paper's full text or restate a whole abstract.

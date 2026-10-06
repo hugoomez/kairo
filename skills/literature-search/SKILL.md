@@ -65,10 +65,20 @@ facet's much larger list. A cross hit is credited only to the facets its own
 title or abstract shows. `"cross": false` in the plan turns it off.
 
 Every query reports `hits` (records fetched), `total` (what the source says
-matched) and its state: `completa`, `truncada` (more matches than fetched — raise
-`per_query` or narrow the facet) or `perdida` (failed after 3 attempts with
-backoff). Truncated and lost queries are **degraded coverage**, shown at the top
-of the record, never buried.
+matched) and its state: `completa`, `truncada` (an arXiv / OpenAlex query with
+more matches than fetched — raise `per_query` or narrow the facet), `por
+relevancia` (Semantic Scholar, Crossref, OpenReview: keyword search ranked by
+relevance whose total counts loose any-word matches — the top results are read,
+complete coverage is not promised, and it is not a gap) or `perdida` (failed
+after 3 attempts with backoff). Truncated and lost queries are **degraded
+coverage**, shown at the top of the record, never buried.
+
+**Missing abstracts are filled by DOI.** Crossref often returns ACM / IEEE /
+Springer proceedings without an abstract; `run` looks each such DOI up in
+OpenAlex (`enrich` queries, kept with sha256, never counted as identified) so
+the prefilter and the screeners read an abstract, not a bare title. The run's
+output says how many were filled (`abstracts_completados`) and how many are
+still without one (`sin_abstract`).
 
 ## Pipeline
 
@@ -191,21 +201,36 @@ sentence. A check a source did not answer is **lost**, never
 ### 5. Screen every candidate — the model's judgement, written down
 
 Every candidate that passed the prefilter is decided against the **frozen**
-criteria, one entry per candidate key in `decisions.json`. The screening is
+criteria, one entry per candidate key in `decisions.json`, which `merge`
+assembles from the screeners' own replies (step 3 below). The screening is
 done by **`screener` subagents, one per page**, never by reading hundreds of
 abstracts in this session's context (where the last pages get read worse than
 the first):
 
 1. Page the candidates: `show --run <run dir> --limit 40 --offset <n>` until
-   `next_offset` is null (`--all` adds the prefiltered-out ones).
+   `next_offset` is null (`--all` adds the prefiltered-out ones). Each page
+   has an id (`page`), recorded in the run's `pages.json`. Abstracts come
+   whole (the result is usually the last sentence); never pass
+   `--abstract-chars` to a screening page.
 2. Dispatch one `screener` per page, **all in the same turn** (one at a time if
    the prompt says memory is low). Give each exactly: the plan's
    `description`, `facets`, `include`, `exclude` and `scope_out` (from
    `plan.json`, verbatim) and its page's `candidates` array as `show` printed
    it — nothing else (no other page, no earlier decision, no opinion of yours).
-3. Merge their JSON blocks into `decisions.json` unchanged. A key missing or
-   malformed in a block is re-dispatched with that page; never fill it in
-   yourself.
+3. Save each screener's reply **verbatim**, one file per page
+   (`<run dir>/blocks/<page id>.txt` — its ```json fence may stay), and let the
+   script assemble the decisions:
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" merge --run <run dir> \
+     --blocks <run dir>/blocks/*.txt [--extra <run dir>/mine.json] --out <run dir>/decisions.json
+   ```
+   It refuses a block that is not exactly one page's keys (re-dispatch the
+   screener with that page — never fill a key in yourself), a key decided
+   twice, and any candidate left without a block. Your own decisions — a
+   prefiltered-out candidate you include on purpose — go in `--extra`, which
+   may never overrule a screener. `screen` then refuses a `decisions.json`
+   that differs from what `merge` wrote, and `busqueda.md` records how many
+   decisions came from screeners and which ones from you.
 4. **Double screening** (always for `linea_publicacion: true`, otherwise when
    the researcher asks): dispatch a second `screener` on a sample of at least
    20 candidates (every 5th key of `to_read`, from one or more pages), write its
@@ -283,6 +308,8 @@ not part of the script's PRISMA counts. Never for `ciencia` projects.
 
 ## Common mistakes
 
+- **Retyping or editing a screener's decisions.** Save its reply as it came and
+  run `merge`; your own decisions go in `--extra`.
 - **Typing a count, an id or a query string the script did not produce.**
   Counts come from `screen`, ids from the candidate list, queries from
   `queries.json`. If a number is missing, run the step that produces it.

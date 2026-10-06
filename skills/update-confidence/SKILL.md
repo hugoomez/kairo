@@ -325,7 +325,11 @@ replication. The exact Q p-value / I² cut-points for each band are documented i
 the script's `--help`; do not re-derive or loosen them here.
 
 For a single-experiment edge, the "combination method" is the experiment's own
-mechanical test (e.g. `two_proportion_test.py@1.0.0`), no pooling.
+mechanical test (e.g. `two_proportion_test.py@1.0.0`, or `mean_difference.py@1.0.0`
+for a continuous metric), no pooling. Two continuous-metric replications are
+pooled from each one's `effect` and `se` (its RESULT_JSON) — on the log scale
+when both were frozen with `--log`; never pool a log-scale effect with a
+raw-scale one.
 
 ## `evidencia_mixta` → spawn a moderator hypothesis
 
@@ -478,7 +482,7 @@ note).
 
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/combine_effects.py` — replication combiner (random-effects
   DerSimonian–Laird; `--help` documents the `consistency` band cut-points).
-- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — single-experiment mechanical test.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` / `mean_difference.py` — single-experiment mechanical tests (proportion / continuous metric).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/evidence_gate.py` — exploratory experiments never count (`check`, `gather`).
 - `pitfall-audit` skill + `${CLAUDE_PLUGIN_ROOT}/scripts/audit/pitfall_audit.py`: the blocking
   audit before every evidence edge. `${CLAUDE_PLUGIN_ROOT}/scripts/traces/trace_index.py`

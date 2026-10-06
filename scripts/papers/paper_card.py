@@ -329,7 +329,8 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
         meta.update(venue_type=crossref_msg.get("type") or "", volume=str(crossref_msg.get("volume") or ""),
                     issue=str(crossref_msg.get("issue") or ""),
                     pages=str(crossref_msg.get("page") or "").replace("-", "--"))
-    card["bibtex"] = export_bib.bibtex_entry(meta, export_bib.base_key(meta)).replace("  keywords = {kairo:},\n", "")
+    # nothing was ingested here, so no `kairoread` (the text the vault's locators point at)
+    card["bibtex"] = export_bib.bibtex_entry(meta, export_bib.base_key(meta), read_field=False)
     card["raw"] = c.kept
     return card
 

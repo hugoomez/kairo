@@ -53,6 +53,17 @@ class TestNet(unittest.TestCase):
             net.get("https://export.arxiv.org/api/query?id_list=2")
         self.assertEqual(self.sleeps, [2.0])
 
+    def test_a_busy_shared_lock_never_skips_the_spacing(self):
+        """When the shared lock stays held past its deadline, the request still waits
+        the host's full spacing: nothing proves another process did not just call."""
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(net, "SHARED_DIR", Path(d)), \
+                mock.patch.object(net.time, "monotonic", side_effect=[0.0, 100.0]), \
+                mock.patch("urllib.request.urlopen", side_effect=[FakeResp(b"1")]):
+            (Path(d) / "export.arxiv.org.lock").write_text("", encoding="utf-8")   # held by someone else
+            net.get("https://export.arxiv.org/api/query?id_list=1")
+        self.assertEqual(self.sleeps, [3.0])
+
     def test_redact(self):
         self.assertEqual(net.redact("https://api.openalex.org/works?api_key=SECRET123&x=1"),
                          "https://api.openalex.org/works?api_key=***&x=1")

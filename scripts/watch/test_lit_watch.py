@@ -133,10 +133,11 @@ class TestLitWatch(unittest.TestCase):
         code, res = self.delta(net)
         self.assertEqual(code, 0, res)
         arxiv_url = urllib.parse.unquote(next(u for u in net.urls if "arxiv" in u))
-        # the window re-reads OVERLAP_DAYS before last_watch (late listing / indexing)
+        # each source re-reads its own overlap before last_watch: arXiv 14 days (listing lag),
+        # Semantic Scholar 60 (it indexes by publication date, weeks late)
         self.assertIn("submittedDate:[203101180000 TO 203103012359]", arxiv_url)
-        self.assertIn("publicationDateOrYear=2031-01-18:", next(u for u in net.urls if "semanticscholar" in u))
-        self.assertEqual((res["since"], res["queried_from"]), ("2031-02-01", "2031-01-18"))
+        self.assertIn("publicationDateOrYear=2030-12-03:", next(u for u in net.urls if "semanticscholar" in u))
+        self.assertEqual((res["since"], res["queried_from"]), ("2031-02-01", "2030-12-03"))
         run = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         keys = [c["key"] for c in run["candidates"]]
         self.assertNotIn("arxiv:2031.00001", keys)          # already in Papers/
@@ -200,7 +201,7 @@ class TestLitWatch(unittest.TestCase):
         # the run is saved; the answered query is covered, the lost one keeps its own window open
         self.assertTrue(res["last_watch_moved"])
         self.assertIsNotNone(res["run"])
-        self.assertEqual(res["open_windows"], ["2031-01-18"])
+        self.assertEqual(res["open_windows"], ["2030-12-03"])
         cursors = lit_watch.load_cursors(self.p)
         self.assertEqual(sorted(cursors.values()), ["2031-02-01", "2031-03-01"])
         # next week: arXiv re-reads from its own cursor, Semantic Scholar from where it was lost
@@ -210,7 +211,7 @@ class TestLitWatch(unittest.TestCase):
         self.assertEqual(nxt, 0)
         arxiv_url = urllib.parse.unquote(next(u for u in net.urls if "arxiv" in u))
         self.assertIn("submittedDate:[203102150000", arxiv_url)
-        self.assertIn("publicationDateOrYear=2031-01-18:", next(u for u in net.urls if "semanticscholar" in u))
+        self.assertIn("publicationDateOrYear=2030-12-03:", next(u for u in net.urls if "semanticscholar" in u))
         self.assertEqual(set(lit_watch.load_cursors(self.p).values()), {"2031-03-08"})
         # every query lost: nothing written, nothing moves
         (self.p / "_hub.md").write_text(HUB, encoding="utf-8")
@@ -634,6 +635,162 @@ class TestTriageOverflow(TestLitWatch):
         _, third = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), "--top", "1",
                             fetch=fetch)
         self.assertEqual(self.candidates(third), {})
+
+
+class TestCitationsAndIndexedWindows(TestLitWatch):
+    """A weekly watch also asks who newly cites the project's own papers and seeds
+    (OpenAlex `cites:`), and windows Crossref by registration date (2026-10-06 audit)."""
+
+    def plan(self, sources=("arxiv",)):
+        run = self.p / "_busquedas" / "2031-01-15"
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "plan.json").write_text(json.dumps({
+            "description": "x", "facets": [{"id": "A", "term": "fictional widgets", "synonyms": []},
+                                           {"id": "B", "term": "synthetic spin", "synonyms": []}],
+            "sources": list(sources), "from": "2020-01-01", "per_query": 100, "anchors": 10, "cross": False,
+            "arxiv_categories": [], "include": [], "exclude": [], "scope_out": []}), encoding="utf-8")
+        (run / "queries.json").write_text(json.dumps([
+            {"id": "S001", "source": "s2", "pass": "snowball-citations", "seed": "arXiv:2001.00042"}]),
+            encoding="utf-8")
+        (self.vault / "Papers" / "P-0961 viejo.md").write_text(
+            "---\nid: P-0961\ntitle: An already ingested widget paper\narxiv: 2031.00001\n"
+            "projects: [PROJ-960]\nopenalex_id: W961\n---\n", encoding="utf-8")
+
+    class Cites(FakeNet):
+        def __call__(self, url, headers):
+            if "api.openalex.org/works/doi:" in url:
+                self.urls.append(url)
+                return json.dumps({"id": "https://openalex.org/W42"}).encode()
+            if "api.openalex.org/works?filter=" in url:
+                self.urls.append(url)
+                return json.dumps({"meta": {"count": 3, "next_cursor": None}, "results": [
+                    {"id": "https://openalex.org/W1001", "title": "A new widget method building on old work",
+                     "abstract_inverted_index": {"Fictional": [0], "widgets": [1], "again.": [2]},
+                     "publication_date": "2031-02-20", "publication_year": 2031, "authorships": [],
+                     "referenced_works": ["https://openalex.org/W961"]},
+                    {"id": "https://openalex.org/W1002", "title": "An unrelated paper that cites the seed",
+                     "abstract_inverted_index": {"Nothing": [0], "here.": [1]},
+                     "publication_date": "2031-02-21", "publication_year": 2031, "authorships": [],
+                     "referenced_works": ["https://openalex.org/W42"]},
+                    {"id": "https://openalex.org/W1003", "title": "A survey citing both roots",
+                     "abstract_inverted_index": {"Survey.": [0]},
+                     "publication_date": "2031-02-22", "publication_year": 2031, "authorships": [],
+                     "referenced_works": ["https://openalex.org/W42", "https://openalex.org/W961"]}]}).encode()
+            return super().__call__(url, headers)
+
+    def test_new_citing_papers_are_candidates_with_the_roots_they_cite(self):
+        self.plan()
+        net = self.Cites()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["citation_roots"], 2)                        # P-0961 + the resolved seed
+        cites_url = urllib.parse.unquote(next(u for u in net.urls if "works?filter=cites" in u))
+        self.assertIn("cites:W42|W961", cites_url)
+        self.assertIn("from_publication_date:2030-12-03", cites_url)     # 60-day overlap before last_watch
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        by_title = {c["title"]: c for c in data["candidates"]}
+        a = by_title["A new widget method building on old work"]
+        self.assertEqual((a["cita_a"], a["strong"]), (["P-0961"], True))          # cites + one facet
+        b = by_title["An unrelated paper that cites the seed"]
+        self.assertEqual((b["cita_a"], b["strong"]), (["arXiv:2001.00042"], False))  # cites, no facet
+        c = by_title["A survey citing both roots"]
+        self.assertTrue(c["strong"])                                              # cites two roots
+        # the seed is resolved once and remembered
+        net2 = self.Cites()
+        lit_watch.main(["delta", "--vault", str(self.vault), "--project-dir", str(self.p)], fetch=net2,
+                       today=date(2031, 3, 8))
+        self.assertFalse(any("/works/doi:" in u for u in net2.urls))
+        self.assertIn("citas|W961", lit_watch.load_cursors(self.p))
+
+    def test_a_seed_openalex_keeps_under_its_journal_doi_is_found_through_arxiv(self):
+        """OpenAlex often merges a preprint into its published version and no longer
+        answers for the arXiv DOI: the DOI the arXiv record declares finds it."""
+        self.plan()
+
+        class Merged(self.Cites):
+            def __call__(self, url, headers):
+                if "/works/doi:10.48550/arXiv.2001.00042" in url:
+                    self.urls.append(url)
+                    raise lit_watch.net.HttpError(url, 404, "Not Found")
+                if "export.arxiv.org" in url and "id_list=2001.00042" in url:
+                    self.urls.append(url)
+                    return ('<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">'
+                            "<entry><id>http://arxiv.org/abs/2001.00042v2</id>"
+                            "<arxiv:doi>10.9999/Journal.42</arxiv:doi></entry></feed>").encode()
+                if "/works/doi:10.9999/journal.42" in url.lower():
+                    self.urls.append(url)
+                    return json.dumps({"id": "https://openalex.org/W42"}).encode()
+                return super().__call__(url, headers)
+        net = Merged()
+        code, res = self.delta(net)
+        self.assertEqual((code, res["citation_roots"]), (0, 2), res)
+        cache = json.loads((self.p / "_vigilancia" / "raices-citas.json").read_text(encoding="utf-8"))
+        self.assertEqual(cache["arXiv:2001.00042"]["w"], "W42")
+
+    def test_a_seed_not_found_is_asked_again_after_a_month(self):
+        self.plan()
+        (self.p / "_vigilancia").mkdir(exist_ok=True)
+        (self.p / "_vigilancia" / "raices-citas.json").write_text(
+            json.dumps({"arXiv:2001.00042": {"w": None, "checked": "2031-02-25"}}), encoding="utf-8")
+        net = self.Cites()
+        self.delta(net)
+        self.assertFalse(any("/works/doi:" in u for u in net.urls))          # checked 4 days ago
+        (self.p / "_vigilancia" / "raices-citas.json").write_text(
+            json.dumps({"arXiv:2001.00042": {"w": None, "checked": "2031-01-01"}}), encoding="utf-8")
+        net = self.Cites()
+        _, res = self.delta(net)
+        self.assertTrue(any("/works/doi:" in u for u in net.urls))           # a month on: asked again
+        self.assertEqual(res["citation_roots"], 2)
+
+    def test_a_lost_citation_query_keeps_its_roots_open(self):
+        self.plan()
+
+        class Down(self.Cites):
+            def __call__(self, url, headers):
+                if "works?filter=cites" in url:
+                    raise lit_watch.net.HttpError(url, 503, "down")
+                return super().__call__(url, headers)
+        code, res = self.delta(Down())
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["lost"], 1)
+        self.assertEqual(lit_watch.load_cursors(self.p)["citas|W961"], "2031-02-01")
+
+    def test_no_citations_flag_and_send_never_papers(self):
+        self.plan()
+        (self.vault / "Papers" / "P-0962 privado.md").write_text(
+            "---\nid: P-0962\ntitle: Private\nprojects: [PROJ-960]\nopenalex_id: W962\nsend: never\n---\n",
+            encoding="utf-8")
+        net = self.Cites()
+        _, res = self.delta(net)
+        self.assertFalse(any("W962" in u for u in net.urls))                    # never sent
+        net2 = self.Cites()
+        code, res = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), "--no-citations",
+                             fetch=net2)
+        self.assertEqual((code, res["citation_roots"]), (0, 0))
+        self.assertFalse(any("openalex" in u for u in net2.urls))
+
+    def test_crossref_is_windowed_by_registration_date_in_a_watch(self):
+        self.plan(sources=("crossref",))
+        seen = []
+
+        def fetch(url, headers):
+            seen.append(url)
+            if "api.crossref.org" in url:
+                return json.dumps({"message": {"total-results": 7000, "items": [
+                    {"DOI": "10.9999/late.1", "title": ["Fictional widgets under synthetic spin, in proceedings"],
+                     "issued": {"date-parts": [[2030, 11, 2]]}, "author": []},
+                    {"DOI": "10.9999/ancient.1", "title": ["Fictional widgets under synthetic spin, 1999"],
+                     "issued": {"date-parts": [[1999, 1, 1]]}, "author": []}]}}).encode()
+            return self.Cites()(url, headers)
+        code, res = self.delta(fetch)
+        self.assertEqual(code, 0, res)
+        url = urllib.parse.unquote(next(u for u in seen if "crossref" in u))
+        self.assertIn("from-created-date:2031-01-18", url)
+        self.assertNotIn("from-pub-date", url)
+        self.assertEqual(res["truncated"], [])                 # relevance-ranked: 7,000 "matches" is not a gap
+        keys = [c["key"] for c in json.loads(self.run_file(res).read_text(encoding="utf-8"))["candidates"]]
+        self.assertIn("doi:10.9999/late.1", keys)              # published before the window, registered in it
+        self.assertNotIn("doi:10.9999/ancient.1", keys)        # before the project's own start
 
 
 if __name__ == "__main__":

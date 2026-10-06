@@ -43,7 +43,7 @@ import math
 import sys
 from statistics import NormalDist
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"   # 1.1.0: --d (Cohen's d) for a continuous metric, --paired
 METHOD = "a-priori power analysis via Cohen's h (arcsine effect size, normal approximation)"
 
 _N = NormalDist()
@@ -80,6 +80,28 @@ def required_n(h: float, alpha: float, power: float) -> dict:
     }
 
 
+def required_n_d(d: float, alpha: float, power: float, paired: bool = False) -> dict:
+    """Required N for a difference of means (mean_difference.py): per group for
+    Welch's test, or pairs (seeds) for a paired test on d_z. Normal approximation
+    with Guenther's t correction (+ z²/4 per group, + z²/2 for pairs); it matches
+    Cohen (1988) Table 2.4.1: d = 0.5, alpha .05 two-sided, power .80 -> 64."""
+    if d == 0.0:
+        raise ValueError("effect size d must be non-zero")
+    if not (0.0 < alpha < 1.0):
+        raise ValueError("alpha must be in (0, 1)")
+    if not (0.0 < power < 1.0):
+        raise ValueError("power must be in (0, 1)")
+    za, zb = _N.inv_cdf(1.0 - alpha / 2.0), _N.inv_cdf(power)
+    base = ((za + zb) / abs(d)) ** 2
+    if paired:
+        n = math.ceil(base + za * za / 2.0)
+        return {"d": d, "alpha": alpha, "power": power, "z_alpha2": za, "z_power": zb, "paired": True,
+                "n_pairs": n, "n_per_group": n, "n_total": n}
+    n = math.ceil(2.0 * base + za * za / 4.0)
+    return {"d": d, "alpha": alpha, "power": power, "z_alpha2": za, "z_power": zb, "paired": False,
+            "n_per_group": n, "n_total": 2 * n}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="A-priori power analysis for a two-proportion design (completo tier).")
@@ -91,6 +113,11 @@ def main(argv=None) -> int:
                               help="target effect size directly, as Cohen's h")
     effect_group.add_argument("--p1", type=float,
                               help="baseline proportion (use with --p2)")
+    effect_group.add_argument("--d", type=float,
+                              help="a continuous metric's smallest effect of interest as Cohen's d "
+                                   "(d_z with --paired): SESOI / the expected SD")
+    parser.add_argument("--paired", action="store_true",
+                        help="with --d: a paired design (same seeds in both arms); N is pairs")
 
     parser.add_argument("--p2", type=float,
                         help="smallest treatment proportion still meaningful "
@@ -110,6 +137,23 @@ def main(argv=None) -> int:
     if args.p1 is not None and not (0.0 <= args.p1 <= 1.0 and 0.0 <= args.p2 <= 1.0):
         print("error: --p1 and --p2 must be in [0, 1]", file=sys.stderr)
         return 2
+
+    if args.d is not None:
+        try:
+            result = required_n_d(args.d, args.alpha, args.power, args.paired)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"Cohen's {'d_z' if args.paired else 'd'}: {args.d:+.6f}")
+        print(f"alpha (two-sided) = {args.alpha:g}, power = {args.power:g}")
+        if args.paired:
+            print(f"required pairs (seeds run in both arms): {result['n_pairs']}")
+        else:
+            print(f"required N per group: {result['n_per_group']}")
+            print(f"required N total: {result['n_total']}")
+        if args.json:
+            print("RESULT_JSON: " + json.dumps(result, sort_keys=True))
+        return 0
 
     h = args.h if args.h is not None else cohens_h(args.p1, args.p2)
 

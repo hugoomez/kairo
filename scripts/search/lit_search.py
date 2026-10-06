@@ -9,7 +9,8 @@ paged, deduplicated and counted by this script, never by a model.
     lit_search.py retraction --run <run dir> [--mailto you@example.org] [--keys K1 …]
     lit_search.py screen     --run <run dir> --decisions decisions.json [--screened-by <model id>]
     lit_search.py agree      --decisions decisions.json --second sample.json
-    lit_search.py show       --run <run dir> [--offset 0] [--limit 60] [--all] [--abstract-chars 1200]
+    lit_search.py show       --run <run dir> [--offset 0] [--limit 60] [--all] [--abstract-chars N]
+    lit_search.py merge      --run <run dir> --blocks page1.txt … [--extra mine.json] --out decisions.json
 
 The model's part is the judgement around it: it writes `plan.json` (the
 facets and their synonyms, the date window, the inclusion / exclusion /
@@ -59,9 +60,17 @@ Facet terms are matched as whole-word sequences after light suffix stripping
 words are never joined. A multi-word term also matches its content words
 close together in another order ("toy model training" ~ "training of toy
 models", within its length + NEAR_SLACK words).
-A query whose source reports more matches than were fetched is `truncated`;
-a query that failed after retries is `lost`. Both are listed as degraded
-coverage, never hidden.
+An arXiv or OpenAlex query whose source reports more matches than were fetched
+is `truncated`; a query that failed after retries is `lost`. Both are listed as
+degraded coverage, never hidden. Semantic Scholar, Crossref and OpenReview rank
+keyword matches by relevance and their totals count records matching any word
+(Crossref: ~7,000 for a three-word query over two weeks), so their queries read
+the top `per_query` and are recorded «por relevancia», never as truncated.
+
+Abstracts: a candidate with a DOI and no abstract (Crossref often has none for
+ACM / IEEE / Springer proceedings) gets one from OpenAlex by DOI before the
+prefilter (`enrich`, default true; each lookup a recorded query that never
+counts as identified).
 
 Dedup: records sharing a normalised DOI, an arXiv id, or a normalised title
 (≥ 4 words) are one candidate; a preprint and its published version found
@@ -92,6 +101,12 @@ decisions.json
     {"<key>": {"decision": "include", "relevance": "alta|media|baja", "why": "<one sentence>"},
      "<key>": {"decision": "exclude", "reason": "fuera de tema|solo survey|fuera de alcance|
                relevancia baja|sin justificación|duplicado", "why": "…", "scope_clause": "…"}}
+`show` gives each page an id and records its keys in `pages.json`; `merge`
+assembles decisions.json from the screeners' replies saved verbatim (one file
+per page; each must decide exactly one page's keys) plus `--extra` for the
+orchestrator's own decisions, and writes `screening.json` (block hashes, who
+decided each key). With `screening.json` present, `screen` refuses a decisions
+file that differs from that union, and `busqueda.md` says who decided what.
 `screen` refuses a decisions file that leaves a candidate undecided (a
 prefiltered one may be left out), uses an unknown key or reason, includes
 without a sentence or without a retraction check, excludes without a few
@@ -129,7 +144,7 @@ import net  # noqa: E402
 import retraction  # noqa: E402
 from untrusted import suspicious  # noqa: E402
 
-TOOL = "kairo/lit_search@1.3.0"
+TOOL = "kairo/lit_search@1.4.0"
 SOURCES = ("arxiv", "s2", "openalex", "crossref", "openreview", "dblp")
 # DBLP's API now sits behind an anti-bot challenge, which Kairo never works
 # around: it stays available on request but is not a default source. Crossref
@@ -151,6 +166,11 @@ SNOWBALL_CAP = 2000                  # per key and direction; more is reported a
 REASONS = ("fuera de tema", "solo survey", "fuera de alcance", "relevancia baja", "sin justificación", "duplicado")
 PREFILTER = "prefiltro"              # the mechanical exclusion, never a reason the model gives
 BOOLEAN_CROSS = ("arxiv", "openalex")  # cross queries that AND every facet (S2 / Crossref only rank keywords)
+# Keyword search ranked by relevance: the source's "total" counts records matching
+# any word (Crossref: ~7,000 for a three-word query over two weeks, seen 2026-10-06),
+# so total > fetched says nothing about coverage. These queries read their top
+# `per_query` and are recorded as "por relevancia", never as truncated.
+RANKED = ("s2", "crossref", "openreview", "dblp")
 MIN_WHY_WORDS_EXCLUDE = 3
 RELEVANCE = ("alta", "media", "baja")
 
@@ -179,8 +199,15 @@ def norm_title(t: str) -> str:
 # "decoders", "decoding"; "parallelism", "parallel"). The same rule is applied to
 # the term and to the text, and only whole-word sequences match, so it never
 # joins two different words ("coder" ≠ "codec").
-_SUFFIXES = ("izations", "ization", "isations", "isation", "ations", "ation", "ings", "ing", "isms", "ism",
-             "ities", "ity", "ers", "er", "ors", "or", "ies", "es", "ed", "s")
+# The noun, agent and verb forms of one word share a stem: -ation / -ator / -ate /
+# -ating ("simulation", "simulator", "simulate", "simulating" → "simul"), -ization /
+# -izer / -ize, and -ion / -ing after ct, ut, pt, ss, is ("correction", "correcting"
+# → "correct"; "precision", "precise" → "precis"). That -ion rule is narrow on
+# purpose: "station" ≠ "state", "tension" ≠ "tensor".
+_SUFFIXES = ("izations", "ization", "isations", "isation", "izers", "izer", "izing", "ized", "izes", "ize",
+             "ations", "ation", "ators", "ator", "ating", "ated", "ates", "ate", "ions", "ion",
+             "ings", "ing", "isms", "ism", "ities", "ity", "ers", "er", "ors", "or", "ies", "es", "ed", "s")
+_ION_AFTER = ("ct", "ut", "pt", "ss", "is")
 
 
 def stem(w: str) -> str:
@@ -193,6 +220,8 @@ def stem(w: str) -> str:
         if w.endswith(s) and len(w) - len(s) >= 3:
             if s == "es" and not w[:-2].endswith(("s", "x", "ch", "sh", "z")):
                 continue                    # "codes" → "code" by the plain "s" below
+            if s in ("ions", "ion") and not w[:-len(s)].endswith(_ION_AFTER):
+                continue                    # "station", "region", "tension" keep their -ion
             w = w[:-len(s)] + ("y" if s == "ies" else "")
             break
     return w[:-1] if len(w) > 4 and w.endswith("e") else w
@@ -248,6 +277,7 @@ def load_plan_dict(plan: dict) -> dict:
     plan["anchors"] = int(plan.get("anchors") if plan.get("anchors") is not None else 10)
     plan["cross"] = bool(plan.get("cross", True))
     plan["prefilter"] = bool(plan.get("prefilter", True))
+    plan["enrich"] = bool(plan.get("enrich", True))
     for k in ("include", "exclude", "scope_out", "arxiv_categories"):
         plan[k] = list(plan.get(k) or [])
     if not ws(plan.get("description")):
@@ -502,10 +532,13 @@ def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tup
                 + f"&select={OA_SELECT}" + _oa_key(), {})
     if source == "crossref":
         flt = []
+        # a watch windows Crossref by the date the DOI was registered, not published:
+        # proceedings and journal issues are deposited weeks after their publication date
+        kind = "created" if plan.get("window_by") == "indexed" else "pub"
         if plan.get("from"):
-            flt.append(f"from-pub-date:{plan['from']}")
+            flt.append(f"from-{kind}-date:{plan['from']}")
         if plan.get("to"):
-            flt.append(f"until-pub-date:{plan['to']}")
+            flt.append(f"until-{kind}-date:{plan['to']}")
         mailto = os.environ.get("KAIRO_MAILTO")          # Crossref's polite pool, optional
         return ("https://api.crossref.org/works?query=" + urllib.parse.quote(query)
                 + (f"&filter={','.join(flt)}" if flt else "") + f"&rows={size}&offset={start}"
@@ -590,9 +623,16 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
             break
         start += want
     q["fetched"] = len(recs)
-    kept = [r for r in recs if in_window(r.get("date"), r.get("year"), plan)]
+    if plan.get("window_by") == "indexed" and q["source"] == "crossref":
+        # windowed by registration date: a record keeps any publication date from the
+        # project's own start on (an old paper newly given a DOI is not new work)
+        floor = {"from": plan.get("pub_floor")}
+        kept = [r for r in recs if in_window(r.get("date"), r.get("year"), floor)]
+    else:
+        kept = [r for r in recs if in_window(r.get("date"), r.get("year"), plan)]
     q["outside_window"] = len(recs) - len(kept)
-    q["truncated"] = bool(q["total"] and q["source"] != "s2-anchor" and q["total"] > q["fetched"])
+    q["ranked"] = q["source"] in RANKED
+    q["truncated"] = bool(q["total"] and q["source"] != "s2-anchor" and not q["ranked"] and q["total"] > q["fetched"])
     out = []
     for rank, r in enumerate(kept, 1):
         r.update(query=q["id"], source=q["source"].replace("-anchor", ""),
@@ -683,7 +723,7 @@ def dedup(records: list[dict]) -> list[dict]:
                 facets.setdefault(r["facet"], r["matched"])
         c = {"title": next((r["title"] for r in rs if r.get("title")), ""),
              "authors": next((r["authors"] for r in rs if r.get("authors")), []),
-             "year": years[0] if years else None,
+             "year": years[0] if years else None, "years": years,
              "date": next((r["date"] for r in rs if r.get("date")), None),
              "doi": dois[0] if dois else None, "arxiv": arx[0] if arx else None,
              "venues": venues, "abstract": next((r["abstract"] for r in rs if r.get("abstract")), ""),
@@ -728,6 +768,49 @@ def mark_in_vault(cands: list[dict], known: set[str]) -> None:
         ids |= {f"arxiv:{a.lower()}" for a in [c.get("arxiv")] + list((c.get("other_ids") or {}).get("arxiv") or [])
                 if a}
         c["in_vault"] = bool(ids & known)
+
+
+ENRICH_CHUNK = 50                    # DOIs per OpenAlex `doi:a|b|…` lookup
+
+
+def enrich_abstracts(cands: list[dict], plan: dict, raw_dir: Path, queries: list[dict], fetch: Fetch) -> int:
+    """Fill the abstract of a candidate that came without one (Crossref often has
+    none for ACM / IEEE / Springer proceedings) from OpenAlex, by DOI, before the
+    prefilter and the screeners read it. Each lookup is a recorded query (pass
+    `enrich`, raw bytes + sha256) that never counts as identified; a lost one is
+    degraded coverage like any other. Returns how many abstracts were filled."""
+    todo = [c for c in cands if not ws(c.get("abstract")) and c.get("doi")]
+    filled = 0
+    for i in range(0, len(todo), ENRICH_CHUNK):
+        chunk = todo[i:i + ENRICH_CHUNK]
+        q = {"id": f"E{len([x for x in queries if x.get('pass') == 'enrich']) + 1:03d}", "facet": "-",
+             "source": "openalex", "pass": "enrich", "query": f"doi:{len(chunk)} DOIs sin abstract", "terms": [],
+             "raw": [], "error": None, "total": None, "fetched": 0}
+        url = ("https://api.openalex.org/works?filter=doi:" + "|".join(urllib.parse.quote(c["doi"], safe="/")
+                                                                   for c in chunk)
+               + f"&per-page={ENRICH_CHUNK}&select=id,doi,abstract_inverted_index" + _oa_key())
+        try:
+            data = fetch(url, {})
+            got = json.loads(data).get("results") or []
+        except (net.HttpError, json.JSONDecodeError, ValueError) as e:
+            q["error"] = net.redact(str(e))[:200]
+            queries.append(q)
+            continue
+        name = f"{q['id']}-1.json"
+        (raw_dir / name).write_bytes(data)
+        q["raw"].append({"file": name, "url": net.redact(url), "sha256": hashlib.sha256(data).hexdigest()})
+        by_doi = {retraction.normalize_doi(w.get("doi")): w for w in got}
+        for c in chunk:
+            w = by_doi.get(c["doi"])
+            text = from_inverted_index((w or {}).get("abstract_inverted_index"))
+            if ws(text):
+                c["abstract"] = ws(text)
+                c["abstract_fuente"] = f"openalex {(w.get('id') or '').rsplit('/', 1)[-1]} (completado por DOI)"
+                filled += 1
+        q["fetched"] = q["total"] = len(got)
+        q["filled"] = sum(1 for c in chunk if c.get("abstract_fuente"))
+        queries.append(q)
+    return filled
 
 
 def prefilter_need(plan: dict) -> int:
@@ -779,17 +862,21 @@ def cmd_run(plan_path: Path, out: Path, vault: Path | None, fetch: Fetch, today:
     for q in queries:
         records.extend(run_query(q, plan, raw, fetch))
     cands = dedup(records)
+    filled = enrich_abstracts(cands, plan, raw, queries, fetch) if plan.get("enrich", True) else 0
     mark_in_vault(cands, known_vault_keys(vault))
     mark_prefilter(cands, plan)
     save(out / "plan.json", {**plan, "tool": TOOL, "date": today})
     save(out / "queries.json", queries)
     save(out / "candidates.json", cands)
-    return summary(queries, cands, out)
+    return {**summary(queries, cands, out), "abstracts_completados": filled,
+            "sin_abstract": sum(1 for c in cands if not ws(c.get("abstract")))}
 
 
 def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
     per_source: dict[str, int] = {}
     for q in queries:
+        if q.get("pass") == "enrich":
+            continue                            # a lookup of known candidates, not identification
         s = q["source"].replace("-anchor", "")
         per_source[s] = per_source.get(s, 0) + q["fetched"] - q.get("outside_window", 0)
     return {"tool": TOOL, "run": out.as_posix(), "queries": len(queries),
@@ -1026,6 +1113,7 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             c["queries"] = sorted(set(c["queries"]) | set(p["queries"]))
             c["sources"] = sorted(set(c["sources"]) | set(p["sources"]))
             c["venues"] = sorted(set(c["venues"]) | set(p.get("venues") or []))
+            c["years"] = sorted(set(c.get("years") or []) | set(p.get("years") or []))
             if p.get("snowball"):
                 c["snowball"] = True
             # identifiers the re-expansion could not carry (a third DOI, a second arXiv id)
@@ -1165,6 +1253,12 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
         decisions = load(decisions_path)
     except (OSError, json.JSONDecodeError) as e:
         raise Refused(f"cannot read decisions: {e}") from None
+    merged = run / "screening.json"
+    if merged.is_file() and hashlib.sha256(canonical(decisions).encode()).hexdigest() != \
+            load(merged)["decisions_canonical_sha256"]:
+        raise Refused("decisions.json is not the union `merge` assembled from the screeners' blocks "
+                      "(screening.json): a decision was changed, added or removed after the merge — run `merge` "
+                      "again (an orchestrator decision goes in its --extra file)")
     errs = validate(cands, decisions, plan)
     if errs:
         raise Refused("decisions incomplete or invalid:\n" + "\n".join(errs[:50]))
@@ -1184,6 +1278,8 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
     save(run / "screened.json", cands)
     identified: dict[str, int] = {}
     for q in queries:
+        if q.get("pass") == "enrich":
+            continue
         s = q["source"].replace("-anchor", "")
         identified[s] = identified.get(s, 0) + q.get("fetched", 0) - q.get("outside_window", 0)
     tally = {r: 0 for r in REASONS + (PREFILTER, "retractado/retirado")}
@@ -1202,7 +1298,8 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
     # who wrote the decisions: the judgement is a model's, so its id is part of the record
     plan["screened_by"] = ws(screened_by) or None
     save(run / "plan.json", plan)
-    (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts), encoding="utf-8", newline="\n")
+    (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts, provenance_line(run)),
+                                     encoding="utf-8", newline="\n")
     (run / "ranked.md").write_text(ranked_md(cands, plan), encoding="utf-8", newline="\n")
     (run / "prefiltrados.md").write_text(prefiltered_md(cands), encoding="utf-8", newline="\n")
     return {"tool": TOOL, "counts": counts, "screened_by": plan["screened_by"],
@@ -1249,7 +1346,8 @@ def cmd_agree(first: Path, second: Path) -> dict:
 def degraded_lines(queries: list[dict]) -> list[str]:
     out = []
     for q in queries:
-        what = {"anchor": "pase-ancla", "relevance": "pase de relevancia", "cross": "pase cruzado"}.get(
+        what = {"anchor": "pase-ancla", "relevance": "pase de relevancia", "cross": "pase cruzado",
+                "enrich": "abstracts completados por DOI"}.get(
             q["pass"], q["pass"])
         if q.get("error"):
             out.append(f"- Faceta {q['facet']} — {what} en {q['source'].replace('-anchor', '')} perdido "
@@ -1279,7 +1377,7 @@ def screener_record() -> str:
     return f"Kairo {version}, prompt `agents/screener.md` sha256 {sha}"
 
 
-def busqueda_md(plan: dict, queries: list[dict], counts: dict) -> str:
+def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str | None = None) -> str:
     L = [f"### Búsqueda ejecutada — {plan['date']}", ""]
     deg = degraded_lines(queries)
     if deg:
@@ -1295,15 +1393,20 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict) -> str:
           "**Fechas:** arXiv = envío de la v1; Semantic Scholar, OpenAlex y Crossref = fecha de publicación.",
           "**Cribado por:** " + (plan.get("screened_by") or "no consta")
           + f" ({screener_record()}; el modelo que decidió cada candidato; los conteos son del script)",
+          *([provenance] if provenance else []),
           "**Criterios de inclusión:** " + ("; ".join(plan["include"]) or "—"),
           "**Criterios de exclusión:** " + ("; ".join(plan["exclude"]) or "—"),
           "**Fuera de alcance:** " + ("; ".join(plan["scope_out"]) or "—"),
           f"**Fuentes:** {', '.join(plan['sources'])} · hasta {plan['per_query']} resultados por consulta, "
           f"{plan['anchors']} anclas por faceta", "",
-          "**Consultas (verbatim):**", "",
+          "**Consultas (verbatim):**",
+          "*Estado «por relevancia»: Semantic Scholar, Crossref y OpenReview ordenan por relevancia y su "
+          "«disponibles» cuenta coincidencias de cualquier palabra; se leen los primeros resultados y no se "
+          "promete cobertura completa (las consultas de arXiv y OpenAlex sí: allí «truncada» es pérdida real).*",
+          "",
           "| id | faceta | fuente | pase | query | hits | disponibles | estado |", "|---|---|---|---|---|---|---|---|"]
     for q in queries:
-        state = "perdida" if q.get("error") else "truncada" if q.get("truncated") else "completa"
+        state = "perdida" if q.get("error") else "truncada" if q.get("truncated") else             "por relevancia" if q.get("ranked") and (q.get("total") or 0) > q.get("fetched", 0) else "completa"
         qtext = q["query"].replace("|", "\\|")
         L.append(f"| {q['id']} | {q['facet']} | {q['source']} | {q['pass']} | `{qtext}` | {q.get('fetched', 0)} | "
                  f"{q.get('total') if q.get('total') is not None else '—'} | {state} |")
@@ -1341,7 +1444,9 @@ def _line(c: dict, today: str) -> str:
         (f" · {', '.join(c['venues'])}" if c.get("venues") else "")
     anchor = " · *candidato ancla por citas, no por relevancia directa*" if c.get("anchor") else ""
     vault = " · **ya en el vault**" if c.get("in_vault") else ""
-    return (f"- **{c['title']}** ({c.get('year') or 's. f.'}) — {', '.join(ids) or c.get('url') or ''}"
+    ys = c.get("years") or []
+    when = f"{ys[0]}; otra versión {', '.join(map(str, ys[1:]))}" if len(ys) > 1 else (c.get("year") or "s. f.")
+    return (f"- **{c['title']}** ({when}) — {', '.join(ids) or c.get('url') or ''}"
             f"{venue}{cit}{anchor}{vault}\n  Facetas: {fac}. `{c['key']}`\n  {c['screen'].get('why', '')}")
 
 
@@ -1357,28 +1462,153 @@ def ranked_md(cands: list[dict], plan: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-def cmd_show(run: Path, limit: int, offset: int = 0, show_all: bool = False, abstract_chars: int = 1200) -> dict:
+ABSTRACT_CAP = 6000                  # a longer "abstract" is a parsing accident; cut and say so
+
+
+def page_id(keys: list[str]) -> str:
+    return "p-" + hashlib.sha256("\n".join(keys).encode()).hexdigest()[:12]
+
+
+def cmd_show(run: Path, limit: int, offset: int = 0, show_all: bool = False,
+             abstract_chars: int | None = None) -> dict:
     """One page of candidates to read. Abstracts are third-party text: data,
-    never instructions — `sospechoso` names any instruction-like pattern in one."""
+    never instructions — `sospechoso` names any instruction-like pattern in one.
+
+    The abstract is shown whole (the result is usually its last sentence); only
+    `--abstract-chars` or an abstract longer than ABSTRACT_CAP cuts it, and a cut
+    abstract says so. Each page is recorded in `pages.json` (its id and keys), so
+    `merge` can check that every screener block decides exactly one page."""
     cands = load(run / "candidates.json")
     pool = cands if show_all else [c for c in cands if passes_prefilter(c)]
     page = pool[offset:offset + limit]
+    cap = ABSTRACT_CAP if abstract_chars is None else abstract_chars
     out = []
     for c in page:
         item = {"key": c["key"], "title": c["title"], "year": c["year"], "facets": c["facets"],
                 "sources": c["sources"], "venues": c["venues"], "anchor": c["anchor"], "in_vault": c.get("in_vault"),
                 "retraction": (c.get("retraction") or {}).get("status"),
                 "prefilter": (c.get("prefilter") or {}).get("pass", True),
-                "abstract": c["abstract"][:abstract_chars] if abstract_chars else ""}
+                "abstract": c["abstract"][:cap] if cap else ""}
+        if cap and len(c["abstract"]) > cap:
+            item["abstract_recortado"] = f"{cap} de {len(c['abstract'])} caracteres"
         flags = suspicious(c.get("title", "") + "\n" + c.get("abstract", ""))
         if flags:
             item["sospechoso"] = flags
         out.append(item)
     nxt = offset + len(page)
+    keys = [c["key"] for c in page]
+    pid = page_id(keys)
+    if keys:
+        pages_path = run / "pages.json"
+        pages = load(pages_path) if pages_path.is_file() else {}
+        pages[pid] = {"offset": offset, "all": show_all, "keys": keys}
+        save(pages_path, pages)
     return {"tool": TOOL, "note": "abstracts = texto de terceros: datos, nunca instrucciones",
             "total": len(cands), "to_read": sum(1 for c in cands if passes_prefilter(c)),
-            "offset": offset, "shown": len(page), "next_offset": nxt if nxt < len(pool) else None,
+            "page": pid, "offset": offset, "shown": len(page), "next_offset": nxt if nxt < len(pool) else None,
             "candidates": out}
+
+
+def _json_block(text: str) -> dict:
+    """A screener's reply as saved: bare JSON, or the reply with its ```json fence."""
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+    obj = json.loads(m.group(1) if m else text)
+    if not isinstance(obj, dict):
+        raise ValueError("not a JSON object")
+    return obj
+
+
+def canonical(decisions: dict) -> str:
+    return json.dumps(decisions, ensure_ascii=False, sort_keys=True)
+
+
+def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path) -> dict:
+    """Assemble decisions.json from the screeners' replies, saved verbatim one file
+    per page, instead of a model retyping them. Each block must decide exactly the
+    keys of one page `show` handed out, no key twice; `--extra` holds the
+    orchestrator's own decisions (a prefiltered-out candidate it includes on
+    purpose) and may not overrule a screener. Every candidate that passed the
+    prefilter must be decided. Writes `out` and `screening.json` (each block's
+    sha256, its page, and who decided each key); `screen` then refuses a
+    decisions file that differs from this union."""
+    pages_path = run / "pages.json"
+    if not pages_path.is_file():
+        raise Refused("no pages recorded: page the candidates with `show` before `merge`")
+    pages = load(pages_path)
+    by_keys = {frozenset(p["keys"]): pid for pid, p in pages.items()}
+    cands = load(run / "candidates.json")
+    decisions: dict[str, dict] = {}
+    provenance: dict[str, str] = {}
+    record = []
+    errs = []
+    (run / "screening").mkdir(exist_ok=True)
+    for b in blocks:
+        try:
+            raw = b.read_bytes()
+            obj = _json_block(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            raise Refused(f"{b.name}: cannot read the block ({e})") from None
+        pid = by_keys.get(frozenset(obj))
+        if not pid:
+            best = max(pages.items(), key=lambda kv: len(set(kv[1]["keys"]) & set(obj)), default=(None, {"keys": []}))
+            missing = sorted(set(best[1]["keys"]) - set(obj))
+            extra_keys = sorted(set(obj) - set(best[1]["keys"]))
+            errs.append(f"{b.name}: its keys are not one page from `show` (closest {best[0]}: missing {missing[:10]}, "
+                        f"not on that page {extra_keys[:10]}) — re-dispatch the screener with that page")
+            continue
+        dup = sorted(set(obj) & set(decisions))
+        if dup:
+            errs.append(f"{b.name}: keys already decided by another block {dup[:10]}")
+            continue
+        sha = hashlib.sha256(raw).hexdigest()
+        (run / "screening" / f"{pid}.txt").write_bytes(raw)
+        decisions.update(obj)
+        provenance.update({k: f"screener:{pid}" for k in obj})
+        record.append({"file": b.name, "page": pid, "sha256": sha, "keys": len(obj)})
+    extra_rec = None
+    if extra:
+        try:
+            raw = extra.read_bytes()
+            obj = _json_block(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            raise Refused(f"{extra.name}: cannot read the extra decisions ({e})") from None
+        over = sorted(set(obj) & set(decisions))
+        if over:
+            errs.append(f"--extra may not overrule a screener: {over[:10]}")
+        else:
+            decisions.update(obj)
+            provenance.update({k: "orquestador" for k in obj})
+            extra_rec = {"file": extra.name, "sha256": hashlib.sha256(raw).hexdigest(), "keys": sorted(obj)}
+    undecided = [c["key"] for c in cands if passes_prefilter(c) and c["key"] not in decisions
+                 and (c.get("retraction") or {}).get("status") not in ("retracted", "withdrawn")]
+    if undecided:
+        errs.append(f"{len(undecided)} candidates that passed the prefilter have no block: {undecided[:10]} — "
+                    "page them with `show` and dispatch a screener")
+    if errs:
+        raise Refused("merge refused:\n" + "\n".join(errs))
+    out.write_text(json.dumps(decisions, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    save(run / "screening.json", {"blocks": record, "extra": extra_rec, "provenance": provenance,
+                                   "decisions_canonical_sha256": hashlib.sha256(
+                                       canonical(decisions).encode()).hexdigest()})
+    return {"tool": TOOL, "decisions": out.as_posix(), "blocks": len(record),
+            "by_screeners": sum(1 for v in provenance.values() if v != "orquestador"),
+            "by_orchestrator": sum(1 for v in provenance.values() if v == "orquestador")}
+
+
+def provenance_line(run: Path) -> str:
+    """Who wrote the decisions, as `merge` recorded it."""
+    p = run / "screening.json"
+    if not p.is_file():
+        return ("**Procedencia de las decisiones:** no consta — decisions.json no se ensambló con `merge` "
+                "desde las respuestas de los screeners")
+    s = load(p)
+    prov = s["provenance"]
+    orch = sorted(k for k, v in prov.items() if v == "orquestador")
+    line = (f"**Procedencia de las decisiones:** {len(prov) - len(orch)} de screeners aislados "
+            f"({len(s['blocks'])} bloques guardados tal cual en `screening/`, sha256 en `screening.json`)")
+    if orch:
+        line += f"; {len(orch)} del orquestador: " + ", ".join(f"`{k}`" for k in orch)
+    return line
 
 
 def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str | None = None) -> int:
@@ -1416,7 +1646,14 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
     sh.add_argument("--limit", type=int, default=60)
     sh.add_argument("--offset", type=int, default=0)
     sh.add_argument("--all", action="store_true", help="include the prefiltered-out candidates")
-    sh.add_argument("--abstract-chars", type=int, default=1200)
+    sh.add_argument("--abstract-chars", type=int, default=None,
+                    help=f"cut each abstract to N characters (default: whole, up to {ABSTRACT_CAP})")
+    mg = sub.add_parser("merge")
+    mg.add_argument("--run", type=Path, required=True)
+    mg.add_argument("--blocks", type=Path, nargs="+", required=True,
+                    help="one file per screener reply, saved verbatim (its ```json fence may stay)")
+    mg.add_argument("--extra", type=Path, help="the orchestrator's own decisions, e.g. a prefiltered-out include")
+    mg.add_argument("--out", type=Path, required=True, help="the decisions.json to write")
     a = p.parse_args(argv)
     today = today or _dt.date.today().isoformat()
     try:
@@ -1428,6 +1665,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
             out = cmd_retraction(a.run, a.mailto, a.keys)
         elif a.cmd == "agree":
             out = cmd_agree(a.decisions, a.second)
+        elif a.cmd == "merge":
+            out = cmd_merge(a.run, a.blocks, a.extra, a.out)
         elif a.cmd == "screen":
             out = cmd_screen(a.run, a.decisions, a.screened_by)
         else:

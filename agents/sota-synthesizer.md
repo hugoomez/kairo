@@ -38,7 +38,8 @@ differs:
   `## Tabla comparativa` after §7 from the contributions' `(comparativa)` lines
   only — one row per paper or method, one column per field plus `fuente` with
   the row's locators; values copied as given (never converted, rounded or
-  filled in; a missing one stays `no consta`). Under the table, one line on
+  filled in; a missing one stays `no consta`, one only in a plot stays
+  `en figura: Figura N (no extraído)`). Under the table, one line on
   what makes rows not directly comparable (hardware, metric, scale), when the
   contributions show it.
 - Don't touch frontmatter, staleness notes or the *Búsqueda ejecutada* block:

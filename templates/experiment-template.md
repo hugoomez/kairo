@@ -37,6 +37,13 @@ tier: <ligero | completo>
 # frequentist -> scripts/analysis/two_proportion_test.py (run-experiment step 5)
 # bayesian    -> scripts/analysis/bayes_factor_proportions.py (run-experiment step 5)
 analysis_plan: <frequentist | bayesian>
+# metric_kind — what the primary metric is (absent = proportion):
+#   proportion  successes / trials        -> the two scripts above
+#   continuous  a value per seed or run (accuracy, loss, throughput, time,
+#               speedup)                  -> frequentist only:
+#               scripts/analysis/mean_difference.py (Welch or --paired t; --log
+#               for ratios such as a speedup). No bayesian script exists for it.
+metric_kind: <proportion | continuous>
 status: <preregistered | running | completed>
 # frozen_at — timestamp when the preregistration was frozen (before any code ran)
 frozen_at: <YYYY-MM-DDTHH:MM:SSZ>

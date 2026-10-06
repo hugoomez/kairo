@@ -381,6 +381,21 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py X1 N1 X2 N2
 
 Take `risk_difference` / `cohens_h`, `p_value`, and `verdict` verbatim.
 
+**`analysis_plan: frequentist`, `metric_kind: continuous`** — the difference of
+means, on the per-seed (per-run) values the code wrote:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/mean_difference.py \
+    --treatment-file <values, one per line> --control-file <values> \
+    --alpha <frozen alpha> [--paired] [--log] \
+    --direction <increase|decrease from the frozen prediction> \
+    --min-effect <frozen T_apoyo> --floor-effect <frozen T_refuta> --json
+```
+
+`--paired` / `--log` exactly as frozen (paired seeds; a ratio metric). Take
+`effect` (or `ratio` with `--log`), `ci`, `p_value`, `standardized_effect` and
+`verdict` verbatim; `effect` and `se` are what `combine_effects.py` pools.
+
 **`analysis_plan: bayesian`** — the Beta-Binomial Bayes factor:
 
 ```
@@ -501,9 +516,11 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - **Running despite a hash mismatch.** Pre-flight mismatch = stop, no execution.
 - **Reasoning about significance in prose.** Call the script; copy its numbers and
   verdict.
-- **Calling the wrong script for the frozen `analysis_plan`.** `frequentist` ->
-  `two_proportion_test.py`; `bayesian` -> `bayes_factor_proportions.py`. The
-  frozen field decides which one runs, not which one is more familiar.
+- **Calling the wrong script for the frozen `analysis_plan` / `metric_kind`.**
+  `frequentist` -> `two_proportion_test.py` (proportion) or
+  `mean_difference.py` (continuous); `bayesian` -> `bayes_factor_proportions.py`.
+  The frozen fields decide which one runs, not which one is more familiar
+  (`pitfall-audit` blocks a mismatch as `crítico`).
 - **Applying your own "does this support it?" judgment.** The frozen threshold
   decides, not you.
 - **Editing a frozen section to reflect what actually happened.** New content goes
@@ -565,6 +582,9 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/bayes_factor_proportions.py` — the
   `bayesian` mechanical test for step 5. `--help` documents the Bayes factor
   and verdict thresholds.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/mean_difference.py` — the
+  `frequentist` test for a `continuous` metric (Welch / paired t, `--log` for
+  ratios), same three-way verdict.
 - `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/tool_hash.py` — the pre-flight
   check of every `environment.tools` hash (step 1); tools are built by
   `paper-to-tool`.
