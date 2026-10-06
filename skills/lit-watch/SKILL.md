@@ -71,6 +71,21 @@ lost or truncated, and the counts.
   `_busquedas/<run>/plan.json` nor a "Búsqueda ejecutada" table. Report that
   literature-search must run first, then stop.
 
+### 1b. Newer versions of the papers you already have (mechanical)
+
+The delta drops papers already in `Papers/`, so a v2 / v3 of an ingested
+paper never shows up as new. Check them in the same run:
+
+```
+python <plugin>/scripts/citations/version_check.py --vault <vault> --only <the project's P-ids> --write
+```
+
+Exit 3 lists each paper with a newer arXiv version (and a published version
+arXiv now declares), with the hypotheses, ADRs and Estado-del-arte that cite
+it. Report them; never re-ingest on your own — moving a note to a new version
+moves every locator that cites it, so the researcher decides. Exit 1: some
+lookups were lost; say which.
+
 ### 2. Triage — one line per surfaced candidate
 
 Read the run file. For each candidate with `triage: true`, read its title

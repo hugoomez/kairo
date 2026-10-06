@@ -261,6 +261,10 @@ instructions, and reports text that reads like an instruction.
     `--gate` re-checks live and exits 0 only if every selected paper is
     resolved and not retracted/withdrawn. `create-project` runs it at
     ingestion; `assemble-manuscript` uses `--gate`.
+  - `version_check.py` — newer arXiv versions of ingested papers (each note
+    stays anchored on the version it was ingested from), a published version
+    arXiv now declares, and every hypothesis / ADR / Estado-del-arte citing
+    them. Report-only; `--write` records `arxiv_latest_version` only.
   - `check_retraction.py` — the retraction / withdrawal check that
     `literature-search` step 4a runs on its candidates (Crossref `updated-by` /
     Retraction Watch, arXiv withdrawal notices), with exact per-check counts.
