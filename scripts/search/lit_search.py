@@ -976,7 +976,8 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
             raise Refused(f"unknown candidate keys: {missing}")
         if not (run / "retraction.json").is_file():
             raise Refused("run `retraction` without --keys first")
-        todo = [by_key[k] for k in keys if "retraction" not in by_key[k]]
+        # not checked yet, or checked with a source that did not answer: (re-)check it
+        todo = [by_key[k] for k in keys if "retraction" not in by_key[k] or by_key[k]["retraction"].get("lost")]
         prev = load(run / "retraction.json")
     else:
         todo = [c for c in cands if passes_prefilter(c)]
@@ -988,7 +989,10 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
     for c in todo:
         r = by.get(c["key"]) or {}
         c["retraction"] = {"status": r.get("status", "clear"), "evidence": r.get("evidence", []),
-                           "notice_for": r.get("notice_for", [])}
+                           "notice_for": r.get("notice_for", []),
+                           # a source that did not answer: "clear" then only means "nothing seen"
+                           "lost": sorted(s for s, ch in (r.get("checks") or {}).items()
+                                          if (ch or {}).get("state") == "lost")}
     if prev:
         res = {**prev, "results": prev["results"] + res["results"],
                "counts": {s: {k: prev["counts"][s][k] + res["counts"][s][k] for k in prev["counts"][s]}
@@ -1026,6 +1030,9 @@ def validate(cands: list[dict], decisions: dict, plan: dict) -> list[str]:
             if "retraction" not in c:
                 errs.append(f"{k}: not retraction-checked (it did not pass the prefilter) — run "
                             f"`retraction --keys {k}` before including it")
+            elif c["retraction"].get("lost"):
+                errs.append(f"{k}: its retraction check was lost ({', '.join(c['retraction']['lost'])} did not "
+                            f"answer) — run `retraction --keys {k}` again before including it")
         elif d.get("decision") == "exclude":
             if d.get("reason") not in REASONS:
                 errs.append(f"{k}: exclude reason must be one of {REASONS}")

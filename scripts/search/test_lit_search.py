@@ -313,6 +313,29 @@ class Screen(Base):
         self.assertIn("### Relevante pero fuera de alcance", ranked)
         self.assertIn("Cláusula: «hardware papers»", ranked)
 
+    def test_a_lost_retraction_check_blocks_an_include_until_it_is_rechecked(self):
+        key = next(c["key"] for c in self.cands if c.get("arxiv") == "0000.00003")
+        orig = ls.check_retraction.run
+        lost = {"crossref": {"state": "lost", "flag": None}, "arxiv": {"state": "lost", "flag": None}}
+        ok = {"crossref": {"state": "ok", "flag": None}, "arxiv": {"state": "ok", "flag": None}}
+
+        def run(cands, mailto=None, checks=lost):
+            res = orig(cands, mailto)
+            for r in res["results"]:
+                r["checks"] = checks if r["id"] == key else ok
+            return res
+        ls.check_retraction.run = run
+        self.cli("retraction", "--run", str(self.run_dir))
+        d = self.all_decisions()
+        d[key] = {"decision": "include", "relevance": "alta", "why": "Reports a toy decoder result on a toy code."}
+        code, out = self.decide(d)
+        self.assertEqual(code, 2)
+        self.assertIn("retraction check was lost", out["refused"])
+        ls.check_retraction.run = lambda cands, mailto=None: run(cands, mailto, checks=ok)
+        self.cli("retraction", "--run", str(self.run_dir), "--keys", key)      # re-checks a lost one
+        code, out = self.decide(d)
+        self.assertEqual(code, 0, out)
+
     def test_incomplete_or_invalid_decisions_are_refused(self):
         self.cli("retraction", "--run", str(self.run_dir))
         d = self.all_decisions()

@@ -175,7 +175,9 @@ cannot be included without a decision); to include a prefiltered-out one, check
 it first with `retraction --run <run dir> --keys <key>` — `screen` refuses to
 include an unchecked candidate. Retracted / withdrawn candidates are excluded by the script itself;
 an expression of concern is kept and must be mentioned in the candidate's
-sentence. A snowball after this step invalidates it (the script deletes
+sentence. A check a source did not answer is **lost**, never
+"clear": `screen` refuses to include that candidate until
+`retraction --run <run dir> --keys <key>` re-checks it. A snowball after this step invalidates it (the script deletes
 `retraction.json`): run it again.
 
 ### 5. Screen every candidate — the model's judgement, written down
