@@ -35,6 +35,16 @@ may already report the hypothesis's claim.
 
 ## Modes
 
+- **topic** ("vigila este tema cada semana", no project yet): write the
+  plan as literature-search step 1 does (facets, synonyms, `from`, sources),
+  then
+  ```
+  python <plugin>/scripts/watch/lit_watch.py init --vault <vault> --slug <slug> --plan <plan.json>
+  ```
+  It creates `Projects/<slug>/` with only `_hub.md` (`tipo: vigilancia`) and
+  the plan — no search, ingestion or map — and every later watch runs steps
+  1–4 on it. Commit both files. `create-project` can grow it into a full
+  project later.
 - **watch** (default): steps 1–4.
 - **ingest `<keys>`**: step 5 only, for the candidates the researcher marked
   `ingerir`, or for every triaged candidate when the hub has

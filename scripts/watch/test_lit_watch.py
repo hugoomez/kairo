@@ -453,6 +453,55 @@ class TestQueriesAndCoverage(TestLitWatch):
         self.assertTrue(run["candidates"][0]["sospechoso"])
 
 
+class TestTopicWatch(unittest.TestCase):
+    """Watching a topic should not need a whole project (search, ingestion, map):
+    `init` makes a watch-only folder from a plan, and delta runs on it as usual."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kairo-topic-"))
+        self.vault = self.tmp / "vault"
+        (self.vault / "Papers").mkdir(parents=True)
+        (self.vault / "Projects").mkdir()
+        self.plan = self.tmp / "plan.json"
+        self.plan.write_text(json.dumps({
+            "description": "Weekly watch on fictional widgets under synthetic spin",
+            "facets": [{"id": "A", "term": "fictional widgets", "synonyms": []},
+                       {"id": "B", "term": "synthetic spin", "synonyms": []}],
+            "sources": ["arxiv", "s2", "openreview"], "from": "2031-02-01"}), encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def cli(self, *args, fetch=None):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = lit_watch.main(list(args), fetch=fetch or FakeNet(), today=TODAY)
+        return code, json.loads(buf.getvalue())
+
+    def test_init_then_delta(self):
+        code, out = self.cli("init", "--vault", str(self.vault), "--slug", "widgets-watch", "--plan", str(self.plan))
+        self.assertEqual(code, 0, out)
+        pdir = self.vault / "Projects" / "widgets-watch"
+        hub = (pdir / "_hub.md").read_text(encoding="utf-8")
+        self.assertIn("tipo: vigilancia", hub)
+        self.assertIn("last_watch: 2031-02-01", hub)
+        self.assertIn("id: PROJ-001", hub)
+        self.assertTrue((pdir / "_busquedas" / "2031-03-01" / "plan.json").is_file())
+        code, res = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(pdir))
+        self.assertEqual(code, 0, res)
+        self.assertGreater(res["candidates"], 0)
+        self.assertEqual(res["sources_left_out"], ["openreview"])
+
+    def test_init_refuses_an_existing_folder_and_a_bad_plan(self):
+        self.cli("init", "--vault", str(self.vault), "--slug", "w", "--plan", str(self.plan))
+        code, out = self.cli("init", "--vault", str(self.vault), "--slug", "w", "--plan", str(self.plan))
+        self.assertEqual(code, 2)
+        self.plan.write_text(json.dumps({"facets": []}), encoding="utf-8")
+        code, out = self.cli("init", "--vault", str(self.vault), "--slug", "w2", "--plan", str(self.plan))
+        self.assertEqual(code, 2)
+        self.assertFalse((self.vault / "Projects" / "w2").exists())
+
+
 class TestTriageOverflow(TestLitWatch):
     """A strong candidate past --top was never read by anyone: it is carried to the
     next watch until it is triaged, even when the next window no longer finds it."""

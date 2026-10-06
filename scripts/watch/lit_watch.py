@@ -840,9 +840,45 @@ def cmd_check(a) -> dict:
 
 # --------------------------------------------------------------------------
 
+def cmd_init(vault: Path, slug: str, plan_path: Path, today: date) -> dict:
+    """A watch-only project: `_hub.md` (tipo: vigilancia) and the plan as its first
+    `_busquedas/<date>/plan.json` — no search, ingestion or map. `delta` then runs
+    on it like on any project; create-project can grow it into a full one."""
+    import lit_search
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+        raise Refused("--slug: lowercase letters, digits and hyphens")
+    pdir = vault / "Projects" / slug
+    if pdir.exists():
+        raise Refused(f"{pdir} already exists")
+    try:
+        plan = lit_search.load_plan(plan_path)
+    except lit_search.Refused as e:
+        raise Refused(f"plan: {e}") from None
+    nums = [int(m.group(1)) for h in vault.glob("Projects/*/_hub.md")
+            if (m := re.search(r"(?m)^id:\s*PROJ-(\d+)", h.read_text(encoding="utf-8", errors="replace")))]
+    pid = f"PROJ-{(max(nums) + 1 if nums else 1):03d}"
+    start = plan.get("from") or (today - timedelta(days=DEFAULT_LOOKBACK_DAYS)).isoformat()
+    run = pdir / "_busquedas" / today.isoformat()
+    run.mkdir(parents=True)
+    (run / "plan.json").write_text(json.dumps({**plan, "tool": lit_search.TOOL, "date": today.isoformat()},
+                                              ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    name = plan["description"][:80].replace('"', "'")
+    write_text(pdir / "_hub.md",
+               f'---\nid: {pid}\nname: "{name}"\ntipo: vigilancia\ncreated: {today.isoformat()}\n'
+               f"last_watch: {start}\n---\n\n# Vigilancia: {plan['description']}\n\n"
+               "Proyecto solo de vigilancia: el plan de búsqueda está en `_busquedas/`; sin ingesta ni Estado "
+               "del arte. `create-project` puede convertirlo en un proyecto completo.\n", "\n")
+    return {"project": pid, "project_dir": pdir.relative_to(vault).as_posix(), "plan": (run / "plan.json")
+            .relative_to(vault).as_posix(), "last_watch": start}
+
+
 def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: date | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("init")
+    p.add_argument("--vault", required=True, type=Path)
+    p.add_argument("--slug", required=True)
+    p.add_argument("--plan", required=True, type=Path)
     p = sub.add_parser("delta")
     p.add_argument("--vault", required=True, type=Path)
     p.add_argument("--project-dir", required=True, type=Path)
@@ -876,7 +912,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     try:
-        if a.cmd == "delta":
+        if a.cmd == "init":
+            out = cmd_init(a.vault.resolve(), a.slug, a.plan, today or date.today())
+        elif a.cmd == "delta":
             since = date.fromisoformat(a.since) if a.since else None
             out = delta(a.vault.resolve(), a.project_dir.resolve(), since, a.top, fetch, today or date.today())
         else:
