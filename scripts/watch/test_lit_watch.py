@@ -434,5 +434,54 @@ class TestQueriesAndCoverage(TestLitWatch):
         self.assertTrue(run["candidates"][0]["sospechoso"])
 
 
+class TestTriageOverflow(TestLitWatch):
+    """A strong candidate past --top was never read by anyone: it is carried to the
+    next watch until it is triaged, even when the next window no longer finds it."""
+
+    def busy_then_quiet(self):
+        calls = {"n": 0}
+
+        def fetch(url, headers):
+            host = urllib.parse.urlparse(url).netloc
+            if "arxiv" in host:
+                calls["n"] += 1
+            first = calls["n"] <= 1
+            if "arxiv" in host:
+                return atom([("2031.00011", "Widgets one", "Fictional widgets under synthetic spin, one."),
+                             ("2031.00012", "Widgets two", "Fictional widgets under synthetic spin, two.")]
+                            if first else [])
+            data = [{"paperId": f"s2{i}", "title": f"Widgets {w}", "abstract": "x",
+                     "externalIds": {"ArXiv": f"2031.0001{i}"}, "publicationDate": "2031-02-20", "authors": []}
+                    for i, w in ((1, "one"), (2, "two"))] if first else []
+            return json.dumps({"data": data}).encode()
+        return fetch
+
+    def candidates(self, res):
+        return {c["key"]: c for c in json.loads(self.run_file(res).read_text(encoding="utf-8"))["candidates"]}
+
+    def test_strong_candidates_past_top_are_carried_until_triaged(self):
+        fetch = self.busy_then_quiet()
+        _, first = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), "--top", "1",
+                            fetch=fetch)
+        c1 = self.candidates(first)
+        self.assertEqual(sorted(k for k, c in c1.items() if c["strong"]), ["arxiv:2031.00011", "arxiv:2031.00012"])
+        left = [k for k, c in c1.items() if c["strong"] and not c["triage"]]
+        self.assertEqual(len(left), 1)
+        self.assertEqual(first["strong_not_triaged"], 1)
+        # next week the window finds nothing new: the one nobody read is still offered
+        code, second = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), "--top", "1",
+                                fetch=fetch)
+        self.assertEqual(code, 0, second)
+        c2 = self.candidates(second)
+        self.assertEqual(list(c2), left)
+        self.assertTrue(c2[left[0]]["triage"])
+        self.assertEqual(c2[left[0]]["pendiente_desde"], first["run"].rsplit("/", 1)[-1])
+        self.assertEqual(second["carried"], 1)
+        # once triaged (offered in full), it does not come back
+        _, third = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), "--top", "1",
+                            fetch=fetch)
+        self.assertEqual(self.candidates(third), {})
+
+
 if __name__ == "__main__":
     unittest.main()

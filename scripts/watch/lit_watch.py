@@ -34,7 +34,11 @@
     watch of this project.
   - A candidate is *strong* when queries of two or more facets found it (or the
     project has one facet). The top `--top` strong candidates are marked for
-    triage; the rest are listed, not surfaced.
+    triage. A strong candidate left past `--top` is the backlog: the next
+    watch carries it (`pendiente_desde`: the run that first left it), first in
+    line and whether or not the new window finds it again, until it is triaged
+    or decided — nothing a watch found strong is dropped unread. The output
+    counts `strong_not_triaged` and `carried`.
   - Each candidate keeps `abstract_sha256`, the hash of the abstract exactly
     as the source returned it, so a later threat can only quote that text.
   - Novelty prefilter: word overlap between each active hypothesis's (not
@@ -424,18 +428,24 @@ def known_papers(vault: Path) -> tuple[set[str], set[str], set[str]]:
     return arx, dois, titles
 
 
-def earlier_keys(pdir: Path) -> dict[str, bool]:
-    """Every candidate an earlier watch offered → whether it was offered in full
-    (strong, triaged or decided). A weak one may come back once it is strong."""
-    out: dict[str, bool] = {}
-    for f in (pdir / "_vigilancia").glob("vigilancia-*.json"):
+def earlier_keys(pdir: Path) -> tuple[dict[str, bool], dict[str, tuple[str, dict]]]:
+    """Every candidate an earlier watch listed → whether it was offered in full
+    (triaged or decided; a run written before `strong` existed counts as full),
+    and the backlog: strong candidates left past --top that no watch has triaged
+    yet, each with the run file that first left it. A weak one may come back
+    once it is strong; a strong one nobody read comes back until it is read."""
+    offered: dict[str, bool] = {}
+    pending: dict[str, tuple[str, dict]] = {}
+    for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json"), key=lambda f: f.stat().st_mtime):
         try:
             for c in load_run(f).get("candidates", []):
-                full = bool(c.get("strong", True) or c.get("triage") or c.get("decision"))
-                out[c["key"]] = out.get(c["key"], False) or full
+                full = bool(c.get("triage") or c.get("decision")) or "strong" not in c
+                offered[c["key"]] = offered.get(c["key"], False) or full
+                if c.get("strong") and not full:
+                    pending.setdefault(c["key"], (c.get("pendiente_desde") or f.name, c))
         except (OSError, json.JSONDecodeError, KeyError):
             continue
-    return out
+    return offered, {k: v for k, v in pending.items() if not offered[k]}
 
 
 def hypotheses(pdir: Path) -> list[tuple[str, set[str]]]:
@@ -557,7 +567,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     starts = {sig: query_start(sig, cursors, since, explicit) for sig in sigs}
     query_from = min(starts.values())
     arx, dois, titles = known_papers(vault)
-    seen_before = earlier_keys(pdir)
+    seen_before, backlog = earlier_keys(pdir)
     merged: dict[str, dict] = {}
     by_title: dict[str, str] = {}
     log = []
@@ -595,22 +605,36 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             if q["source"] not in cur["sources"]:
                 cur["sources"].append(q["source"])
     lost_all = all(x["error"] for x in log)
+
+    def in_vault(c: dict) -> bool:
+        return bool((c.get("arxiv") and c["arxiv"].lower() in arx) or (c.get("doi") and c["doi"] in dois)
+                    or norm_title(c["title"]) in titles)
     cands = []
     for c in merged.values():
-        if (c.get("arxiv") and c["arxiv"].lower() in arx) or (c.get("doi") and c["doi"] in dois) \
-                or norm_title(c["title"]) in titles:
+        if in_vault(c):
             continue
         c["strong"] = len(c["facets"]) >= 2 or len(facets_all) == 1
         if c["key"] in seen_before:
-            # offered before: only a weak candidate that is now strong comes back, once
-            if seen_before[c["key"]] or not c["strong"]:
+            # offered before: a weak candidate that is now strong comes back, once;
+            # a strong one left past --top comes back until it is triaged
+            if seen_before[c["key"]] or not (c["strong"] or c["key"] in backlog):
                 continue
+            c["strong"] = True
             c["reofrecido"] = True
+            if c["key"] in backlog:
+                c["pendiente_desde"] = backlog[c["key"]][0]
         c["abstract_sha256"] = sha256(c.get("abstract") or "") if c.get("abstract") else None
         flags = suspicious(c["title"] + "\n" + (c.get("abstract") or ""))
         if flags:
             c["sospechoso"] = flags                 # third-party text that reads like an instruction
         cands.append(c)
+    # the backlog the new window did not find again: carried as listed, never dropped
+    found = {c["key"] for c in cands}
+    for key, (since_run, old) in backlog.items():
+        if key in found or in_vault(old):
+            continue
+        cands.append({k: v for k, v in old.items() if k not in ("triage", "why", "decision", "novelty")}
+                     | {"strong": True, "reofrecido": True, "pendiente_desde": since_run})
     hyps = hypotheses(pdir)
     pairs: dict[str, dict[str, dict]] = {c["key"]: {} for c in cands}
     for hid, hw in hyps:
@@ -630,7 +654,9 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     for c in cands:
         c["novelty"] = sorted(pairs[c["key"]].values(), key=lambda x: (-x["shared"], -x["score"]))[:3]
     cands.sort(key=lambda c: c.get("date") or "", reverse=True)  # newest first within a rank
-    cands.sort(key=lambda c: (not c["strong"], -len(c["facets"]), -max([n["score"] for n in c["novelty"]] or [0])))
+    # the backlog first (oldest unread strong candidates), so a busy feed never starves it
+    cands.sort(key=lambda c: (not c["strong"], c.get("pendiente_desde") is None, c.get("pendiente_desde") or "",
+                              -len(c["facets"]), -max([n["score"] for n in c["novelty"]] or [0])))
     for i, c in enumerate(cands):
         c["triage"] = c["strong"] and i < top
         c.update({"why": None, "decision": None})
@@ -675,6 +701,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             "open_windows": sorted({x["from"] for x in lost}),
             "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
             "to_triage": sum(c["triage"] for c in cands),
+            "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),
+            "carried": sum(1 for c in cands if c.get("pendiente_desde")),
             "novelty_candidates": sum(1 for c in cands if c["novelty"]),
             "suspicious": sum(1 for c in cands if c.get("sospechoso"))}
 

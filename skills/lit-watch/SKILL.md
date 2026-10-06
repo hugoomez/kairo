@@ -89,8 +89,10 @@ three closest candidates sharing two or more terms, since a Spanish claim
 shares few words with an English abstract) and not a verdict. Take at most
 the 3 highest per hypothesis.
 
-A candidate with `reofrecido: true` was offered before as a weak candidate and
-is now strong: triage it like any other, and say so in its line.
+A candidate with `reofrecido: true` was listed before without being read: a
+weak candidate that is now strong, or — with `pendiente_desde: <run file>` — a
+strong one an earlier watch left past `--top`. Triage it like any other and say
+so in its line. The backlog is triaged first, so a busy week never starves it.
 
 The judgement is not yours: it runs on the policy's hard-task model
 (`config/models.toml`, task `novelty_judge`).
@@ -133,7 +135,9 @@ incomplete run.
   `Vigilancia de literatura <PROJ>: <n> nuevos, <m> alertas`.
 - Report in a few lines:
   - the window;
-  - candidates, strong and triaged;
+  - candidates, strong and triaged; `carried` (backlog from earlier watches) and
+    `strong_not_triaged` — when that is above 0, say how many strong papers wait
+    for the next watch, and offer to triage them now with a larger `--top`;
   - each threat, as severity + hypothesis + paper + the quoted sentence;
   - the lost and truncated queries (and that the window stays open).
 - End with: "Las alertas son juicios de un modelo; decide tú en la bandeja."
