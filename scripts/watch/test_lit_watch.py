@@ -412,6 +412,25 @@ class TestQueriesAndCoverage(TestLitWatch):
         self.assertEqual(data["queries_from"], "_busquedas/2031-01-15")
         self.assertIn("arxiv:2031.00002", [c["key"] for c in data["candidates"]])
 
+    def test_a_source_that_cannot_be_windowed_is_left_out_and_said_so(self):
+        """OpenReview's search has no date filter or date sort: a weekly window
+        would read the most relevant papers of all time, cap them and call the
+        week covered. The watch leaves it out and records why."""
+        run = self.p / "_busquedas" / "2031-01-15"
+        run.mkdir(parents=True)
+        (run / "plan.json").write_text(json.dumps({
+            "description": "x", "facets": [{"id": "A", "term": "fictional widgets", "synonyms": []},
+                                           {"id": "B", "term": "synthetic spin", "synonyms": []}],
+            "sources": ["arxiv", "openreview"], "from": "2020-01-01", "per_query": 100, "anchors": 10,
+            "arxiv_categories": [], "include": [], "exclude": [], "scope_out": []}), encoding="utf-8")
+        net = FakeNet()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertFalse(any("openreview" in u for u in net.urls))
+        self.assertEqual(res["sources_left_out"], ["openreview"])
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertIn("openreview", data["sources_left_out"][0])
+
     def test_the_published_version_of_an_ingested_preprint_is_not_new(self):
         (self.vault / "Papers" / "P-0963 pre.md").write_text(
             "---\nid: P-0963\ntitle: Some preprint\narxiv: 2030.00009\npublished_doi: 10.9999/fake.1\n---\n",

@@ -515,8 +515,16 @@ def query_start(sig: str, cursors: dict[str, str], base: date, explicit: bool) -
     return last - timedelta(days=OVERLAP_DAYS)
 
 
+# Sources whose search can neither filter nor sort by date: a window would read
+# the most relevant papers of all time, cap them and call the week covered.
+NOT_WINDOWABLE = {"openreview": "su búsqueda no filtra ni ordena por fecha: una ventana semanal leería lo más "
+                                "relevante de todas las épocas y daría la semana por cubierta"}
+
+
 def _watch_plan(plan: dict, start: date, today: date) -> dict:
-    return {**plan, "from": start.isoformat(), "to": today.isoformat(), "anchors": 0, "per_query": MAX_RESULTS}
+    srcs = [x for x in plan.get("sources") or [] if x not in NOT_WINDOWABLE]
+    return {**plan, "sources": srcs, "from": start.isoformat(), "to": today.isoformat(), "anchors": 0,
+            "per_query": MAX_RESULTS}
 
 
 def structured_signatures(plan: dict, today: date) -> list[str]:
@@ -669,6 +677,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
            "truncated": [f"{x.get('id', x['facet'])} {x['source']}: {x.get('hits')} de {x.get('total')}"
                          for x in truncated],
            "lost": [f"{x.get('id', x['facet'])} {x['source']}: {x['error']}" for x in lost],
+           "sources_left_out": [f"{x}: {NOT_WINDOWABLE[x]}" for x in (plan or {}).get("sources") or []
+                                if x in NOT_WINDOWABLE],
            "queries": log, "candidates": cands, "threats": []}
     out = None
     moved = False
@@ -703,6 +713,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             "to_triage": sum(c["triage"] for c in cands),
             "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),
             "carried": sum(1 for c in cands if c.get("pendiente_desde")),
+            "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
             "novelty_candidates": sum(1 for c in cands if c["novelty"]),
             "suspicious": sum(1 for c in cands if c.get("sospechoso"))}
 

@@ -57,6 +57,9 @@ lost or truncated, and the counts.
 - Some queries lost: continue, and name them (`lost_queries`). Their windows
   stay open (`open_windows`): the next watch re-reads them from where they
   were lost, so never call the run "nothing new" for those queries.
+- `sources_left_out`: a source the plan used whose search cannot be limited to
+  a window (OpenReview: no date filter or sort). Name it in the report; new ML
+  preprints reach the watch through arXiv.
 - Some queries `truncated`: they were read up to their 500 most relevant hits
   and count as covered. Name them; repeated truncation means a query is too
   broad for a weekly watch — suggest narrowing that facet in a new
