@@ -40,7 +40,9 @@ locators and figures are real. `--packet FILE [--section "<heading>"]` writes
 the fresh-verifier packet for that: every cited sentence (or row) of the
 document, or of one `##` section, as an `Afirmación` followed by the verbatim
 text its locators point at, built by the verifier's own renderer. The
-fresh-verifier then hunts the sentences the source does not support. A packet
+fresh-verifier then hunts the sentences the source does not support. Each
+part is also put in the packet store (`stored`: path + sha256): the verifier
+gets that path and reads the file itself, never a retyped copy. A packet
 larger than `--max-chars` (default 150,000) is split into parts — FILE,
 FILE-2, … — each with its own header and "Parte: i de n", so every verifier
 reads its part whole.
@@ -67,6 +69,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "ledger"))
 from check_quotes import paper_projects  # noqa: E402
+sys.path.insert(0, str(HERE.parent / "security"))
+import isolation  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402, I001  (path set by verifier_packet)
 from verifier_packet import (  # noqa: E402
     TOOL_ID as VERIFIER_PACKET_ID,
@@ -490,9 +494,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         first = Path(a.packet)
         paths = [first] + [first.with_name(f"{first.stem}-{i}{first.suffix}") for i in range(2, len(parts) + 1)]
+        stored = []
         for path, (packet, _) in zip(paths, parts):
             path.write_text(packet, encoding="utf-8", newline="\n")
-        print(json.dumps({"tool": TOOL, "packet": a.packet, "packets": [str(p) for p in paths],
+            # the verifier reads the stored copy itself (its Read is held to the store by the hook)
+            stored.append(isolation.store(packet.encode("utf-8")))
+        print(json.dumps({"tool": TOOL, "packet": a.packet, "packets": [str(p) for p in paths], "stored": stored,
                           "assertions": sum(m["assertions"] for _, m in parts),
                           "citations": sum(len(m["citations"]) for _, m in parts)}, ensure_ascii=False, indent=2))
         return 0

@@ -100,8 +100,10 @@ list. Use it to:
   invalid status) to the researcher at the top of the cycle output — this skill
   does not fix other notes, and a flag never changes anyone's status.
 
-Open individual notes only when a check needs their full text (the citation
-rule below always re-opens the paper note). Exit code 2 from `build_graph.py`
+Open individual notes only when a check needs their full text. Paper notes are
+never opened in this session: the vault hook refuses it (a paper's text is
+third-party text and this session can run commands) — the citation rule below
+has the `paper-reader` subagent read them. Exit code 2 from `build_graph.py`
 means a `crítico` finding exists; say so and continue unless it involves the
 candidate's own dependencies.
 
@@ -272,7 +274,7 @@ not a fifth check and not part of the refinement loop.
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py \
      --vault <vault root> --note <draft.md> \
-     --out <tmp>/packet.md --manifest <tmp>/manifest.json
+     --out <tmp>/packet.md --manifest <tmp>/manifest.json --store
    ```
    It keeps only `## Claim`, each `## Justificación` bullet with the verbatim
    `## Texto completo` text its locator points at (plus each cited paper's
@@ -281,8 +283,10 @@ not a fifth check and not part of the refinement loop.
    frontmatter beyond `id`, and anything else never reach the verifier. Show
    the manifest it prints (included / excluded sections, packet sha256) in the
    cycle output.
-3. **Dispatch `fresh-verifier`** with the packet file's text as the **entire**
-   prompt — verbatim, nothing added. No summary of the checks, no "this
+3. **Dispatch `fresh-verifier`** with the packet's **store path** (`packet` in the JSON `--store` prints) as the
+   **entire** prompt — never the packet's text, nothing added. Its only tool is
+   `Read`, which the vault hook holds to that file; the read leaves a receipt,
+   and `verifications.py append` refuses the verdict without it. No summary of the checks, no "this
    citation was re-used from H-XXXX", no hint of what to look for, no prior
    verdict. Anything added contaminates exactly the independence it exists for.
 4. **Create the note** at `status: propuesta` per "Loop and stopping rule" —
@@ -294,7 +298,7 @@ not a fifth check and not part of the refinement loop.
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
      --note <created H-XXXX.md> --verifier kairo/fresh-verifier@1.1.0 \
      --model <model id the agent reported> --verdict <verdict> --scope note \
-     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest>
+     --report <tmp>/report.txt --packet-sha256 <sha256 --store printed>
    ```
    This appends the contract entry to `verifications:` and a dated entry
    (findings with severity + location, packet hash) to
@@ -345,9 +349,13 @@ replaces the other.
 The created note's **`## Justificación (evidencia citada)`** cites specific papers
 as `P-XXXX §Sección / Tabla N / Figura N — qué muestra y cómo sostiene el claim`.
 
-**Before writing any such locator, re-open the source `Papers/P-XXXX.md` note
-and read the exact text under that `§Sección` / `Tabla N` / `Figura N`
-heading in its `## Texto completo`** (the paper's verbatim text). Never cite
+**Before writing any such locator, have the exact text under that `§Sección` /
+`Tabla N` / `Figura N` heading checked** in the paper's `## Texto completo`
+(the paper's verbatim text): dispatch one `paper-reader` subagent with every
+pending `check` request (paper note path, locator, the sentence that cites it)
+in one batch, and keep only what it returns `supports: yes`; use its
+`better_locator` when it gives one, drop or reword what is `partly` / `no`.
+This session never reads the paper note itself (the vault hook refuses it). Never cite
 from, or open, the paper's reading notes in `Papers/_notas/` (or an old
 `## Notas de lectura` section): they are model-written and not citable, a
 claim that only they support has no source, and the `send_guard` hook blocks
@@ -363,7 +371,7 @@ exact locator rather than re-deriving your own — never let the same fact
 carry two different section numbers across the project.
 
 **`send: never` papers are not citable evidence.** If the paper note's
-frontmatter has `send: never` (check with
+frontmatter has `send: never` (`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_meta.py" --vault <vault> P-XXXX …` answers `send_never: true`; or check with
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <note>` —
 exit 3 — or a `Read` refused by the `send_guard` hook), do not open it and do
 not cite a locator in it: the claim must stand on other papers, or the
@@ -371,7 +379,8 @@ researcher adds that citation by hand. Flag it `importante` in the cycle output
 (`P-XXXX omitida: send: never`).
 
 **Retracted, withdrawn or mismatched papers are not citable evidence either**
-(contract §3b). Before citing, read the paper note's `resolution_status` — never
+(contract §3b). Before citing, read the paper note's `resolution_status` with
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_meta.py" --vault <vault> P-XXXX …` `--fields resolution_status` — never
 `resolved` alone, since a retracted paper is `resolved: true`. `retracted` /
 `withdrawn` → do not cite it; `mismatch` → do not cite it until the note is fixed
 by hand (it may mix two papers). Flag either `importante` in the cycle output.
@@ -728,8 +737,8 @@ count never exceeded budget and no tournament was needed.
   "intuición del investigador…" string instead.
 - **Citing a section from memory of an earlier citation instead of re-reading
   it.** A confidently-wrong locator is worse than an obviously missing one —
-  it looks verified and isn't. Re-open the exact heading every time, even for
-  a paper already cited elsewhere in this project.
+  it looks verified and isn't. Have `paper-reader` check the exact heading every
+  time, even for a paper already cited elsewhere in this project.
 - **The same fact carrying two different section numbers across the
   project.** If this hypothesis restates a fact already cited in
   `Estado-del-arte.md` or another hypothesis, reuse that exact locator

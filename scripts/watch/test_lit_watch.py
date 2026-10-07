@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -16,10 +17,14 @@ import urllib.parse
 from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import lit_watch  # noqa: E402
+
+sys.path.insert(0, str(HERE.parent / "security"))
+import isolation  # noqa: E402
 
 TODAY = date(2031, 3, 1)
 
@@ -92,6 +97,9 @@ class FakeNet:
 class TestLitWatch(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="kairo-watch-"))
+        self.env = mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")})
+        self.env.start()
+        os.environ.pop("KAIRO_PACKETS_DIR", None)
         self.vault = self.tmp / "vault"
         self.p = self.vault / "Projects" / "vigilancia-demo"
         (self.p / "Hipotesis").mkdir(parents=True)
@@ -109,6 +117,7 @@ class TestLitWatch(unittest.TestCase):
             encoding="utf-8")
 
     def tearDown(self):
+        self.env.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def cli(self, *args, fetch=None):
@@ -116,6 +125,15 @@ class TestLitWatch(unittest.TestCase):
         with redirect_stdout(buf):
             code = lit_watch.main(list(args), fetch=fetch or FakeNet(), today=TODAY)
         return code, json.loads(buf.getvalue())
+
+    def judged(self, run: str, key: str = "arxiv:2031.00002", hid: str = "H-0961", read: bool = True) -> str:
+        """The judge's packet for (hypothesis, candidate), read by a novelty-judge (the hook's receipt)."""
+        code, out = self.cli("judge-packet", "--vault", str(self.vault), "--project-dir", str(self.p),
+                             "--run", run, "--key", key, "--hypothesis", hid)
+        self.assertEqual(code, 0, out)
+        if read:
+            isolation.record_receipt({"sha256": out["sha256"], "agent_type": "novelty-judge", "agent_id": "j-1"})
+        return out["sha256"]
 
     def delta(self, fetch=None):
         return self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), fetch=fetch)
@@ -233,7 +251,7 @@ class TestLitWatch(unittest.TestCase):
         run = str(self.run_file(res))
         base = ["threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
                 "--key", "arxiv:2031.00002", "--hypothesis", "H-0961", "--judgement", "Mismo resultado, ya publicado.",
-                "--severity", "crítico"]
+                "--severity", "crítico", "--packet-sha256", self.judged(run)]
         code, out = self.cli(*base, "--sentence", "fictional blue widgets are known to rotate faster than red")
         self.assertEqual(code, 2)
         self.assertIn("not verbatim", out["error"])
@@ -278,7 +296,38 @@ class TestLitWatch(unittest.TestCase):
     def threat(self, run: str, sentence: str, severity: str = "importante", key: str = "arxiv:2031.00002"):
         return self.cli("threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
                         "--key", key, "--hypothesis", "H-0961", "--judgement", "Juicio inventado.",
-                        "--sentence", sentence, "--severity", severity)
+                        "--sentence", sentence, "--severity", severity, "--allow-unread")
+
+    def test_judge_packet_holds_the_claim_and_the_abstract_only(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        code, out = self.cli("judge-packet", "--vault", str(self.vault), "--project-dir", str(self.p),
+                             "--run", run, "--key", "arxiv:2031.00002", "--hypothesis", "H-0961")
+        self.assertEqual(code, 0, out)
+        text = Path(out["packet"]).read_text(encoding="utf-8")
+        self.assertIn("Fictional blue widgets rotate faster than red widgets under synthetic spin.", text)
+        self.assertIn(ABSTRACT, text)
+        self.assertNotIn("status:", text)
+
+    def test_threat_needs_proof_the_judge_read_that_pair(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        args = ["threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
+                "--key", "arxiv:2031.00002", "--hypothesis", "H-0961", "--judgement", "Juicio inventado.",
+                "--sentence", "fictional blue widgets rotate faster than red widgets", "--severity", "menor"]
+        code, out = self.cli(*args)
+        self.assertEqual(code, 2)
+        self.assertIn("novelty-judge", out["error"])
+        unread = self.judged(run, read=False)
+        code, out = self.cli(*args, "--packet-sha256", unread)
+        self.assertEqual(code, 2)
+        code, out = self.cli(*args, "--packet-sha256", "f" * 64)
+        self.assertEqual(code, 2)
+        self.assertIn("not the packet", out["error"])
+        code, out = self.cli(*args, "--packet-sha256", self.judged(run))
+        self.assertEqual(code, 0, out)
+        data = json.loads(Path(run).read_text(encoding="utf-8"))
+        self.assertTrue(data["threats"][0]["packet_read"])
 
     def test_threat_severity_is_required_and_recorded(self):
         _, res = self.delta()

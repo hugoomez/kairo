@@ -218,9 +218,10 @@ amendments as such, per `preregister-experiment`'s own rule).
 ### Citations — real academic convention, not the internal shorthand
 
 - **In-text:** `(Author, Year)` / `(Author et al., Year)`, built from the
-  cited `Papers/P-XXXX.md` frontmatter `authors` / `year`.
+  cited `Papers/P-XXXX.md` frontmatter `authors` / `year`
+  (`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_meta.py" --vault <vault> P-XXXX …` `--referencia`; this session never opens a paper note).
 - **References list:** one entry per cited paper, copied **verbatim** from
-  that paper's own `## Referencia` line — it's already a properly formatted
+  that paper's own `## Referencia` line (`referencia` in the same output) — it's already a properly formatted
   reference string; do not rewrite it.
 - **Never cite a paper that has no `Papers/P-XXXX.md` note**, and never
   fabricate a reference to fill a gap in the argument. If the argument needs a
@@ -245,10 +246,12 @@ mechanically built packet, never this session's drafting reasoning.
      --vault <vault root> --note <Manuscritos/manuscript-<thread>.md> \
      --section "<exact heading text>" \
      [--experiment <E-XXXX.md> ...] [--analysis-output <combine.txt> ...] \
-     --out <tmp>/packet-<heading>.md --manifest <tmp>/manifest-<heading>.json
+     --out <tmp>/packet-<heading>.md --manifest <tmp>/manifest-<heading>.json --store
    ```
-2. Dispatch `fresh-verifier` with the packet file's text as the entire prompt,
-   verbatim, with nothing added.
+2. Dispatch `fresh-verifier` with the packet's **store path** (`packet` in the JSON `--store` prints) as the
+   **entire** prompt — never the packet's text, nothing added. Its only tool is
+   `Read`, which the vault hook holds to that file; the read leaves a receipt,
+   and `verifications.py append` refuses the verdict without it.
 3. Record the result on the **manuscript note**, whatever the verdict:
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \

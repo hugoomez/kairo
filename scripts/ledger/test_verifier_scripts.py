@@ -391,6 +391,21 @@ class TestPacket(unittest.TestCase):
         self.assertEqual(json.loads(man.read_text(encoding="utf-8"))["sha256"], sha)
         self.assertIn("excluded sections", err.getvalue())
 
+    def test_cli_store_puts_the_packet_where_the_verifier_reads_it(self):
+        import os
+        from unittest import mock
+        out = Path(self.tmp.name) / "p.md"
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(Path(self.tmp.name) / "state")}), \
+                redirect_stdout(buf), redirect_stderr(io.StringIO()):
+            rc = vp.main(["--vault", str(self.f["vault"]), "--note", str(self.f["hyp"]),
+                          "--out", str(out), "--store"])
+        self.assertEqual(rc, 0)
+        got = json.loads(buf.getvalue())
+        self.assertEqual(got["sha256"], hashlib.sha256(out.read_bytes()).hexdigest())
+        self.assertEqual(Path(got["packet"]).read_bytes(), out.read_bytes())
+        self.assertEqual(Path(got["packet"]).name, got["sha256"] + ".md")
+
     def test_locator_parsing(self):
         self.assertEqual(vp.locator_tokens("§5.1–§5.2"), [("sec", "5.1"), ("sec", "5.2")])
         self.assertEqual(vp.locator_tokens("§5.4, §9.2–§9.3"),
@@ -452,6 +467,44 @@ class TestVerifications(unittest.TestCase):
         return vf.append(str(note), "kairo/fresh-verifier@1.0.0", "claude-opus-5-5",
                          verdict, scope, kw.get("date", "2030-03-01"),
                          kw.get("report"), kw.get("sha"), kw.get("flag", False))
+
+    def cli_append(self, note, *extra):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.d / "state")}), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            return vf.main(["append", "--note", str(note), "--verifier", "kairo/fresh-verifier@1.0.0",
+                            "--model", "claude-opus-5-5", "--verdict", "no_errors_found", "--scope", "note",
+                            "--date", "2030-03-01", *extra])
+
+    def receipt(self, sha, agent="fresh-verifier"):
+        import os
+        from unittest import mock
+        sys.path.insert(0, str(HERE.parent / "security"))
+        import isolation
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.d / "state")}):
+            isolation.record_receipt({"sha256": sha, "agent_type": agent, "agent_id": "v-1"})
+
+    def test_cli_append_needs_proof_the_verifier_read_the_packet(self):
+        n = self.d / "n.md"
+        write(n, NOTE_NO_KEY)
+        sha = "a" * 64
+        self.assertEqual(self.cli_append(n), 2)                              # no packet named
+        self.assertEqual(self.cli_append(n, "--packet-sha256", sha), 2)      # named, never read
+        self.receipt(sha, agent="screener")
+        self.assertEqual(self.cli_append(n, "--packet-sha256", sha), 2)      # read by another agent
+        self.receipt(sha)
+        self.assertEqual(self.cli_append(n, "--packet-sha256", sha), 0)
+
+    def test_cli_append_without_proof_says_so_in_the_record(self):
+        n = self.d / "n.md"
+        write(n, NOTE_NO_KEY)
+        r = self.d / "r.txt"
+        r.write_text(REPORT.replace("errors_found", "no_errors_found").replace(
+            '[{"severity": "crítico", "location": "Justificación, afirmación 1",\n'
+            '               "why": "the cited section does not contain the claim"}]', "[]"), encoding="utf-8")
+        self.assertEqual(self.cli_append(n, "--allow-unread", "--report", str(r)), 0)
+        self.assertIn("sin constancia de lectura", n.read_text(encoding="utf-8"))
 
     def test_absent_key_is_created_and_rest_untouched(self):
         n = self.d / "n.md"

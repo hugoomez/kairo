@@ -81,10 +81,11 @@ and sign off the reason.
 
 ```
 python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py" \
-  --vault <vault> --note Projects/<slug>/Claims/<C-XXXX>.md --json --out <tmp>/packet.md
+  --vault <vault> --note Projects/<slug>/Claims/<C-XXXX>.md --out <tmp>/packet.md --store
 ```
 
-Dispatch `fresh-verifier` with the packet text only. Record its verdict with
+Dispatch `fresh-verifier` with the stored packet's path (`packet`) as its whole
+prompt — never the packet's text; its `Read` is held to that file by the hook. Record its verdict with
 the report and the packet's sha256 — the gate matches that sha256 against the
 packet of the current text:
 
@@ -92,7 +93,7 @@ packet of the current text:
 python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py" append \
   --note Projects/<slug>/Claims/<C-XXXX>.md --verifier kairo/fresh-verifier@<v> \
   --model <model> --verdict <verdict> --scope note --report <tmp>/report.md \
-  --packet-sha256 <sha256 from --json>
+  --packet-sha256 <sha256 --store printed>
 ```
 
 `errors_found`: fix the proof (or the statement, with the researcher), and

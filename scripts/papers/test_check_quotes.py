@@ -160,8 +160,10 @@ class TestSupport(TestCheckQuotes):
     finds unsupported is removed mechanically."""
 
     def cli(self, *args):
+        import os
+        from unittest import mock
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")}), redirect_stdout(buf):
             code = check_quotes.main(["--vault", self.vault, *args])
         return code, json.loads(buf.getvalue())
 
@@ -169,6 +171,36 @@ class TestSupport(TestCheckQuotes):
         d = self.tmp / "draft.md"
         d.write_text(text, encoding="utf-8")
         return d
+
+    def verifier_read(self, draft):
+        """Build the support packet and leave the receipt the hook writes when the
+        fresh-verifier reads it."""
+        import os
+        from unittest import mock
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
+        import isolation
+        code, rep = self.cli("--answer", str(draft), "--packet", str(self.tmp / "packet.md"))
+        self.assertEqual(code, 0, rep)
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")}):
+            isolation.record_receipt({"sha256": rep["packet_sha256"], "agent_type": "fresh-verifier",
+                                      "agent_id": "v-1"})
+        return draft
+
+    def test_a_verdict_is_applied_only_if_the_verifier_read_that_packet(self):
+        verdict = self.tmp / "v.json"
+        verdict.write_text(json.dumps({"verdict": "no_errors_found", "findings": []}), encoding="utf-8")
+        out = self.tmp / "R.md"
+        code, rep = self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(out))
+        self.assertEqual(code, 2)
+        self.assertIn("fresh-verifier", rep["refused"])
+        code, rep = self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(out),
+                             "--allow-unread")
+        self.assertEqual(code, 0, rep)
+        self.assertIn("sin constancia de lectura", out.read_text(encoding="utf-8"))
+        code, rep = self.cli("--answer", str(self.verifier_read(self.draft())), "--support", str(verdict),
+                             "--out", str(out))
+        self.assertEqual(code, 0, rep)
+        self.assertNotIn("sin constancia", out.read_text(encoding="utf-8"))
 
     def test_packet_numbers_only_the_claims_that_passed(self):
         packet = self.tmp / "packet.md"
@@ -188,7 +220,8 @@ class TestSupport(TestCheckQuotes):
              "why": "La cita habla del tiempo de anticipación, no de la anticipación en sí."},
             {"severity": "menor", "location": "Afirmación 1", "why": "Matiz."}]}), encoding="utf-8")
         out = self.tmp / "R.md"
-        code, rep = self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(out))
+        code, rep = self.cli("--answer", str(self.verifier_read(self.draft())), "--support", str(verdict),
+                             "--out", str(out))
         self.assertEqual(code, 0, rep)
         note = out.read_text(encoding="utf-8")
         self.assertIn("apoyo_verificado: errores (m-x)", note)
@@ -202,7 +235,8 @@ class TestSupport(TestCheckQuotes):
         verdict = self.tmp / "v.json"
         verdict.write_text(json.dumps({"verdict": "errors_found", "findings": [
             {"severity": "crítico", "location": "Afirmación 7", "why": "x"}]}), encoding="utf-8")
-        code, rep = self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(self.tmp / "R.md"))
+        code, rep = self.cli("--answer", str(self.verifier_read(self.draft())), "--support", str(verdict),
+                             "--out", str(self.tmp / "R.md"))
         self.assertEqual(code, 2)
         self.assertIn("Afirmación 7", rep["refused"])
         self.assertFalse((self.tmp / "R.md").exists())
@@ -214,7 +248,7 @@ class TestSupport(TestCheckQuotes):
         verdict = self.tmp / "v.json"
         verdict.write_text(json.dumps({"verdict": "cannot_assess", "findings": [],
                                        "cannot_assess_reason": "x"}), encoding="utf-8")
-        self.cli("--answer", str(self.draft()), "--support", str(verdict), "--out", str(out))
+        self.cli("--answer", str(self.verifier_read(self.draft())), "--support", str(verdict), "--out", str(out))
         self.assertIn("apoyo_verificado: no evaluable", out.read_text(encoding="utf-8"))
 
 

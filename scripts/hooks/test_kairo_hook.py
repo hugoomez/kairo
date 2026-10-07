@@ -129,6 +129,40 @@ class TestKairoHook(unittest.TestCase):
         self.assertEqual(self.events()[-1]["action"], "bitacora_commit")
         self.assertTrue(list((self.proj / "Bitacora").glob("*")), "the notebook got the commit")
 
+    def packet(self, text: str) -> Path:
+        import hashlib
+        d = self.state / "packets"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{hashlib.sha256(text.encode()).hexdigest()}.md"
+        p.write_text(text, encoding="utf-8", newline="")
+        return p
+
+    def test_isolated_agent_reads_only_its_packet_and_leaves_a_receipt(self):
+        p = self.packet("# Paquete inventado\n")
+        r = self.hook("pre-tool", {"tool_name": "Read", "tool_input": {"file_path": str(p)}, "cwd": str(self.vault),
+                                   "agent_type": "kairo:fresh-verifier", "agent_id": "ag-1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        reads = (self.state / "packet-reads.jsonl").read_text(encoding="utf-8")
+        self.assertIn(p.stem, reads)
+        r = self.hook("pre-tool", {"tool_name": "Read", "tool_input": {"file_path": str(self.vault / "Projects" / "demo" / "_hub.md")},
+                                   "cwd": str(self.vault), "agent_type": "kairo:fresh-verifier", "agent_id": "ag-1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("aislado", r.stderr.decode("utf-8"))
+
+    def test_isolated_agent_is_held_even_outside_a_vault(self):
+        r = self.hook("pre-tool", {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": str(self.outside),
+                                   "agent_type": "screener", "agent_id": "s-1"})
+        self.assertEqual(r.returncode, 2)
+
+    def test_main_thread_may_not_read_a_paper_note(self):
+        paper = self.vault / "Papers" / "P-0971 invented.md"
+        r = self.hook("pre-tool", {"tool_name": "Read", "tool_input": {"file_path": str(paper)}, "cwd": str(self.vault)})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("paper-reader", r.stderr.decode("utf-8"))
+        r = self.hook("pre-tool", {"tool_name": "Read", "tool_input": {"file_path": str(paper)}, "cwd": str(self.vault),
+                                   "agent_type": "kairo:paper-reader", "agent_id": "pr-1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

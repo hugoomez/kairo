@@ -186,12 +186,32 @@ class TestWrite(Base):
         out = cn.write_note(self.vault, "decision", self.packet(), RESULT, None, project="demo")
         self.assertTrue(out.exists())
 
-    def test_cli_parses_the_fenced_block(self):
+    def cli_write(self, packet, *extra):
+        import os
+        from unittest import mock
         res = self.tmp / "r.md"
         res.write_text("Aquí va:\n```json\n" + json.dumps(RESULT, ensure_ascii=False) + "\n```\n", encoding="utf-8")
-        code = cn.main(["write", "--vault", str(self.vault), "--target", "H-9001",
-                        "--packet", str(self.packet()), "--result", str(res)])
-        self.assertEqual(code, 0)
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")}):
+            return cn.main(["write", "--vault", str(self.vault), "--target", "H-9001",
+                            "--packet", str(packet), "--result", str(res), *extra])
+
+    def test_cli_parses_the_fenced_block(self):
+        self.assertEqual(self.cli_write(self.packet(), "--allow-unread"), 0)
+
+    def test_cli_write_needs_proof_the_critic_read_the_packet(self):
+        import hashlib
+        import os
+        from unittest import mock
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
+        import isolation
+        packet = self.packet()
+        self.assertEqual(self.cli_write(packet), 3)
+        sha = hashlib.sha256(packet.read_bytes()).hexdigest()
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")}):
+            isolation.record_receipt({"sha256": sha, "agent_type": "devils-advocate", "agent_id": "d-1"})
+        self.assertEqual(self.cli_write(packet), 0)
+        note = next((self.vault / "Projects" / "demo" / "Criticas").glob("CR-*.md")).read_text(encoding="utf-8")
+        self.assertIn("packet_read: true", note)
 
 
 if __name__ == "__main__":

@@ -29,11 +29,12 @@ POLICY = ROOT / "config" / "models.toml"
 KINDS = ("job", "agent", "tool")
 # A pinned Claude model id: family + version digits, no alias, no "latest".
 PINNED = re.compile(r"^claude-(opus|sonnet|haiku)-\d+(-\d+)*$")
-# An `isolated = true` agent must see only its packet: no file, shell or
-# network tool. Claude Code cannot launch an agent with zero tools, and an
-# empty `tools:` inherits all of them, so isolated agents list only these
-# session-bookkeeping tools, which read no file and reach no network.
-ISOLATED_TOOLS = frozenset({"CronList", "TaskList"})
+# An `isolated = true` agent must see only its packet: no shell or network
+# tool, and one file tool, `Read`, which the vault hook
+# (scripts/security/isolation.py) limits to its packet in the packet store —
+# so the orchestrator hands over a path, never retypes the packet. An empty
+# `tools:` inherits every tool, so the list must be exactly this.
+ISOLATED_TOOLS = frozenset({"Read"})
 
 
 class Refused(Exception):

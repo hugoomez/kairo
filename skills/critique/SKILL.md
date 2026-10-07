@@ -54,9 +54,12 @@ exactly what the script wrote.
 
 ### 3. Dispatch `devils-advocate` with the packet only
 
-Launch the `devils-advocate` subagent with the **full text of `packet.md` and
-nothing else** — no conversation, no summary of how the artifact came about,
-no earlier critiques, no hint of what you think its weak points are. Save its
+Launch the `devils-advocate` subagent with **the stored packet's path** (`packet`
+in the JSON step 2 printed) as its whole prompt — never the packet's text, no
+conversation, no summary of how the artifact came about, no earlier critiques,
+no hint of what you think its weak points are. Its only tool is `Read`, held
+by the vault hook to that file; the read leaves a receipt, and step 4 refuses
+the result without one. Save its
 reply verbatim to `<tmp>/result.md`.
 
 ### 4. File the note (mechanical)

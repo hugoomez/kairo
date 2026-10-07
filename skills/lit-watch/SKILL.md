@@ -149,10 +149,13 @@ so in its line. The backlog is triaged first, so a busy week never starves it.
 The judgement is not yours: it runs on the policy's hard-task model
 (`config/models.toml`, task `novelty_judge`).
 
-1. For each (hypothesis, candidate) pair, dispatch one `novelty-judge`
-   subagent, all in the same turn (one at a time if the prompt says memory is low). Give it the hypothesis's `## Claim` and
-   nothing else of it (not its justification, Génesis or reviews), and the
-   candidate's title and abstract exactly as in the run file.
+1. For each (hypothesis, candidate) pair, build its packet —
+   `lit_watch.py judge-packet --vault <vault> --project-dir <dir> --run <run file> --key <key> --hypothesis H-XXXX`
+   (the hypothesis's `## Claim` and the candidate's title and abstract exactly
+   as fetched, nothing else) — and dispatch one `novelty-judge` per pair, all in
+   the same turn (one at a time if the prompt says memory is low), whose whole
+   prompt is the `packet` path it printed. Never type the claim or the abstract
+   into the prompt.
 2. It answers `threat: true|false`, the exact abstract sentence, a severity
    (`crítico` / `importante` / `menor`) and a one-line judgement. A candidate
    with no abstract cannot carry a threat; say so in its triage line instead.
@@ -163,7 +166,8 @@ The judgement is not yours: it runs on the policy's hard-task model
 python <plugin>/scripts/watch/lit_watch.py threat --vault <vault> --project-dir <dir> --run <run file> \
   --key <key> --hypothesis H-XXXX --sentence "<exact words from the abstract>" \
   --severity crítico|importante|menor \
-  --judgement "<one line: why this may take the novelty, and what would tell>" --model <your model id>
+  --judgement "<one line: why this may take the novelty, and what would tell>" --model <the judge's model id> \
+  --packet-sha256 <sha256 judge-packet printed>
 ```
 
 If the script refuses the sentence because it is not verbatim, copy it again

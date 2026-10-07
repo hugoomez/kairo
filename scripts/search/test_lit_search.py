@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -11,10 +12,14 @@ import tempfile
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import lit_search as ls  # noqa: E402
+
+sys.path.insert(0, str(HERE.parent / "security"))
+import isolation  # noqa: E402
 
 PLAN = {"description": "Toy decoders for invented codes, last two years",
         "facets": [{"id": "A", "term": "toy code", "synonyms": ["invented code"]},
@@ -99,6 +104,9 @@ class FakeWeb:
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        self.env = mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")})
+        self.env.start()
+        os.environ.pop("KAIRO_PACKETS_DIR", None)
         self.plan = self.tmp / "plan.json"
         self.plan.write_text(json.dumps(PLAN), encoding="utf-8")
         self.run_dir = self.tmp / "run"
@@ -112,6 +120,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         ls.check_retraction.run = self.orig_check
+        self.env.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def cli(self, *args, web=None):
@@ -842,12 +851,15 @@ class ScreeningProvenance(Base):
     """The screener reads the whole abstract, and decisions.json is assembled by a
     script from the screeners' own replies, never retyped by the orchestrator."""
 
-    def ready(self):
+    def ready(self, read=True):
         self.run_search()
         self.cli("retraction", "--run", str(self.run_dir))
         pages, off = [], 0
         while off is not None:
             _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "40", "--offset", str(off))
+            if read:      # the screener read its page packet: the hook leaves this receipt
+                isolation.record_receipt({"sha256": shown["packet"]["sha256"], "agent_type": "screener",
+                                          "agent_id": f"s-{off}"})
             pages.append(shown)
             off = shown["next_offset"]
         return pages
@@ -865,12 +877,22 @@ class ScreeningProvenance(Base):
         cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
         cands[0]["abstract"] = "We study a toy code. " * 90 + "Our toy decoder reaches the invented bound."
         (self.run_dir / "candidates.json").write_text(json.dumps(cands), encoding="utf-8")
-        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all")
+        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all", "--with-abstracts")
         self.assertTrue(shown["candidates"][0]["abstract"].endswith("invented bound."))
         self.assertNotIn("abstract_recortado", shown["candidates"][0])
-        _, cut = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all", "--abstract-chars", "100")
+        _, cut = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all", "--abstract-chars", "100",
+                          "--with-abstracts")
         self.assertEqual(len(cut["candidates"][0]["abstract"]), 100)
         self.assertIn("abstract_recortado", cut["candidates"][0])
+
+    def test_the_session_gets_no_abstracts_the_screeners_packet_has_them_whole(self):
+        self.run_search()
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        cands[0]["abstract"] = "We study a toy code. " * 90 + "Our toy decoder reaches the invented bound."
+        (self.run_dir / "candidates.json").write_text(json.dumps(cands), encoding="utf-8")
+        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all")
+        self.assertNotIn("abstract", shown["candidates"][0])
+        self.assertIn("invented bound.", Path(shown["packet"]["path"]).read_text(encoding="utf-8"))
 
     def test_merge_assembles_the_blocks_and_screen_records_who_decided(self):
         pages = self.ready()
@@ -920,6 +942,35 @@ class ScreeningProvenance(Base):
                              "--out", str(self.tmp / "d.json"))
         self.assertEqual(code, 2)
         self.assertIn("may not overrule", res["refused"])
+
+    def test_show_hands_each_page_as_a_packet_in_the_store(self):
+        self.run_search()
+        self.cli("retraction", "--run", str(self.run_dir))
+        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "5")
+        p = Path(shown["packet"]["path"])
+        self.assertEqual(p.parent, self.tmp / "state" / "packets")
+        self.assertEqual(hashlib.sha256(p.read_bytes()).hexdigest(), shown["packet"]["sha256"])
+        text = p.read_text(encoding="utf-8")
+        self.assertIn(PLAN["description"], text)
+        self.assertIn("hardware papers", text)                          # scope_out, verbatim
+        for c in shown["candidates"]:
+            self.assertIn(c["key"], text)
+        pages = json.loads((self.run_dir / "pages.json").read_text(encoding="utf-8"))
+        self.assertEqual(pages[shown["page"]]["packet_sha256"], shown["packet"]["sha256"])
+
+    def test_merge_refuses_a_page_no_screener_read(self):
+        pages = self.ready(read=False)
+        blocks = [self.block(p, f"b{i}.txt") for i, p in enumerate(pages)]
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks),
+                             "--out", str(self.tmp / "d.json"))
+        self.assertEqual(code, 2)
+        self.assertIn("no screener read", res["refused"])
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks),
+                             "--out", str(self.tmp / "d.json"), "--allow-unread")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["unread_pages"], len(pages))
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(self.tmp / "d.json"))
+        self.assertIn("sin constancia de lectura", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
 
     def test_screen_without_merge_says_provenance_is_unknown(self):
         pages = self.ready()

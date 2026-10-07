@@ -190,6 +190,22 @@ class CheckSota(unittest.TestCase):
         code, out = self.run_cli("--packet", str(packet), "--section", "No such section")
         self.assertEqual(code, 2)
 
+    def test_each_packet_part_goes_to_the_store_for_the_verifier_to_read(self):
+        import hashlib
+        import os
+        from unittest import mock
+        packet = self.vault / "packet.md"
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.vault / "state")}):
+            code, out = self.run_cli("--packet", str(packet), "--section", "Lo establecido vs. lo debatido",
+                                     "--max-chars", "1500")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(out["stored"]), len(out["packets"]))
+        for local, st in zip(out["packets"], out["stored"]):
+            data = Path(local).read_bytes()
+            self.assertEqual(Path(st["path"]).read_bytes(), data)
+            self.assertEqual(st["sha256"], hashlib.sha256(data).hexdigest())
+            self.assertEqual(Path(st["path"]).parent, self.vault / "state" / "packets")
+
     def test_a_large_packet_is_split_into_parts_that_cover_every_sentence(self):
         packet = self.vault / "packet.md"
         code, out = self.run_cli("--packet", str(packet), "--section", "Lo establecido vs. lo debatido",

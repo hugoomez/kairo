@@ -381,7 +381,7 @@ establecido"), **do not re-derive the citation independently for the second
 occurrence.** Look up the locator already used the first time and reuse it
 verbatim. If the two occurrences disagree on the section number, that
 disagreement is itself the signal that one of them is wrong — stop and
-re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
+have `paper-reader` re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
 before writing either one; do not resolve the conflict by just picking
 whichever number was written down first. Never let the same fact carry two
 different section citations in the finished document.
@@ -397,9 +397,11 @@ It resolves every `P-XXXX <locator>` with the fresh-verifier's resolver and
 checks every number in a cited sentence — and in every table: a row that
 cites, and each cell of a table whose header names papers (the *Matriz de
 conceptos*) against its column's paper — against the text the locators point
-at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: for each one, re-open the cited
-heading in the paper note and either fix the locator / figure to what the
-paper says or drop the sentence; then run it again. If a problem cannot be
+at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: send them all to one `paper-reader`
+subagent as `check` requests (paper path, locator, the sentence) — this session
+never reads a paper note (the vault hook refuses it) — and either fix the
+locator / figure to what it returns (its `better_locator`, the verbatim `text`)
+or drop the sentence; then run it again. If a problem cannot be
 resolved (the paper does not say it anywhere you can find), drop the
 sentence — never leave a figure the cited text does not contain. Only as a
 last resort, `--write` marks the remaining ones «⚠ …» in place, and the
@@ -418,9 +420,13 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/check_sota.py" --vault <vault> --pr
 
 A large section is split: the JSON lists every part in `packets`
 (`sota-<n>.md`, `sota-<n>-2.md`, …) — dispatch one `fresh-verifier` per part.
-Pass each verifier its packet file's content and nothing else. Every
-`errors_found` finding names an `Afirmación`: re-open its source and fix the
-sentence to what the text says, or drop it, then re-run `check_sota.py`. A
+Each verifier's whole prompt is its part's store path (`stored[i].path`) —
+never the packet's text: its `Read` is held to that file by the vault hook,
+and the read leaves the receipt `verifications.py append --packet-sha256
+<stored[i].sha256>` requires. Every
+`errors_found` finding names an `Afirmación`: have `paper-reader` check its
+source and fix the sentence to what the text says, or drop it, then re-run
+`check_sota.py`. A
 `cannot_assess` is listed in the end-of-run message as `importante`. Record
 the verdicts in the frontmatter's `verifications:` list (one entry per section,
 `scope: section:<heading>`).
@@ -461,8 +467,9 @@ genuinely competing schools exist; include **§9 only if** `type` is
 **Every claim cites a specific paper id + section/table/figure** where possible
 (e.g. `P-0007 §4.2`, `P-0012 Tabla 3`). A claim with no citable source does not
 go in. **Before writing (or copying forward from a subagent's contribution) any
-such locator, re-open that exact heading in the source `Papers/P-XXXX.md` note
-and confirm the sentence paraphrases what's under it — not the paper in
+such locator, have that exact heading in the source `Papers/P-XXXX.md` note
+checked (the Map and Reduce subagents read it themselves; anything this session
+adds goes through `paper-reader`) and confirm the sentence paraphrases what's under it — not the paper in
 general, and not a similar-looking citation used earlier in this document.**
 This applies to §4 and §8, which the Reduce pass drafts itself, exactly as it
 applies to merging subagent contributions.
@@ -745,7 +752,7 @@ When a paper is already ingested for another project, only append this project's
   location. Drop it or find the source.
 - **Citing a section from memory of a similar earlier citation instead of
   re-reading it.** A cited-but-wrong locator is worse than an obviously
-  missing one — it looks verified and isn't. Re-open the exact heading every
+  missing one — it looks verified and isn't. Have the exact heading read (`paper-reader`) every
   time, even for a paper you just cited two paragraphs ago.
 - **The same fact carrying two different section numbers in one document.**
   If a fact restates something already cited elsewhere in this
