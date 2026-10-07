@@ -24,7 +24,11 @@ Nothing is paraphrased or reconstructed:
     caption as `![Figure N](<prefix><name>)`, the file kept beside the source
     bytes, so a reader (human, or the `paper-reader` subagent, which can look
     at images) sees the plot. Anything read off a plot is never literal.
-  - PDF: prose lines as extracted (ligature glyphs → plain letters). Headings
+  - PDF: prose lines as extracted (ligature glyphs → plain letters). Text the
+    PDF draws but no reader sees — invisible render mode, under 1 pt, white
+    fill, read from its content streams (`pdf_hidden_runs`) — stays verbatim
+    inside `[texto oculto en la fuente: …]`; a scan's OCR layer (most of its
+    text invisible) is the paper and is not marked. Headings
     numbered "3.2", "3.2.", Roman "II." with lettered "A." subsections, and
     appendices; the text starts at the introduction and stops at
     References / REFERENCES. A table's rows stay under its caption, verbatim
@@ -61,13 +65,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 from html.parser import HTMLParser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
 import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
 
-__version__ = "1.4.0"   # 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
+__version__ = "1.5.0"   # 1.5.0: PDF text no reader sees (invisible, < 1 pt, white) marked hidden; 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
@@ -127,6 +132,7 @@ def norm(s: str) -> str:
 
 
 HIDDEN = "[texto oculto en la fuente: {}]"
+HIDDEN_OPEN = HIDDEN.split("{")[0]
 _HIDDEN_STYLE = re.compile(r"display:none|visibility:hidden|opacity:0(?:\.0+)?(?:;|$)"
                            r"|font-size:0(?:\.0+)?(?:px|pt|em|rem|%)?(?:;|$)"
                            r"|(?<![-\w])color:(?:#fff(?:fff)?|white|rgb\(255,255,255\))(?:;|$)")
@@ -259,13 +265,18 @@ def figure_images(html_text: str, page_url: str) -> list[tuple[str, str]]:
     tree.feed(html_text)
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
+    page = page_url.rstrip("/")
+    last = page.rsplit("/", 1)[-1]
     for f in _iter(tree.root, lambda x: x.tag == "figure" and not x.has("ltx_table")
                    and _owner_figure(x) is None):
         for src in _figure_imgs(f):
             name = fig_name(src)
             if name not in seen:
                 seen.add(name)
-                out.append((name, urllib.parse.urljoin(page_url.rstrip("/") + "/", src)))
+                # arXiv serves the page at …/html/<id>v<N> (no trailing slash) and writes
+                # src="<id>v<N>/<file>": a browser resolves that against …/html/, as here
+                base = page if src.startswith(last + "/") else page + "/"
+                out.append((name, urllib.parse.urljoin(base, src)))
     return out
 
 
@@ -527,12 +538,17 @@ def pdftext_to_body(txt: str, start: str | None = None) -> str:
         i0 = next((i for i, l in enumerate(lines) if l.strip() == start), 0)
     else:
         i0 = next((i for i, l in enumerate(lines) if _PDF_INTRO.match(l.strip())), 0)
-    out: list[str] = []
+    # text no reader sees (mark_hidden) is kept wherever it sits, front matter included
+    out: list[str] = [l.strip() for l in lines[:i0] if l.strip().startswith(HIDDEN_OPEN)]
     damaged_run = in_refs = False
     st = {"app": "", "roman": 0, "letter": "", "in_roman": False, "top": 0}
     table_rows = -1                                  # -1: not inside a table; else rows kept
     for l in lines[i0:]:
         s = l.strip()
+        if s.startswith(HIDDEN_OPEN):
+            out.append(s)
+            damaged_run = False
+            continue
         if not s or re.fullmatch(r"\d{1,3}", s) or s.startswith("arXiv:"):
             continue
         if _PDF_REFS.fullmatch(s):
@@ -636,6 +652,226 @@ def fetch_arxiv(aid: str, pause: float = 3.0, version: str = "") -> dict | None:
     return None
 
 
+# --------------------------------------------------------------------------
+# PDF text no reader sees (read from the content streams, standard library only)
+# --------------------------------------------------------------------------
+_STREAM = re.compile(rb"<<(.*?)>>\s*stream\r?\n(.*?)\r?\nendstream", re.S)
+_TOKEN = re.compile(rb"\((?:\\.|[^\\()]|\((?:\\.|[^\\()])*\))*\)|<[0-9A-Fa-f\s]*>|<<|>>|\[|\]|/[^\s/\[\]()<>{}%]+|"
+                    rb"[-+]?(?:\d+\.?\d*|\.\d+)|[A-Za-z'\"*]+")
+_ESC = {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b", b"f": b"\f"}
+TINY_PT = 1.0              # an effective size under this is text no reader can see
+OCR_SHARE = 0.5            # more invisible text than this: a scanned paper's OCR layer
+# A content stream is operators in ASCII; an image or font stream that happens to
+# hold the bytes "BT" / "Tf" is not (checked on real arXiv PDFs).
+CONTENT_ASCII_SHARE = 0.9
+# Hidden text worth marking reads like prose: an injected instruction is a
+# sentence, while white or tiny figure labels ("1", "judged bad") are not.
+MIN_HIDDEN_WORDS = 5
+TJ_SPACE = -150             # a TJ offset below this (thousandths of an em) separates words
+
+
+_INLINE_IMAGE = re.compile(rb"\bBI\b.*?\bID\b.*?\bEI\b", re.S)
+_WORD = re.compile(r"[A-Za-z][a-z]*(?:['’-][A-Za-z]+)*[.,;:!?)]*|\(?[A-Za-z][a-z]+")
+
+
+def _reads_as_words(text: str) -> bool:
+    """MIN_HIDDEN_WORDS or more tokens that are words, and most tokens words."""
+    toks = text.split()
+    words = [t for t in toks if _WORD.fullmatch(t) and sum(ch.isalpha() for ch in t) >= 2]
+    return len(words) >= MIN_HIDDEN_WORDS and len(words) >= 0.7 * len(toks)
+
+
+def _content_stream(body: bytes) -> bool:
+    if not body:
+        return False
+    sample = body[:20000]
+    ascii_ = sum(1 for b in sample if b in (9, 10, 13) or 32 <= b < 127)
+    return ascii_ / len(sample) >= CONTENT_ASCII_SHARE
+
+
+def _pdf_string(tok: bytes) -> str:
+    """A literal (…) string as text (simple fonts: Latin-1); hex / CID strings give ''."""
+    if not tok.startswith(b"("):
+        return ""
+    s, out, i = tok[1:-1], bytearray(), 0
+    while i < len(s):
+        c = s[i:i + 1]
+        if c == b"\\" and i + 1 < len(s):
+            n = s[i + 1:i + 2]
+            m = re.match(rb"[0-7]{1,3}", s[i + 1:i + 4])
+            if m:
+                out.append(int(m.group(0), 8) & 0xFF)
+                i += 1 + len(m.group(0))
+                continue
+            out += _ESC.get(n, n if n not in b"\r\n" else b"")
+            i += 2
+            continue
+        out += c
+        i += 1
+    return out.decode("latin-1")
+
+
+def _scale(a: float, b: float, c: float, d: float) -> float:
+    return abs(a * d - b * c) ** 0.5
+
+
+def _mul(m: tuple, n: tuple) -> tuple:
+    """m × n for PDF matrices [a b c d e f] (m applied first)."""
+    a, b, c, d, e, f = m
+    A, B, C, D, E, F = n
+    return (a * A + b * C, a * B + b * D, c * A + d * C, c * B + d * D, e * A + f * C + E, e * B + f * D + F)
+
+
+def _apply(m: tuple, x: float, y: float) -> tuple[float, float]:
+    a, b, c, d, e, f = m
+    return a * x + c * y + e, b * x + d * y + f
+
+
+def pdf_hidden_runs(data: bytes) -> dict:
+    """Text a PDF draws that no reader sees: render mode 3 / 7 (invisible), an
+    effective size under TINY_PT (font size × text matrix × CTM), or a white
+    fill (`1 g`, `1 1 1 rg`, `0 0 0 0 k`). Returns {"runs": [{"text", "kind"}],
+    "ocr_layer": bool}: consecutive hidden strings of one text object join into
+    one run. When most of the text is invisible the paper is a scan with an OCR
+    layer — that text is the paper, and no run is reported. Only FlateDecode or
+    unfiltered content streams are read (mostly ASCII: CONTENT_ASCII_SHARE). A
+    run is reported only when it reads like prose (MIN_HIDDEN_WORDS words): a
+    white or tiny figure label is not hidden text. Text in a CID font (hex
+    strings) cannot be decoded here and is never reported — a limit, said in
+    the README."""
+    runs: list[dict] = []
+    chars = {"all": 0, "invisible": 0}
+    for m in _STREAM.finditer(data):
+        head, body = m.group(1), m.group(2)
+        if b"/Filter" in head:
+            if b"/FlateDecode" not in head or re.search(rb"/Filter\s*\[[^\]]*/\w+[^\]]*/\w+", head):
+                continue                         # only a single FlateDecode filter is read
+            try:
+                body = zlib.decompress(body)
+            except zlib.error:
+                continue
+        if b"BT" not in body or b"Tf" not in body or not _content_stream(body):
+            continue
+        body = _INLINE_IMAGE.sub(b" ", body)        # an inline image's bytes are not text
+        ident = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        ctm, stack = ident, []
+        size, mode, white = 0.0, 0, False
+        tm = tlm = ident
+        path: list[tuple[float, float]] = []      # points of the current path, page space
+        boxes: list[tuple[float, float, float, float]] = []  # areas filled in a colour other than white
+        args: list[bytes] = []
+        cur: dict | None = None
+        for tok in _TOKEN.findall(body):
+            if re.fullmatch(rb"[A-Za-z'\"*]+", tok):
+                op = tok
+                nums = []
+                for x in args:
+                    try:
+                        nums.append(float(x))
+                    except ValueError:
+                        nums.append(None)
+                six = nums[-6:] if len(nums) >= 6 and None not in nums[-6:] else None
+                if op == b"q":
+                    stack.append((ctm, white, mode, size))   # text state is part of the graphics state
+                elif op == b"Q" and stack:
+                    ctm, white, mode, size = stack.pop()
+                elif op == b"cm" and six:
+                    ctm = _mul(tuple(six), ctm)
+                elif op == b"re" and len(nums) >= 4 and None not in nums[-4:]:
+                    x, y, w, h = nums[-4:]
+                    path += [_apply(ctm, px, py) for px, py in ((x, y), (x + w, y), (x, y + h), (x + w, y + h))]
+                elif op in (b"m", b"l", b"c", b"v", b"y") and nums and None not in nums:
+                    # rounded boxes are drawn with curves: every point counts toward the area
+                    path += [_apply(ctm, nums[i], nums[i + 1]) for i in range(0, len(nums) - 1, 2)]
+                elif op in (b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"):
+                    if not white and path:
+                        boxes.append((min(q[0] for q in path), min(q[1] for q in path),
+                                      max(q[0] for q in path), max(q[1] for q in path)))
+                    path = []
+                elif op in (b"n", b"S", b"s", b"W", b"W*"):
+                    if op in (b"n", b"S", b"s"):
+                        path = []
+                elif op == b"BT":
+                    tm = tlm = ident
+                    cur = None
+                elif op == b"ET":
+                    cur = None
+                elif op == b"Tf" and nums and nums[-1] is not None:
+                    size = abs(nums[-1])
+                elif op == b"Tm" and six:
+                    tm = tlm = tuple(six)
+                elif op in (b"Td", b"TD") and len(nums) >= 2 and None not in nums[-2:]:
+                    tm = tlm = _mul((1.0, 0.0, 0.0, 1.0, nums[-2], nums[-1]), tlm)
+                elif op == b"Tr" and nums and nums[-1] is not None:
+                    mode = int(nums[-1])
+                elif op == b"g" and nums:
+                    white = nums[-1] == 1.0
+                elif op == b"rg" and len(nums) >= 3:
+                    white = nums[-3:] == [1.0, 1.0, 1.0]
+                elif op == b"k" and len(nums) >= 4:
+                    white = nums[-4:] == [0.0, 0.0, 0.0, 0.0]
+                elif op in (b"Tj", b"TJ", b"'", b'"'):
+                    # in a TJ array a large negative offset is a word space (pdfTeX writes no space characters)
+                    parts = []
+                    for x in args:
+                        if x.startswith(b"("):
+                            parts.append(_pdf_string(x))
+                        elif re.fullmatch(rb"[-+]?(?:\d+\.?\d*|\.\d+)", x) and float(x) < TJ_SPACE:
+                            parts.append(" ")
+                    text = "".join(parts)
+                    n = len(text.strip()) or sum(len(x) // 4 for x in args if x.startswith(b"<"))
+                    chars["all"] += n
+                    eff = size * _scale(*tm[:4]) * _scale(*ctm[:4])
+                    # white text over a filled box of another colour is visible (a tcolorbox title)
+                    ox, oy = _apply(ctm, tm[4], tm[5])
+                    on_box = any(x0 - 1 <= ox <= x1 + 1 and y0 - 1 <= oy <= y1 + 1 for x0, y0, x1, y1 in boxes)
+                    kind = ("render invisible" if mode in (3, 7) else
+                            "tamaño < 1 pt" if eff < TINY_PT else
+                            "relleno blanco" if white and not on_box else None)
+                    if mode in (3, 7):
+                        chars["invisible"] += n
+                    if kind and n:
+                        if cur and cur["kind"] == kind:
+                            cur["text"] = norm(cur["text"] + " " + text)
+                        else:
+                            cur = {"text": norm(text), "kind": kind}
+                            runs.append(cur)
+                    else:
+                        cur = None
+                args = []
+            elif tok in (b"[", b"]", b"<<", b">>"):
+                continue                         # TJ arrays: their strings stay in args
+            else:
+                args.append(tok)
+    ocr = bool(chars["all"]) and chars["invisible"] / chars["all"] > OCR_SHARE
+    if ocr:
+        runs = [r for r in runs if r["kind"] != "render invisible"]
+    # text in a CID font (hex strings) cannot be decoded here: it is never marked; nor
+    # is a run that does not read as words (a symbol font's codes, binary read as a string)
+    runs = [r for r in runs if _reads_as_words(r["text"])]
+    return {"runs": runs, "ocr_layer": ocr}
+
+
+def mark_hidden(txt: str, runs: list[dict]) -> str:
+    """Wrap each hidden run in pdftotext's text in HIDDEN (it stays verbatim); a run
+    that cannot be found there (a CID font, text split across lines) is said once,
+    before the text, so the note still carries the mark."""
+    lost = []
+    for r in runs:
+        t = r["text"]
+        if not t:
+            lost.append(r["kind"])
+            continue
+        if t in txt:
+            txt = txt.replace(t, "\n" + HIDDEN.format(t) + "\n")
+        else:
+            lost.append(r["kind"])
+    if lost:
+        txt = HIDDEN.format("el PDF dibuja texto que nadie ve (" + ", ".join(sorted(set(lost)))
+                            + ") y no se pudo localizar en el texto extraído") + "\n" + txt
+    return txt
+
+
 def pdftotext_available() -> bool:
     """Whether poppler's `pdftotext` is on PATH: without it a PDF gives no text."""
     return shutil.which("pdftotext") is not None
@@ -682,7 +918,7 @@ def build(kind: str, url: str, version: str, data: bytes, date: str, fig_prefix:
         txt = pdf_bytes_to_text(data)
         if txt is None:
             return None
-        body = pdftext_to_body(txt)
+        body = pdftext_to_body(mark_hidden(txt, pdf_hidden_runs(data)["runs"]))
     else:
         body = html_to_body(data.decode("utf-8", errors="replace"), fig_prefix)
     return _assemble(kind, url, version, data, body, date, figures=bool(fig_prefix) and kind != "pdf")
