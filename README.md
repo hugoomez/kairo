@@ -65,21 +65,30 @@ never runs unless you ask for it:
 
 | You want | Ask for / run |
 |---|---|
+| A screened library on a question in minutes: abstract-only cards + BibTeX | *"crea un proyecto ligero sobre …"* (`create-project`, template `ligero`) |
 | A screened, ingested, traceable library on a question — no synthesis | *"crea un proyecto corpus sobre …"* (`create-project`, template `corpus`) |
 | The same plus a cited state-of-the-art map | template `revision` |
-| Your existing Zotero / BibTeX library in the vault | `scripts/papers/import_library.py --bib refs.bib` |
+| Your existing Zotero / BibTeX library in the vault (with your own PDFs) | `scripts/papers/import_library.py --bib refs.bib [--pdf-dir …] [--title-lookup]` |
 | One paper: versions, published version, who cites it, BibTeX | `scripts/papers/paper_card.py --arxiv … \| --doi … \| --title "…"` |
-| A weekly watch of a topic | *"vigila este tema cada semana"* (`lit-watch`, topic mode); schedule `lit_watch.py delta` and read `_vigilancia/vigilancia-<date>.md` |
+| A weekly watch of a topic | *"vigila este tema cada semana"* (`lit-watch`, topic mode); schedule `lit_watch.py delta` on the vault's machine (Task Scheduler / cron) and read `_vigilancia/vigilancia-<date>.md` |
 | An answer from your papers, only in their own words | `ask-corpus` |
 | A bibliography | `scripts/papers/export_bib.py --project PROJ-XXX` (BibTeX / CSL-JSON) |
 
 Before a heavy pass (screening, map, verification) the skill shows an
 estimate of subagents, tokens and minutes (`scripts/estimate/estimate_run.py`)
-and, with `paper_ingestion: manual`, waits for your go-ahead.
+and, with `paper_ingestion: manual`, waits for your go-ahead. Order of
+magnitude: a `revision` project on ~40 papers is one to two hours and on the
+order of a million or two tokens, most of it the full texts the map reads;
+`ligero` is minutes, with no map.
 
-**What it cannot do, stated:** figures are kept as images and linked under
-their caption — a value read off a plot is always marked `≈ … (leído de la
-Figura N, no literal)`, never passed off as printed; a paper with no open text
+**What it cannot do, stated:** the quality of the model's steps (screening,
+the map) is checked per run, never measured against a gold standard here — keep
+a gold set in your vault and run `quality_report.py` (search recall per source,
+locator and figure error rates) to measure it on your own questions;
+figures are kept as images and linked under their caption — a value read off a
+plot is always marked `≈ … (leído de la Figura N, no literal)`, never passed
+off as printed, and `check_sota.py` reports how many there are
+(`plot_readings`): a scaling comparison resting on plots is approximate; a paper with no open text
 (a paywalled SC / IPDPS / ISC / IEEE QCE paper with no preprint) is ingested
 abstract-only unless you supply the PDF; equations in a PDF-only paper are
 marked `[extracción dañada]` (arXiv HTML keeps their LaTeX); DBLP answers
@@ -162,7 +171,7 @@ claude --plugin-dir /path/to/kairo
 | `kairo:idea` | Captures an idea verbatim in `Ideas/I-XXXX.md` and commits it alone — nothing else. Also `kairo-idea <text>` from any terminal (`scripts/ideas/`, needs `KAIRO_VAULT`). Matching an idea to projects and turning it into a hypothesis (always through `hypothesis-cycle`) happen later, when the researcher chooses. |
 | `kairo:theorem` | States (verbatim), proves and verifies lemmas and theorems as `Claims/` nodes with `depends_on`. A `lema` / `teorema` reaches `probado` only through `scripts/ledger/claim_gate.py`, on its current text: the fresh verifier on the proof (statement + proof + the dependencies' statements), the researcher's sign-off on the statement **and** the proof (`signoff.py`, refused inside agent sessions), and a numerical sanity check on small cases (`numeric_check.py`) or a signed-off reason why none is feasible — plus every dependency established. Lean is optional and never replaces the sign-off. The skill never signs off and never runs the check itself. |
 | `kairo:ask-corpus` | Answers a question from one project's own papers, only with verbatim quotes + locators (`P-XXXX §3.2`). The papers are read and the draft written by the `corpus-reader` subagent (no shell, network or write tool), never by the session that can run commands. `scripts/papers/check_quotes.py` lists the papers that may be quoted (never `send: never`, never the model-written reading notes, only the project's), then checks every quote character for character (whitespace aside) against the cited section with the fresh-verifier's resolver — an ellipsis may shorten a sentence, never join distant text or drop a negation; a claim with no quote or a failing quote is removed and reported. "No está en el corpus" is a valid answer. The saved answer is `escrito_por: modelo`, `citable: false`. |
-| `kairo:lit-watch` | Weekly literature watch for one project. `scripts/watch/lit_watch.py delta` re-runs the project's own recorded queries (the latest `_busquedas/<run>/plan.json`, else Estado-del-arte's "Búsqueda ejecutada → Consultas") on every source the search used that can be windowed, each over its own window (`_vigilancia/cursores.json`) — arXiv by submission date and Crossref by DOI registration date re-read 14 days, OpenAlex and Semantic Scholar (publication date only, indexed late) 60 days — paging each query up to 500 results (a capped arXiv / OpenAlex one has its window split in halves until each part is read whole; one still capped is reported `truncated` and keeps its window open — never counted as covered); it also asks OpenAlex for new works **citing** the project's own papers and its seeds (`cita_a`); a lost query keeps its own window open without holding the others back; it drops papers already in `Papers/` (including the published version of an ingested preprint) or offered before (a weak candidate comes back once, when it turns strong), and marks strong candidates (found by ≥ 2 facets, or citing the project's papers and showing a facet) for triage with a stemmed word-overlap novelty prefilter per hypothesis (plus each hypothesis's three closest candidates, so a Spanish claim still meets an English abstract). Each run leaves a page to read, `_vigilancia/vigilancia-<date>.md` (strong candidates by title, what they cite, lost / truncated / relevance-ranked coverage, triage and threats), so a scheduled watch needs no interface. The skill writes one triage line per strong candidate and records novelty threats: a model's judgement, written to the hypothesis's `## Revisión de vigencia` only with a sentence that is verbatim in the abstract (the script refuses otherwise). Never changes a status; ingests (create-project step 6) only what the researcher chose, or with `paper_ingestion: autonomo`. |
+| `kairo:lit-watch` | Weekly literature watch for one project. `scripts/watch/lit_watch.py delta` re-runs the project's own recorded queries (the latest `_busquedas/<run>/plan.json`, else Estado-del-arte's "Búsqueda ejecutada → Consultas") on every source the search used that can be windowed, each over its own window (`_vigilancia/cursores.json`) — arXiv by submission date and Crossref by DOI registration date re-read 14 days, OpenAlex and Semantic Scholar (publication date only, indexed late) 60 days — paging each query up to 500 results (a capped arXiv / OpenAlex one has its window split in halves until each part is read whole; one still capped is reported `truncated` and keeps its window open — never counted as covered); it also asks OpenAlex for new works **citing** the project's own papers and its seeds (`cita_a`); a lost query keeps its own window open without holding the others back; it drops papers already in `Papers/` (including the published version of an ingested preprint) or offered before (a weak candidate comes back once, when it turns strong), and marks strong candidates (found by ≥ 2 facets, or citing the project's papers and showing a facet) for triage with a stemmed word-overlap novelty prefilter per hypothesis (plus each hypothesis's three closest candidates, so a Spanish claim still meets an English abstract). Each run leaves a page to read, `_vigilancia/vigilancia-<date>.md` (strong candidates by title, what they cite, lost / truncated / relevance-ranked coverage, triage and threats), so a scheduled watch needs no interface. A published (often retitled) version of a preprint the vault holds or a watch already offered is listed as that version, never offered again as new. The skill writes one triage line per strong candidate and records novelty threats: a model's judgement, written to the hypothesis's `## Revisión de vigencia` only with a sentence that is verbatim in the abstract (the script refuses otherwise). Never changes a status; ingests (create-project step 6) only what the researcher chose, or with `paper_ingestion: autonomo`. |
 | `kairo:repo-steward` | Administers an applied project's code repository (outside the vault): health checks against its `CONVENTIONS.md` (tests, lint, types, CI, dependencies) → `_repo-health.md`; the code↔science trace from `Motivated-By:` commit trailers (`trace_code.py` → `_codigo-ciencia.md`); reviews against the project's goals; ADR proposals. Never pushes, never creates a remote. |
 
 ### Subagents
@@ -195,16 +204,25 @@ exact packet (`--allow-unread` records it as unproven). `model_policy.py
 check` (run in the tests) fails if an isolated agent gains a tool or the hook
 does not know it.
 
-**The main session never reads a paper's text.** It can run commands, and a
+**The main session does not read papers itself.** It can run commands, and a
 paper is third-party text that may carry instructions aimed at a model. The
 hook refuses, in the main thread only, a `Read` of a `Papers/P-*.md` note, a
-content `Grep` over one, a shell reader naming `Papers/` and `cite_text.py`;
-the `paper-reader` subagent (no shell, no network) reads them instead, and
-`scripts/papers/paper_meta.py` gives the frontmatter and reference line
-(`resolution_status`, authors, `code_repo`, …) without the text.
-`KAIRO_ALLOW_MAIN_PAPER_READ=1` turns this off. Every agent that reads paper
-text treats it as data, never as instructions, and reports text that reads
-like an instruction.
+content `Grep` over one, a shell reader naming `Papers/`, `cite_text.py` and
+`lit_search.py show --with-abstracts`; the `paper-reader` subagent (no shell,
+no network) reads them instead, and `scripts/papers/paper_meta.py` gives the
+frontmatter and reference line (`resolution_status`, authors, `code_repo`, …)
+without the text. `KAIRO_ALLOW_MAIN_PAPER_READ=1` turns this off.
+**What this does not guarantee:** paper text still reaches the main session
+second-hand — `paper-reader` returns verbatim excerpts (≤ 1200 characters) to
+fix a locator, the map's subagents return sentences drawn from the papers, and
+titles appear in listings — and the hook matches commands by name, so a shell
+command can reach a note without naming it. It narrows the channel; it is not
+a boundary. Every agent that reads paper text treats it as data, never as
+instructions, and reports text that reads like an instruction; hidden text
+(invisible, under 1 pt or white, in HTML and PDF) is marked at ingestion. In a
+PDF, white text over a filled box (a tcolorbox title) counts as visible; text
+in a CID font (hex strings) and white text over an image cannot be checked
+there and are not marked — the instruction-like-text heuristic still applies.
 
 ### Templates & scripts
 
@@ -229,12 +247,17 @@ like an instruction.
   request — with a date window, paging, truncation / loss reported, raw
   responses kept with sha256, deterministic dedup that merges a preprint with
   its published version, a cross pass over all facets, a mechanical prefilter
-  counted on its own PRISMA line), `snowball` (paged, truncation reported),
+  counted on its own PRISMA line; `exhaustive` splits a truncated arXiv /
+  OpenAlex query's date window until it is read whole, `arxiv_revisions` also
+  takes papers revised in the window, `config_warnings` names a missing free
+  key), `snowball` (paged, truncation reported),
   `retraction` (on what can be included), `screen` (validates the model's
   decision for every candidate that passed the prefilter and writes the PRISMA
   record `busqueda.md` and `ranked.md`) and `show` (paged; abstracts flagged
-  `sospechoso` when they read like an instruction to a model) and `agree`
-  (agreement between two screeners, with Cohen's kappa).
+  `sospechoso` when they read like an instruction to a model; `--prefiltered
+  --sample N` pages a reproducible sample of the prefiltered-out candidates,
+  and `screen` estimates from it how many includes the prefilter cost) and
+  `agree` (agreement between two screeners, with Cohen's kappa).
 - `scripts/papers/ingest_paper.py` — writes a whole paper note from fetched
   records (`add`): metadata, the verbatim abstract, the verbatim full text,
   the published version of a preprint, and every fetched byte kept in
@@ -268,8 +291,12 @@ like an instruction.
   Zotero / Better BibTeX / JabRef, or CSL-JSON) into the vault through
   `ingest_paper.py`, one paper at a time: only the arXiv id or DOI is taken
   from the file, so the old library's titles and authors never become vault
-  facts; entries with neither are listed. `--zotero-keys` keeps the citation
-  keys; `--dry-run` shows the plan.
+  facts; `--title-lookup` finds an entry with neither by its exact title
+  (an ambiguous one stays listed, never guessed). Your own PDFs — the `file`
+  field of a Better BibTeX / Zotero export, or `--pdf-dir` with
+  `<key>.pdf` — give a paywalled DOI entry its full text (hidden text in them
+  is marked, as at ingestion). `--zotero-keys` keeps the citation keys;
+  `--dry-run` shows the plan.
 - `scripts/papers/zotero_sync.py` — adds ingested papers to the local Zotero
   (reusing an existing item) from the note's fetched metadata only, and records
   `zotero_key`.
@@ -277,7 +304,8 @@ like an instruction.
   Referencia` line, never its text, for the main session.
 - `scripts/estimate/estimate_run.py` — before the heavy passes, the subagents,
   models, tokens and minutes a run will take (an estimate from sizes on disk,
-  said so).
+  said so; ingestion counts arXiv's 3 s spacing per figure image, with a
+  figure-heavy maximum; `--abstract-only` for the `ligero` template).
 - `scripts/papers/check_sota.py` — checks a synthesis (Estado-del-arte.md):
   every `P-XXXX <locator>` must point at text in the paper note, the paper must
   belong to the project and not be in conflict / retracted, and every figure in
@@ -287,14 +315,17 @@ like an instruction.
   the sentences say what their sources say, split into parts of at most
   `--max-chars` so each verifier reads its part whole. A figure with a unit
   (`530B`, `80GB`) is checked whatever its size, and a decimal comma (`1,1%`)
-  is the same number as `1.1%`. Both gate create-project step 7.
+  is the same number as `1.1%`. Both gate create-project step 7. The report
+  counts the values read off a plot (`plot_readings`), which no text can check.
 - `scripts/papers/paper_card.py` — one paper's card, by arXiv id, DOI or
   title (`--title`: an exact OpenAlex title match, else the candidates are
   listed): arXiv versions and dates, the published version with which source
   says so (arXiv, OpenAlex, Crossref relations, Semantic Scholar), retraction
   status, citation counts and the newest citing papers (sorted by OpenAlex;
   Semantic Scholar as fallback), and its BibTeX; says whether it is already in
-  the vault.
+  the vault. A preprint server is never a published venue. When no source
+  links a published version, Crossref is searched by title + first author and
+  a close match is shown as a **candidate** to confirm — never in the BibTeX.
 - `scripts/papers/export_bib.py` — BibTeX or CSL-JSON for a project or a list
   of papers, straight from the notes (no Zotero needed); a preprint with a
   published version is exported as that version with its `eprint` — only
@@ -768,11 +799,15 @@ claude plugin validate .       # check the manifest and component paths
 /reload-plugins                # pick up edits without restarting
 python -m pytest -q            # script tests (standard library + pytest)
 python -m ruff check .         # lint (rules in ruff.toml)
+KAIRO_LIVE_TESTS=1 python -m pytest scripts/quality/test_live_contracts.py   # the real APIs still parse
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same lint and tests on Linux and
 Windows, and validates the plugin manifest, on every push to `main` and every
-pull request.
+pull request. Every test there is offline, with invented records; the live
+contract tests (off by default, free endpoints only, no identifier written in
+the repo) are what tells you a source changed its answers — run them before a
+release.
 
 **Research content never goes in this repo.** This repository is public and
 holds only the plugin: skills, agents, scripts, templates and their synthetic

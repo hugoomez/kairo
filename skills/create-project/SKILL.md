@@ -46,11 +46,17 @@ until you have both.
 
 **An existing library** (a Zotero / Better BibTeX `.bib`, or CSL-JSON) the
 researcher wants in the project goes in through
-`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/import_library.py" --vault <vault> --project <PROJ-XXX> --bib <file> [--zotero-keys]`
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/import_library.py" --vault <vault> --project <PROJ-XXX> --bib <file> [--zotero-keys] [--title-lookup] [--pdf-dir <dir>]`
 (after step 2; `--dry-run` first, to show the plan and the entries with no
 arXiv id or DOI): it takes only identifiers from the file and ingests each paper
 as step 6 does, so the old library's titles and authors never become vault
-facts. Then run step 6.9's `resolve_refs.py` on the new P-ids, and pass the
+facts. **The researcher's own PDFs** give a paywalled paper (SC, IPDPS, ISC,
+QCE…) its full text: a Better BibTeX / Zotero export's `file` field is read
+(export with files), or `--pdf-dir` holds `<citation key>.pdf`; a DOI entry
+with a PDF is ingested from it (`--pdf-text`, the published text it will be
+cited as), an arXiv entry keeps arXiv's open text. `--title-lookup` looks an
+entry with neither identifier up by its exact title (OpenAlex, then arXiv);
+an ambiguous or missing title stays listed, never guessed. Then run step 6.9's `resolve_refs.py` on the new P-ids, and pass the
 imported ids as snowball seeds if the researcher wants their neighbourhood.
 
 Everything else in `${CLAUDE_PLUGIN_ROOT}/templates/project-template.md` is optional but improves later
@@ -58,6 +64,13 @@ stages — especially **Vocabulario conocido** and **Papers semilla** (feed the
 literature search, step 4) and **type** + **autonomy_defaults** (gate steps 4–5).
 
 ## Prerequisites
+
+- **The session's model.** This skill orchestrates on the session's own
+  model; only the subagents have theirs fixed (`config/models.toml`). Compare
+  your model id with the policy's tier for task `create_project`: on a model
+  below that tier (e.g. a Haiku session), say so before step 4 — the
+  orchestration of the heavy passes was written for it — and offer to go on
+  or to switch with `/model`.
 
 - The `literature-search` skill is available.
 - Smart Connections MCP available and indexed (`mcp__smart-connections__*`). An
@@ -99,6 +112,7 @@ existing fields — never a new `type` value:
 | `ciencia` (default) | `ciencia` | — | as today |
 | `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
 | `corpus` (search and ingest only) | `ciencia` | `seed_hypotheses: false`, `sota_map: false` | as today; steps 3, 7 and 8 are skipped |
+| `ligero` (search and abstract cards) | `ciencia` | `seed_hypotheses: false`, `sota_map: false`, `fulltext: false` | as today; steps 3, 7 and 8 are skipped |
 
 **`revision`** is the light path for a question like "state of the art on X,
 last two years" or "compare A, B and C": Propósito is the question itself and
@@ -115,6 +129,15 @@ It runs steps 1, 2, 4, 5, 6 and 9–10, then exports the project's references
 (`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/export_bib.py" --vault <vault>
 --project <PROJ-XXX> --out Projects/<slug>/referencias.bib`). The map can be
 built later by running step 7 alone.
+
+**`ligero`** is the daily-use path, in minutes rather than hours: the same
+search, screening and BibTeX as `corpus`, but each paper is ingested
+**abstract-only** (`ingest_paper.py add … --no-fulltext`: verified metadata,
+the verbatim abstract, the published version and the reference check — no
+full text, no figures). Estimate it with `estimate_run.py --planned-papers N
+--abstract-only`. A paper the researcher then wants to read in depth gets its
+text with `ingest_paper.py rebuild --vault <vault> --only <P-id>`; the map
+needs full text, so step 7 is never run on a `ligero` project as it stands.
 
 Set `template:` to the one used. For `teorico`, tell the researcher once, in
 your report: `default_linea_publicacion: true` means every experiment that
@@ -239,6 +262,7 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    - runs what a note written by hand would fire through the vault hook — the
      Smart Connections re-index and the SOTA staleness check (`sota_stale` in
      its output) — since a note a script writes never passes the Write tool.
+   With `fulltext: false` (the `ligero` template) add `--no-fulltext`.
    Exit 2 = refused (read the reason); exit 1 = a source could not be reached
    (re-run later). `--dry-run` shows what would be written. A `texto_sospechoso`
    warning means the full text holds hidden text (kept inside `[texto oculto en
