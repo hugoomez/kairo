@@ -21,6 +21,12 @@ Sources (no model involved, each answer kept with --raw-dir):
     the list `citing_incomplete`;
   - the shared retraction / withdrawal check (Crossref + arXiv).
 
+A preprint server or repository (Semantic Scholar files arXiv.org as a
+"journal") is never a published version. When no source names one for an
+arXiv paper, Crossref's bibliographic search by title + first author is asked:
+a close title with the same first author is listed under
+`published_candidates`, to confirm — never in the BibTeX.
+
 "Published version" lists every piece of evidence separately (arXiv
 journal_ref / declared DOI, an OpenAlex journal or conference location, a
 Crossref relation) and says which source said what; when none does, it says
@@ -65,8 +71,12 @@ import resolve_refs as rr  # noqa: E402
 import retraction  # noqa: E402
 from fill_abstract import from_jats  # noqa: E402
 
-TOOL = "kairo/paper_card@1.2.0"
+TOOL = "kairo/paper_card@1.3.0"
 S2 = "https://api.semanticscholar.org/graph/v1"
+# preprint servers and repositories: where a preprint is, never a published version
+REPOSITORY = re.compile(r"arxiv|biorxiv|medrxiv|chemrxiv|techrxiv|ssrn|research ?square|preprints\.org|zenodo|"
+                        r"hal\b|openreview", re.I)
+CANDIDATE_ROWS = 5
 Fetch = Callable[[str, dict], bytes]
 
 
@@ -116,6 +126,37 @@ class Card:
             (self.raw_dir / name).write_bytes(data)
             self.kept.append({"file": name, "url": net.redact(url), "sha256": hashlib.sha256(data).hexdigest()})
         return data
+
+
+def retitled_candidates(c: Card, ident: dict) -> list[dict]:
+    """A published version no source links to the preprint (a retitled
+    camera-ready): Crossref's bibliographic search by title + first author, kept
+    only when the title is close and the first author's surname matches —
+    resolve_refs' rule. A candidate for the researcher to confirm, never the
+    published version: it goes in no BibTeX."""
+    first = rr.surname_of((ident.get("authors") or [""])[0] or "")
+    if not first:
+        return []
+    raw = c.get("crossref-search.json", "https://api.crossref.org/works?query.bibliographic="
+                + urllib.parse.quote(ident["title"]) + "&query.author=" + urllib.parse.quote(first)
+                + f"&rows={CANDIDATE_ROWS}&select=DOI,title,author,container-title,issued,type",
+                {"Accept": "application/json"})
+    out = []
+    for w in ((json.loads(raw).get("message") or {}).get("items") or []) if raw else []:
+        d = retraction.normalize_doi(w.get("DOI"))
+        if not d or retraction.is_arxiv_doi(d) or (w.get("type") or "") == "posted-content":
+            continue                                    # a preprint record is not a published version
+        title = (w.get("title") or [""])[0]
+        level = rr.title_level(ident["title"], title)[0]
+        au = (w.get("author") or [{}])[0] or {}
+        if level not in ("exact", "close") or not rr.surname_matches(first, au.get("name") or "", au.get("family")):
+            continue
+        parts = ((w.get("issued") or {}).get("date-parts") or [[None]])[0] or [None]
+        out.append({"doi": d, "title": title, "venue": (w.get("container-title") or [""])[0],
+                    "year": str(parts[0] or ""),
+                    "why": f"título {'idéntico' if level == 'exact' else 'parecido'} y mismo primer autor "
+                           f"({first}) en Crossref, sin enlace declarado: confírmalo antes de citarlo así"})
+    return out
 
 
 def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir: Path | None,
@@ -216,7 +257,10 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             card["citations"]["semantic_scholar"] = p.get("citationCount")
             card["citations"]["semantic_scholar_influential"] = p.get("influentialCitationCount")
             pv = p.get("publicationVenue") or {}
-            if pv.get("name") and (pv.get("type") or "") in ("journal", "conference"):
+            # Semantic Scholar files a preprint server as a "journal" ("arXiv.org"): a
+            # repository is where the preprint is, never a published version
+            if pv.get("name") and (pv.get("type") or "") in ("journal", "conference") \
+                    and not REPOSITORY.search(pv["name"]):
                 card["published"].append({"source": "Semantic Scholar", "doi": "", "venue": pv["name"]})
         if n_cit and ident.get("openalex"):
             # OpenAlex sorts the citing works by date itself: the newest really are the newest;
@@ -293,6 +337,9 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}{retitled})",
                                       "doi": hit.get("doi") or "", "venue": hit["venue"],
                                       "year": str(hit.get("year") or ""), "url": hit["url"]})
+    if arxiv and ident.get("title") and not [p for p in card["published"]
+                                             if p.get("venue") and "preprint en arXiv" not in p["venue"]]:
+        card["published_candidates"] = retitled_candidates(c, ident)
     if doi or arxiv:
         # the same detection rules as check_retraction.py, on the records fetched above
         checks = []
@@ -353,6 +400,10 @@ def markdown(card: dict) -> str:
     L += [f"- {p['venue'] or '—'}" + (f" · DOI {p['doi']}" if p.get("doi") else "")
           + (f" · {p['date']}" if p.get("date") else "") + f" — según {p['source']}" for p in card["published"]] \
         or ["- no consta en arXiv, OpenAlex, Crossref ni Semantic Scholar"]
+    if card.get("published_candidates"):
+        L += ["", "**Posible versión publicada (candidata, no confirmada):**", ""]
+        L += [f"- {p['title']} — {p['venue'] or '—'} ({p['year'] or 's. f.'}) · DOI {p['doi']} — {p['why']}"
+              for p in card["published_candidates"]]
     r = card["retraction"] or {}
     L += ["", "## Estado", "", f"- Retracción / retirada: **{r.get('status', 'no comprobado')}**"
           + (f" ({'; '.join(r.get('evidence') or [])})" if r.get("evidence") else "")]
