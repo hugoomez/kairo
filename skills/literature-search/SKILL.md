@@ -100,6 +100,7 @@ copies it in, dated):
  "sources": ["arxiv", "s2", "openalex", "crossref", "openreview"],
  "from": "2024-10-01", "to": null, "arxiv_categories": ["quant-ph", "cs.IT"],
  "per_query": 100, "max_per_query": 1000, "anchors": 10, "cross": true, "prefilter": true, "min_facets": null,
+ "exhaustive": false, "arxiv_revisions": false,
  "include": ["reports a code construction, decoder or benchmark result on facets A and B"],
  "exclude": ["survey with no primary result", "non-English without English abstract"],
  "scope_out": ["<each Alcance: Fuera clause, verbatim>"]}
@@ -112,6 +113,15 @@ copies it in, dated):
   total fits in `max_per_query` (1000) is read whole anyway, so only a query
   larger than that is `truncada`. For `linea_publicacion: true` use ≥ 300 and
   snowball to closure.
+- `exhaustive` — an arXiv / OpenAlex query over `max_per_query` is read by
+  relevance (its top `per_query`, `truncada`) unless this is `true`: then its
+  date window is split in halves until every part is read whole (each part
+  kept in `raw/`; `splits` in `queries.json`). Use it for a broad question with
+  no recency (e.g. a mature field's whole literature), for `linea_publicacion:
+  true`, or when a run came back `truncada` and the researcher wants it whole —
+  it costs more queries and more candidates to screen; say so.
+- `arxiv_revisions` — the arXiv window is the first version's date by default;
+  `true` also takes a paper first posted earlier but revised inside the window.
 - `min_facets` — how many facets a candidate must reach to be read by default
   (`null` = min(2, facets)). **Set it to 1 when the request is a union, not an
   intersection**: "códigos qLDPC y sus decodificadores" asks for papers on the
@@ -136,11 +146,15 @@ In the same turn, search the vault with `mcp__smart-connections__search_by_text`
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check "<path>"`;
 exit `3` = `send: never`: drop it, count it only as "N omitidos (send: never)".
 
-Read the run's output: `lost` and `truncated` lines are the degraded-coverage
-events; `to_read` is how many candidates you will screen and `prefiltered_out`
+Read the run's output: `config_warnings` names a free key the run's sources
+work poorly without (tell the researcher before going on: keyless OpenAlex has
+a small daily budget that paging spends, keyless Semantic Scholar answers 429);
+`lost` and `truncated` lines are the degraded-coverage events; `to_read` is how many candidates you will screen and `prefiltered_out`
 how many the **mechanical prefilter** set aside — those that reach fewer than
 `min_facets` facets (default min(2, facets)), counting both the facets whose queries found them and
-the facet terms in their title or abstract (anchors are exempt, and so is a
+the facet terms in their title or abstract (a Semantic Scholar, Crossref or
+OpenReview query ranks any-word matches, so a record it returns is credited
+with the facet only when the term is in its own text) (anchors are exempt, and so is a
 candidate with no abstract whose title shows one facet term). Terms match
 their inflections ("decoder" ↔ "decoders", "decoding"; "parallelism" ↔
 "tensor-parallel"; "LLM" ↔ "LLMs"), and a multi-word term its words close
@@ -160,8 +174,8 @@ the researcher now that a free `SEMANTIC_SCHOLAR_API_KEY` removes it (see
 ### 3. Snowball (citation graph)
 
 Pick the strongest candidates (`lit_search.py show --run <run dir>` prints the
-compact list: titles, facets, venues — `--with-abstracts` adds the abstracts, which
-you rarely need) and snowball from them **and from every seed
+compact list: titles, facets, venues — abstracts stay out of this session:
+`--with-abstracts` is refused in the main thread by the vault hook) and snowball from them **and from every seed
 paper** the caller gave (create-project's *Papers semilla*):
 
 ```
@@ -232,8 +246,16 @@ the first):
    mechanical prefilter sets aside what reaches fewer than `min_facets` facets
    (step 2). If `prefiltered_out` is at most 120, page them with
    `show --run <run dir> --prefiltered --limit 40 --offset <n>` and dispatch a
-   `screener` per page exactly as above: nothing then goes unread. Above 120,
-   say so to the researcher (the titles are in `prefiltrados.md`) and offer it.
+   `screener` per page exactly as above: nothing then goes unread. **Above 120,
+   screen a sample**: `show --run <run dir> --prefiltered --sample 80 --limit 40
+   --offset <n>` pages a reproducible sample of 80 (recorded in
+   `prefilter_sample.json`), screened exactly as above; `screen` then writes in
+   `busqueda.md` how many of the sample were included and an estimate of the
+   includes the prefilter cost among the rest. An estimate above a handful
+   means `min_facets` or a facet's synonyms were wrong for this question: tell
+   the researcher and offer a new plan (`min_facets: 1`, more synonyms) — never
+   a silent re-run. A sampled include needs `retraction --keys` like any
+   prefiltered-out one.
 4. Save each screener's reply **verbatim**, one file per page
    (`<run dir>/blocks/<page id>.txt` — its ```json fence may stay), and let the
    script assemble the decisions:

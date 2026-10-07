@@ -511,7 +511,9 @@ class CrossAndPrefilter(Base):
     def test_prefiltered_candidates_are_excluded_mechanically_and_never_shown(self):
         web = self.Noisy()
         _, out = self.run_search(web)
-        self.assertEqual(out["prefiltered_out"], 1)
+        # only.a, and qce.7 ("A toy decoder."): Crossref returned it for facet A's query on
+        # a loose word match, which is no longer credit for facet A — its text shows only B
+        self.assertEqual(out["prefiltered_out"], 2)
         cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
         only_a = next(c for c in cands if c.get("doi") == "10.0000/only.a")
         self.assertFalse(only_a["prefilter"]["pass"])
@@ -522,15 +524,15 @@ class CrossAndPrefilter(Base):
         self.assertTrue(flagged["sospechoso"])                 # instruction-like abstract is marked
         # the retraction check skips it, and the screen excludes it without a decision
         _, r = self.cli("retraction", "--run", str(self.run_dir))
-        self.assertEqual(r["not_checked_prefiltered_out"], 1)
+        self.assertEqual(r["not_checked_prefiltered_out"], 2)
         d = {c["key"]: {"decision": "include", "relevance": "media", "why": "Reports a toy decoder on toy codes."}
              for c in cands if c["prefilter"]["pass"] and c.get("doi") != "10.0000/sc.1"}
         p = self.tmp / "d.json"
         p.write_text(json.dumps(d), encoding="utf-8")
         code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(p))
         self.assertEqual(code, 0, res)
-        self.assertEqual(res["counts"]["prefiltro"], 1)
-        self.assertEqual(res["counts"]["tras_prefiltro"], len(cands) - 1)
+        self.assertEqual(res["counts"]["prefiltro"], 2)
+        self.assertEqual(res["counts"]["tras_prefiltro"], len(cands) - 2)
         self.assertIn("prefiltro mecánico", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
         # including it needs its own retraction check first
         p.write_text(json.dumps({**d, only_a["key"]: {"decision": "include", "relevance": "baja",
