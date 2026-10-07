@@ -93,6 +93,13 @@ class TestDecide(VaultCase):
         self.assertIsNone(decide(self.ev("Bash", command='cat "Papers/P-0001 Normal.md"'), self.v))
         self.assertIsNone(decide(self.ev("Bash", command="ls Papers"), self.v))
 
+    def test_bash_globs_and_recursive_readers_that_reach_a_flagged_note(self):
+        for cmd in ("cat Papers/*", "head -n 5 Papers/P-00*.md", "grep -r secreto Papers",
+                    "rg secreto .", "Select-String -Path Papers\\* -Pattern x", "findstr /s x Papers\\*.md"):
+            self.assertIsNotNone(decide(self.ev("Bash", command=cmd), self.v), cmd)
+        for cmd in ("ls Papers/*", "cat Papers/P-0001*", "grep -r x Projects", "git add Papers/"):
+            self.assertIsNone(decide(self.ev("Bash", command=cmd), self.v), cmd)
+
     def test_mcp_get_note(self):
         t = "mcp__smart-connections__get_note"
         self.assertIsNotNone(decide(self.ev(t, notePath="Papers/P-0099 Privado.md"), self.v))

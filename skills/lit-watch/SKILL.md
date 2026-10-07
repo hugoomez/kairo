@@ -26,7 +26,10 @@ may say what a hypothesis says.
 
 **Running it every week.** The `delta` step is a plain script with no model:
 schedule it with the OS (cron, Task Scheduler) or a Claude Code routine
-(`/schedule`), and run this skill on the run files it leaves for triage.
+(`/schedule`), and run this skill on the run files it leaves for triage. Each
+run also leaves a page to read, `_vigilancia/vigilancia-<date>.md` (strong
+candidates by title, what they cite, lost / truncated / relevance-ranked
+coverage), so a scheduled watch is useful before any model has triaged it.
 
 **A novelty threat is not evidence.** It is your judgement that a new paper
 may already report the hypothesis's claim.
@@ -149,10 +152,13 @@ so in its line. The backlog is triaged first, so a busy week never starves it.
 The judgement is not yours: it runs on the policy's hard-task model
 (`config/models.toml`, task `novelty_judge`).
 
-1. For each (hypothesis, candidate) pair, dispatch one `novelty-judge`
-   subagent, all in the same turn (one at a time if the prompt says memory is low). Give it the hypothesis's `## Claim` and
-   nothing else of it (not its justification, Génesis or reviews), and the
-   candidate's title and abstract exactly as in the run file.
+1. For each (hypothesis, candidate) pair, build its packet —
+   `lit_watch.py judge-packet --vault <vault> --project-dir <dir> --run <run file> --key <key> --hypothesis H-XXXX`
+   (the hypothesis's `## Claim` and the candidate's title and abstract exactly
+   as fetched, nothing else) — and dispatch one `novelty-judge` per pair, all in
+   the same turn (one at a time if the prompt says memory is low), whose whole
+   prompt is the `packet` path it printed. Never type the claim or the abstract
+   into the prompt.
 2. It answers `threat: true|false`, the exact abstract sentence, a severity
    (`crítico` / `importante` / `menor`) and a one-line judgement. A candidate
    with no abstract cannot carry a threat; say so in its triage line instead.
@@ -163,7 +169,8 @@ The judgement is not yours: it runs on the policy's hard-task model
 python <plugin>/scripts/watch/lit_watch.py threat --vault <vault> --project-dir <dir> --run <run file> \
   --key <key> --hypothesis H-XXXX --sentence "<exact words from the abstract>" \
   --severity crítico|importante|menor \
-  --judgement "<one line: why this may take the novelty, and what would tell>" --model <your model id>
+  --judgement "<one line: why this may take the novelty, and what would tell>" --model <the judge's model id> \
+  --packet-sha256 <sha256 judge-packet printed>
 ```
 
 If the script refuses the sentence because it is not verbatim, copy it again
@@ -182,8 +189,11 @@ threat without a severity or with a sentence that is not in the abstract. Fix
 each one with `triage` / `threat`, then check again. Do not commit an
 incomplete run.
 
-- Commit the run file, `_hub.md` (`last_watch`) and any hypothesis that got a
-  Revisión de vigencia line, together:
+- Refresh the page: `lit_watch.py digest --project-dir <dir> --run <run file>`
+  (it adds your triage lines, the threats with their quoted sentences and any
+  decision to `vigilancia-<date>.md`).
+- Commit the run file, its `.md` page, `_hub.md` (`last_watch`) and any
+  hypothesis that got a Revisión de vigencia line, together:
   `Vigilancia de literatura <PROJ>: <n> nuevos, <m> alertas`.
 - Report in a few lines:
   - the window;
@@ -192,7 +202,8 @@ incomplete run.
     for the next watch, and offer to triage them now with a larger `--top`;
   - each threat, as severity + hypothesis + paper + the quoted sentence;
   - the lost and truncated queries (and that the window stays open).
-- End with: "Las alertas son juicios de un modelo; decide tú en la bandeja."
+- Name the page (`vigilancia-<date>.md`) and end with: "Las alertas son juicios
+  de un modelo; decide tú (en esa página, o en la bandeja de la interfaz si la usas)."
 
 ### 5. Ingest (mode ingest only)
 
@@ -208,8 +219,9 @@ confirmed paper — mechanically, with `ingest_paper.py`")** exactly:
 
 Then record the decision if the researcher has not:
 `lit_watch.py decide --decision ingerir`. Commit the new paper notes.
-`Estado-del-arte.md` is not regenerated here: its staleness hook will say
-when it is due.
+`Estado-del-arte.md` is not regenerated here: `ingest_paper.py add` runs the
+staleness check itself (and re-indexes Smart Connections) and prints
+`sota_stale` when the map is due — say so in the report.
 
 ## Rules
 

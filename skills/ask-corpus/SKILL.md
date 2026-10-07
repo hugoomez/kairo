@@ -98,7 +98,9 @@ a. **Quotes (mechanical) and the support packet:**
    The packet numbers every claim whose quotes passed (`Afirmación N`), each
    with its quotes and the source text around them.
 b. **Support (a fresh instance):** unless `packet_claims` is 0, dispatch one
-   `fresh-verifier` with the packet file's content and nothing else. Save its
+   `fresh-verifier` whose entire prompt is `packet_stored` (the path step a
+   printed) — never the packet's text. It reads the file itself; the read
+   leaves a receipt, and step c refuses the verdict without one. Save its
    JSON block, unchanged, to `<tmp>/apoyo.json`.
 c. **Apply and save:**
    ```

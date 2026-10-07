@@ -29,7 +29,9 @@ note (P-XXXX) and prints the ingest_paper.py command otherwise.
 
 --title looks the paper up in OpenAlex: one work with exactly that title (case,
 punctuation and accents aside) is the paper; anything else lists the closest
-hits and exits 3, never guessing. The citing papers come from OpenAlex, which
+hits and exits 3, never guessing. When OpenAlex has no work with that exact
+title (a preprint indexed days late), arXiv's title search is asked the same
+question — one exact title there is the paper (`found_by` says so). The citing papers come from OpenAlex, which
 sorts them by date itself; Semantic Scholar is the fallback (it pages in its
 own order, so past 1000 the card says it is the newest of the first 1000).
 
@@ -394,6 +396,9 @@ def find_by_title(title: str, fetch: Fetch) -> dict:
                     + "&per-page=10&select=id,doi,title,publication_year,primary_location,locations"
                     + (f"&api_key={urllib.parse.quote(key)}" if key else ""), {})
     except net.HttpError as e:
+        arx = _arxiv_by_title(title, fetch)
+        if len(arx) == 1:
+            return {"chosen": {**arx[0], "found_by": "arXiv (OpenAlex no respondió)"}}
         return {"error": f"OpenAlex: {net.redact(str(e))[:160]}"}
     hits = []
     for w in json.loads(raw).get("results") or []:
@@ -404,9 +409,27 @@ def find_by_title(title: str, fetch: Fetch) -> dict:
     exact = [h for h in hits if _norm_title(h["title"] or "") == _norm_title(title) and (h["doi"] or h["arxiv"])]
     if len(exact) == 1:
         return {"chosen": exact[0]}
+    if not exact:
+        arx = _arxiv_by_title(title, fetch)
+        if len(arx) == 1:
+            return {"chosen": {**arx[0], "found_by": "arXiv (OpenAlex no lo tiene aún)"}}
     if not hits:
-        return {"error": "OpenAlex no encuentra ningún trabajo con ese título"}
+        return {"error": "ni OpenAlex ni arXiv tienen un trabajo con ese título exacto"}
     return {"error": "título ambiguo: elige uno y vuelve con --arxiv o --doi", "candidates": hits[:10]}
+
+
+def _arxiv_by_title(title: str, fetch: Fetch) -> list[dict]:
+    """arXiv entries whose title is exactly `title` (case, punctuation and accents aside)."""
+    q = urllib.parse.quote(f'ti:"{" ".join(_norm_title(title).split())}"', safe="")
+    try:
+        raw = fetch(f"https://export.arxiv.org/api/query?search_query={q}&max_results=10", {})
+    except net.HttpError:
+        return []
+    out = []
+    for aid, e in retraction.parse_arxiv_feed(raw).items():
+        if _norm_title(e.get("title") or "") == _norm_title(title):
+            out.append({"title": e.get("title"), "arxiv": aid, "doi": None, "year": (e.get("published") or "")[:4]})
+    return out
 
 
 def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:

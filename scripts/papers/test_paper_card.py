@@ -266,5 +266,35 @@ class PaperCard(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
+
+class TitleFallback(unittest.TestCase):
+    """A preprint from this week is not in OpenAlex yet: its title is looked up on arXiv."""
+
+    ATOM = ('<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/0000.55555v1</id>'
+            "<title>Brand New Toy\n  Decoders</title><summary>x</summary></entry>"
+            "<entry><id>http://arxiv.org/abs/0000.55556v1</id><title>Brand new toy decoders, revisited</title>"
+            "<summary>x</summary></entry></feed>").encode()
+
+    def fetch(self, url, headers):
+        if "api.openalex.org" in url:
+            return json.dumps({"results": []}).encode()
+        if "export.arxiv.org" in url:
+            self.assertIn('ti:"brand new toy decoders"', urllib.parse.unquote(url).lower())
+            return self.ATOM
+        raise AssertionError(url)
+
+    def test_an_exact_arxiv_title_is_the_paper(self):
+        got = pc.find_by_title("Brand new toy decoders", self.fetch)
+        self.assertEqual(got["chosen"]["arxiv"], "0000.55555")
+        self.assertEqual(got["chosen"]["found_by"], "arXiv (OpenAlex no lo tiene aún)")
+
+    def test_no_exact_title_anywhere_is_not_found(self):
+        def fetch(url, headers):
+            if "api.openalex.org" in url:
+                return json.dumps({"results": []}).encode()
+            return b'<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+        self.assertIn("error", pc.find_by_title("Nothing like it", fetch))
+
+
 if __name__ == "__main__":
     unittest.main()

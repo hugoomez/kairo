@@ -56,6 +56,36 @@ They activate in any session whose folder (or `vault/` subfolder, or
 `$KAIRO_VAULT`) is a Kairo vault, and do nothing anywhere else. Each firing is
 recorded in `~/.kairo/hook-events.jsonl`.
 
+### Only the literature: the core path
+
+More than half of Kairo serves a research *programme* (hypotheses,
+preregistration, experiments, replication, manuscripts). If what you need is
+to find, read and follow papers, these are the only parts you use — the rest
+never runs unless you ask for it:
+
+| You want | Ask for / run |
+|---|---|
+| A screened, ingested, traceable library on a question — no synthesis | *"crea un proyecto corpus sobre …"* (`create-project`, template `corpus`) |
+| The same plus a cited state-of-the-art map | template `revision` |
+| Your existing Zotero / BibTeX library in the vault | `scripts/papers/import_library.py --bib refs.bib` |
+| One paper: versions, published version, who cites it, BibTeX | `scripts/papers/paper_card.py --arxiv … \| --doi … \| --title "…"` |
+| A weekly watch of a topic | *"vigila este tema cada semana"* (`lit-watch`, topic mode); schedule `lit_watch.py delta` and read `_vigilancia/vigilancia-<date>.md` |
+| An answer from your papers, only in their own words | `ask-corpus` |
+| A bibliography | `scripts/papers/export_bib.py --project PROJ-XXX` (BibTeX / CSL-JSON) |
+
+Before a heavy pass (screening, map, verification) the skill shows an
+estimate of subagents, tokens and minutes (`scripts/estimate/estimate_run.py`)
+and, with `paper_ingestion: manual`, waits for your go-ahead.
+
+**What it cannot do, stated:** figures are kept as images and linked under
+their caption — a value read off a plot is always marked `≈ … (leído de la
+Figura N, no literal)`, never passed off as printed; a paper with no open text
+(a paywalled SC / IPDPS / ISC / IEEE QCE paper with no preprint) is ingested
+abstract-only unless you supply the PDF; equations in a PDF-only paper are
+marked `[extracción dañada]` (arXiv HTML keeps their LaTeX); DBLP answers
+scripts with an anti-bot page and Google Scholar forbids scraping, so neither
+is queried.
+
 ---
 
 ## Core principles
@@ -117,8 +147,8 @@ claude --plugin-dir /path/to/kairo
 
 | Skill | What it does |
 |---|---|
-| `kairo:create-project` | Bootstraps one research project end to end, from a creation template (`teorico`: type ciencia organised around one paper from day one; `aplicado`: type hibrido with its own guarded code repository; `producto`; `ciencia`; `revision`: state of the art only — search, screening, ingestion and the map, with a *Tabla comparativa* of chosen fields when the question compares things, and no seed hypotheses) — templates only fill existing fields: a hub note, the folder scaffold, a literature sweep, ingested paper notes, a state-of-the-art map, and 3–5 seed hypotheses, then one commit. |
-| `kairo:literature-search` | Multi-facet search across arXiv, Semantic Scholar, OpenAlex, Crossref and OpenReview (ML venues with their acceptance decision; DBLP on request; US patents for product projects) with a date window, citation-graph snowballing, retraction / withdrawal checks and PRISMA counts. `scripts/search/lit_search.py` builds, pages and deduplicates the queries — per facet, plus a cross pass that asks for every facet at once — applies a mechanical prefilter (a candidate must reach two facets to be read; facet terms match their inflections, an arXiv / OpenAlex cross-pass hit counts for every facet, and a record with no abstract needs one facet in its title) and computes every count from the raw responses it keeps (with sha256); the model writes the facets and criteria before searching, and isolated `screener` subagents — one per page of candidates — write a decision + reason for every candidate that passes the prefilter, reading each abstract whole (a record that came without one is first looked up in OpenAlex by DOI); `merge` assembles their verbatim replies into the decisions — the orchestrator never retypes them, and `busqueda.md` says who decided what; the record names the screening model, and `agree` measures two screeners' agreement (Cohen's kappa) on a sample. Semantic Scholar / Crossref / OpenReview queries are marked «por relevancia» (their totals count loose matches) rather than truncated. Returns `busqueda.md` (the reproducible record) and `ranked.md`. |
+| `kairo:create-project` | Bootstraps one research project end to end, from a creation template (`teorico`: type ciencia organised around one paper from day one; `aplicado`: type hibrido with its own guarded code repository; `producto`; `ciencia`; `revision`: state of the art only — search, screening, ingestion and the map, with a *Tabla comparativa* of chosen fields when the question compares things, and no seed hypotheses; `corpus`: search, screening and ingestion only, plus a BibTeX export — no synthesis) — templates only fill existing fields: a hub note, the folder scaffold, a literature sweep, ingested paper notes, a state-of-the-art map, and 3–5 seed hypotheses, then one commit. |
+| `kairo:literature-search` | Multi-facet search across arXiv, Semantic Scholar, OpenAlex, Crossref and OpenReview (ML venues with their acceptance decision; DBLP on request; US patents for product projects) with a date window, citation-graph snowballing, retraction / withdrawal checks and PRISMA counts. `scripts/search/lit_search.py` builds, pages and deduplicates the queries — per facet, plus a cross pass that asks for every facet at once — applies a mechanical prefilter (a candidate must reach `min_facets` facets to be read — two by default, one for a union question such as "codes and their decoders", and the prefiltered-out ones are screened too when they are few; facet terms match their inflections, an arXiv / OpenAlex cross-pass hit counts for every facet, and a record with no abstract needs one facet in its title) and computes every count from the raw responses it keeps (with sha256); the model writes the facets and criteria before searching, and isolated `screener` subagents — one per page of candidates, each reading its page's packet file itself — write a decision + reason for every candidate that passes the prefilter, reading each abstract whole (a record that came without one is first looked up in OpenAlex by DOI); `merge` assembles their verbatim replies into the decisions — the orchestrator never retypes them, and `busqueda.md` says who decided what; the record names the screening model, and `agree` measures two screeners' agreement (Cohen's kappa) on a sample. Semantic Scholar / Crossref / OpenReview queries are marked «por relevancia» (their totals count loose matches) rather than truncated. Returns `busqueda.md` (the reproducible record) and `ranked.md`. |
 | `kairo:hypothesis-cycle` | Vetting of a candidate claim: semantic dedup → falsifiability & novelty → known-failure checklist (including a Duhem / auxiliary-assumption check) → severe-test evaluation, with a short refinement loop. v1 (default): single critic. v2 (opt-in): a second, independent critic on the known-failure and severe-test checks, tiered by stakes, with disagreement escalated to human review rather than resolved automatically. Reads the project's `_ledger.md` first. Every note it creates carries a `## Génesis` section (literal input, each check's verdict in one line, sibling candidates and their fate) — facts, never sent to a verifier. Before creating the note, a `fresh-verifier` pass hunts concrete errors in the artifact alone (`errors_found` → filed with `verification_reviewed: false` until the researcher reviews the findings, never a verdict on truth). Optionally drafts a simplification ladder for an expensive test. Creates a `propuesta` note or logs a discard so it is not re-proposed. |
 | `kairo:spawn-hypothesis` | Turns a product / engineering task that hit genuine technical uncertainty into a hypothesis, runs it through the *same* `hypothesis-cycle` gate (no reduced rigor), and cross-links the task and the hypothesis. |
 | `kairo:preregister-experiment` | Writes and freezes a preregistration for one hypothesis: exact prediction, primary metric with three-way decision thresholds, a control tied to a known published result, a stopping rule, and an environment manifest. Two independent choices at freeze time: tier (`ligero`, or `completo` — a formal a-priori sample-size justification, required by `linea_publicacion` or a cost threshold) and analysis plan (`frequentist` or `bayesian`, via a versioned Bayes-factor script). Records `frozen_at` / `frozen_commit`. Produces the frozen note only — runs nothing. Optional step 0: a **simplification ladder** — 2–3 cheap exploratory rungs (`role: exploratory`, `rung: 0–2`, each a `ligero` prereg and a `Claims/` node) run before the confirmatory design, which is frozen afterwards citing which rung informed which decision. Offered, never forced, when the design is expensive or reimplements a method from text. |
@@ -132,7 +162,7 @@ claude --plugin-dir /path/to/kairo
 | `kairo:idea` | Captures an idea verbatim in `Ideas/I-XXXX.md` and commits it alone — nothing else. Also `kairo-idea <text>` from any terminal (`scripts/ideas/`, needs `KAIRO_VAULT`). Matching an idea to projects and turning it into a hypothesis (always through `hypothesis-cycle`) happen later, when the researcher chooses. |
 | `kairo:theorem` | States (verbatim), proves and verifies lemmas and theorems as `Claims/` nodes with `depends_on`. A `lema` / `teorema` reaches `probado` only through `scripts/ledger/claim_gate.py`, on its current text: the fresh verifier on the proof (statement + proof + the dependencies' statements), the researcher's sign-off on the statement **and** the proof (`signoff.py`, refused inside agent sessions), and a numerical sanity check on small cases (`numeric_check.py`) or a signed-off reason why none is feasible — plus every dependency established. Lean is optional and never replaces the sign-off. The skill never signs off and never runs the check itself. |
 | `kairo:ask-corpus` | Answers a question from one project's own papers, only with verbatim quotes + locators (`P-XXXX §3.2`). The papers are read and the draft written by the `corpus-reader` subagent (no shell, network or write tool), never by the session that can run commands. `scripts/papers/check_quotes.py` lists the papers that may be quoted (never `send: never`, never the model-written reading notes, only the project's), then checks every quote character for character (whitespace aside) against the cited section with the fresh-verifier's resolver — an ellipsis may shorten a sentence, never join distant text or drop a negation; a claim with no quote or a failing quote is removed and reported. "No está en el corpus" is a valid answer. The saved answer is `escrito_por: modelo`, `citable: false`. |
-| `kairo:lit-watch` | Weekly literature watch for one project. `scripts/watch/lit_watch.py delta` re-runs the project's own recorded queries (the latest `_busquedas/<run>/plan.json`, else Estado-del-arte's "Búsqueda ejecutada → Consultas") on every source the search used that can be windowed, each over its own window (`_vigilancia/cursores.json`) — arXiv by submission date and Crossref by DOI registration date re-read 14 days, OpenAlex and Semantic Scholar (publication date only, indexed late) 60 days — paging each query up to 500 results (a capped arXiv / OpenAlex one has its window split in halves until each part is read whole; one still capped is reported `truncated` and keeps its window open — never counted as covered); it also asks OpenAlex for new works **citing** the project's own papers and its seeds (`cita_a`); a lost query keeps its own window open without holding the others back; it drops papers already in `Papers/` (including the published version of an ingested preprint) or offered before (a weak candidate comes back once, when it turns strong), and marks strong candidates (found by ≥ 2 facets, or citing the project's papers and showing a facet) for triage with a stemmed word-overlap novelty prefilter per hypothesis (plus each hypothesis's three closest candidates, so a Spanish claim still meets an English abstract). The skill writes one triage line per strong candidate and records novelty threats: a model's judgement, written to the hypothesis's `## Revisión de vigencia` only with a sentence that is verbatim in the abstract (the script refuses otherwise). Never changes a status; ingests (create-project step 6) only what the researcher chose, or with `paper_ingestion: autonomo`. |
+| `kairo:lit-watch` | Weekly literature watch for one project. `scripts/watch/lit_watch.py delta` re-runs the project's own recorded queries (the latest `_busquedas/<run>/plan.json`, else Estado-del-arte's "Búsqueda ejecutada → Consultas") on every source the search used that can be windowed, each over its own window (`_vigilancia/cursores.json`) — arXiv by submission date and Crossref by DOI registration date re-read 14 days, OpenAlex and Semantic Scholar (publication date only, indexed late) 60 days — paging each query up to 500 results (a capped arXiv / OpenAlex one has its window split in halves until each part is read whole; one still capped is reported `truncated` and keeps its window open — never counted as covered); it also asks OpenAlex for new works **citing** the project's own papers and its seeds (`cita_a`); a lost query keeps its own window open without holding the others back; it drops papers already in `Papers/` (including the published version of an ingested preprint) or offered before (a weak candidate comes back once, when it turns strong), and marks strong candidates (found by ≥ 2 facets, or citing the project's papers and showing a facet) for triage with a stemmed word-overlap novelty prefilter per hypothesis (plus each hypothesis's three closest candidates, so a Spanish claim still meets an English abstract). Each run leaves a page to read, `_vigilancia/vigilancia-<date>.md` (strong candidates by title, what they cite, lost / truncated / relevance-ranked coverage, triage and threats), so a scheduled watch needs no interface. The skill writes one triage line per strong candidate and records novelty threats: a model's judgement, written to the hypothesis's `## Revisión de vigencia` only with a sentence that is verbatim in the abstract (the script refuses otherwise). Never changes a status; ingests (create-project step 6) only what the researcher chose, or with `paper_ingestion: autonomo`. |
 | `kairo:repo-steward` | Administers an applied project's code repository (outside the vault): health checks against its `CONVENTIONS.md` (tests, lint, types, CI, dependencies) → `_repo-health.md`; the code↔science trace from `Motivated-By:` commit trailers (`trace_code.py` → `_codigo-ciencia.md`); reviews against the project's goals; ADR proposals. Never pushes, never creates a remote. |
 
 ### Subagents
@@ -146,17 +176,35 @@ claude --plugin-dir /path/to/kairo
 | `corpus-reader` | `ask-corpus`'s reader: gets the question and the list of paper notes it may quote, reads them with Read / Grep / Smart Connections only — no shell, network or write tool, so text inside a paper can never make anything run or leave the machine — and returns a draft of verbatim quotes that `check_quotes.py` verifies. |
 | `screener` | `literature-search`'s screener: sees the frozen plan and one page of candidates, and returns a decision + reason for each; one per page, in parallel, isolated like `novelty-judge`. |
 | `novelty-judge` | `lit-watch`'s judge: sees one hypothesis's `## Claim` and one candidate's title + abstract, and answers whether the abstract takes the claim's novelty, with the exact sentence. |
+| `paper-reader` | Reads paper notes for the main session (which may not): checks a locator against its sentence, finds where a claim is said, looks at a figure's image. No shell or network. |
 | `sota-synthesizer` | The Reduce pass of the state-of-the-art map: merges the facet contributions and drafts the cross-facet sections; `check_sota.py` then checks every locator and figure it wrote. |
 
-**Isolation is enforced, not just asked for.** Claude Code gives a subagent
-with an empty `tools:` line *every* tool and cannot launch one with none, so
-the four agents that must see only their packet (`fresh-verifier`,
-`devils-advocate`, `novelty-judge`, `screener`) list only `CronList, TaskList` — no file,
-shell or network tool — and are marked `isolated = true` in
-`config/models.toml`; `scripts/models/model_policy.py check` (run in the
-tests) fails if any of them gains a tool, or if any agent has no explicit
-`tools:` list. Every agent that reads paper text treats it as data, never as
-instructions, and reports text that reads like an instruction.
+**Isolation is enforced, not just asked for.** The four agents that must see
+only their packet (`fresh-verifier`, `devils-advocate`, `novelty-judge`,
+`screener`) have one tool, `Read`, and are marked `isolated = true` in
+`config/models.toml`. Their packet is written by a script to a
+content-addressed store (`~/.kairo/packets/<sha256>.md`,
+`scripts/security/isolation.py`); the orchestrator hands over **the path**,
+never the text, and the plugin's PreToolUse hook lets an isolated agent read
+that store and nothing else (fail closed), checking that the file still
+matches its name. Every read leaves a receipt, and the scripts that record a
+result — `lit_search.py merge`, `verifications.py append`,
+`critique_note.py write`, `check_quotes.py --support`, `lit_watch.py threat` —
+refuse it unless an agent of the right kind is recorded as having read that
+exact packet (`--allow-unread` records it as unproven). `model_policy.py
+check` (run in the tests) fails if an isolated agent gains a tool or the hook
+does not know it.
+
+**The main session never reads a paper's text.** It can run commands, and a
+paper is third-party text that may carry instructions aimed at a model. The
+hook refuses, in the main thread only, a `Read` of a `Papers/P-*.md` note, a
+content `Grep` over one, a shell reader naming `Papers/` and `cite_text.py`;
+the `paper-reader` subagent (no shell, no network) reads them instead, and
+`scripts/papers/paper_meta.py` gives the frontmatter and reference line
+(`resolution_status`, authors, `code_repo`, …) without the text.
+`KAIRO_ALLOW_MAIN_PAPER_READ=1` turns this off. Every agent that reads paper
+text treats it as data, never as instructions, and reports text that reads
+like an instruction.
 
 ### Templates & scripts
 
@@ -204,7 +252,9 @@ instructions, and reports text that reads like an instruction.
   Better BibTeX key.
 - `scripts/papers/verbatim_fulltext.py` — builds a paper note's
   `## Texto completo` from the paper's real text (arXiv HTML, then ar5iv,
-  then the PDF via `pdftotext`), verbatim and organised by the paper's own
+  then the PDF via `pdftotext`), verbatim — figure images kept in
+  `Papers/_fuentes/<P-id>/fig/` and linked under their caption, never turned
+  into text — and organised by the paper's own
   section / figure / table / appendix numbering — numbered, Roman ("II.") with
   lettered subsections, appendices; a PDF table's rows stay under its
   caption; an HTML cell spanning columns or rows is repeated in each, so
@@ -214,6 +264,20 @@ instructions, and reports text that reads like an instruction.
   note holds only source text: model-written reading notes live apart, in
   `Papers/_notas/<P-id>.md`, which is never citable and never read by any
   skill or agent (see "Model-written reading notes" below).
+- `scripts/papers/import_library.py` — brings an existing library (BibTeX from
+  Zotero / Better BibTeX / JabRef, or CSL-JSON) into the vault through
+  `ingest_paper.py`, one paper at a time: only the arXiv id or DOI is taken
+  from the file, so the old library's titles and authors never become vault
+  facts; entries with neither are listed. `--zotero-keys` keeps the citation
+  keys; `--dry-run` shows the plan.
+- `scripts/papers/zotero_sync.py` — adds ingested papers to the local Zotero
+  (reusing an existing item) from the note's fetched metadata only, and records
+  `zotero_key`.
+- `scripts/papers/paper_meta.py` — a paper note's frontmatter and `##
+  Referencia` line, never its text, for the main session.
+- `scripts/estimate/estimate_run.py` — before the heavy passes, the subagents,
+  models, tokens and minutes a run will take (an estimate from sizes on disk,
+  said so).
 - `scripts/papers/check_sota.py` — checks a synthesis (Estado-del-arte.md):
   every `P-XXXX <locator>` must point at text in the paper note, the paper must
   belong to the project and not be in conflict / retracted, and every figure in

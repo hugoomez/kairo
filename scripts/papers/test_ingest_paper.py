@@ -402,5 +402,89 @@ class FillAbstract(Base):
         self.assertEqual(r["status"], "ingested_by_script")
 
 
+
+class TestDerivedViews(unittest.TestCase):
+    """A note written by this script fires what a Write of it would have fired:
+    the SOTA staleness check and the Smart Connections re-index."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp(prefix="kairo-derived-"))
+        self.env = mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")})
+        self.env.start()
+        self.vault = self.tmp / "vault"
+        proj = self.vault / "Projects" / "demo"
+        proj.mkdir(parents=True)
+        (self.vault / "Papers").mkdir()
+        (proj / "_hub.md").write_text("---\nid: PROJ-971\n---\n", encoding="utf-8")
+        (proj / "Estado-del-arte.md").write_text("---\ngenerated: 2030-01-01\n---\n\n## X\n", encoding="utf-8")
+        self.paths = []
+        for i in range(5):
+            p = self.vault / "Papers" / f"P-097{i} invented {i}.md"
+            p.write_text(f"---\nid: P-097{i}\nprojects: [PROJ-971]\nadded: 2031-0{i + 1}-01\n---\n", encoding="utf-8")
+            self.paths.append(p)
+
+    def tearDown(self):
+        self.env.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_staleness_is_reported_and_the_hook_log_records_it(self):
+        got = ip.derived_views(self.vault, [self.paths[-1]])
+        self.assertIn("PROJ-971", got["sota_stale"])
+        log = (self.tmp / "state" / "hook-events.jsonl").read_text(encoding="utf-8")
+        self.assertIn("sota_staleness", log)
+
+    def test_outside_a_vault_nothing_runs(self):
+        other = self.tmp / "elsewhere" / "Papers"
+        other.mkdir(parents=True)
+        p = other / "P-0001 x.md"
+        p.write_text("---\nid: P-0001\n---\n", encoding="utf-8")
+        self.assertEqual(ip.derived_views(self.tmp / "elsewhere", [p]), {"sota_stale": None})
+
+
+
+class Figures(Base):
+    """A figure's image is kept beside the source bytes and linked under its caption."""
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"invented image bytes"
+
+    def fetch_with_images(self, missing=()):
+        base = make_fetch()
+
+        def fetch(url, headers):
+            if url.startswith("https://arxiv.org/html/") and url.endswith(".png"):
+                if any(url.endswith(m) for m in missing):
+                    raise ip.net.HttpError(url, 404, "not found")
+                return self.PNG
+            return base(url, headers)
+        return fetch
+
+    @staticmethod
+    def fig_arxiv(aid, version="", pause=0):
+        v = version or "v2"
+        return {"kind": "arxiv-html", "url": f"https://arxiv.org/html/{aid}{v}", "version": v,
+                "bytes": tvf.FIG_HTML.encode("utf-8")}
+
+    def test_images_are_kept_linked_and_verified(self):
+        code, out = self.add("--arxiv", "0000.11111", fetch=self.fetch_with_images(), fetch_arxiv=self.fig_arxiv)
+        self.assertEqual(code, 0, out)
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("![Figure 3](_fuentes/P-0001/fig/x3.png)", text)
+        self.assertEqual((self.vault / "Papers" / "_fuentes" / "P-0001" / "fig" / "x3.png").read_bytes(), self.PNG)
+        self.assertEqual(out["figures"], {"kept": 2, "missing": []})
+        code, res = self.run_cli("verify", "--vault", str(self.vault))
+        self.assertEqual((code, res["notes"][0]["status"]), (0, "ok"), res)
+
+    def test_an_image_that_cannot_be_fetched_is_named_never_invented(self):
+        code, out = self.add("--arxiv", "0000.11111", fetch=self.fetch_with_images(missing=("plot.png",)),
+                             fetch_arxiv=self.fig_arxiv)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["figures"]["missing"], ["extracted_99_figs_plot.png"])
+        self.assertTrue(any("figura" in w for w in out["warnings"]))
+        code, res = self.run_cli("verify", "--vault", str(self.vault))
+        self.assertEqual(res["notes"][0]["status"], "ok", res)
+
+
 if __name__ == "__main__":
     unittest.main()

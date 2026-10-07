@@ -12,8 +12,9 @@
 # kind = "tool"  a script that calls a model itself (evolve-program)
 #
 # isolated = true  (agents) the agent must not read the vault, run commands or
-#                reach the network; `check` refuses any tool beyond
-#                model_policy.ISOLATED_TOOLS. An empty `tools:` inherits every tool.
+#                reach the network: its only tool is `Read`, which the vault
+#                hook (scripts/security/isolation.py) limits to its packet;
+#                `check` refuses any other tool. An empty `tools:` inherits every tool.
 #
 # Tasks with no model at all are not listed: «¿Dónde estaba?», the lab notebook,
 # the shareable report, idea capture, numerical checks, repo remote/push.
@@ -122,14 +123,14 @@ label = "Salud del repositorio de código"
 [tasks.fresh_verifier]
 kind = "agent"
 file = "agents/fresh-verifier.md"
-isolated = true          # sees only its packet: no file, shell or network tool
+isolated = true          # reads only its packet file (hook-enforced): no shell or network tool
 tier = "opus"
 label = "Verificador independiente (fresh-verifier)"
 
 [tasks.devils_advocate]
 kind = "agent"
 file = "agents/devils-advocate.md"
-isolated = true          # sees only its packet: no file, shell or network tool
+isolated = true          # reads only its packet file (hook-enforced): no shell or network tool
 tier = "opus"
 label = "Abogado del diablo (subagente)"
 
@@ -142,7 +143,7 @@ label = "Síntesis final del Estado del arte (escuelas, huecos)"
 [tasks.novelty_judge]
 kind = "agent"
 file = "agents/novelty-judge.md"
-isolated = true          # sees only its packet: no file, shell or network tool
+isolated = true          # reads only its packet file (hook-enforced): no shell or network tool
 tier = "opus"
 label = "Confirmar una amenaza de novedad"
 
@@ -164,10 +165,16 @@ file = "agents/corpus-reader.md"
 tier = "sonnet"
 label = "Lector del corpus (ask-corpus): lee los papers y redacta citas literales, sin shell ni red"
 
+[tasks.paper_reader]
+kind = "agent"
+file = "agents/paper-reader.md"
+tier = "sonnet"
+label = "Lector de papers para la sesión principal (sin shell ni red)"
+
 [tasks.screener]
 kind = "agent"
 file = "agents/screener.md"
-isolated = true          # sees only its plan + page: no file, shell or network tool
+isolated = true          # reads only its page packet (hook-enforced): no shell or network tool
 tier = "sonnet"
 label = "Cribado de una página de candidatos (literature-search)"
 

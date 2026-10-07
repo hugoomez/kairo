@@ -190,6 +190,31 @@ class CheckSota(unittest.TestCase):
         code, out = self.run_cli("--packet", str(packet), "--section", "No such section")
         self.assertEqual(code, 2)
 
+    def test_each_packet_part_goes_to_the_store_for_the_verifier_to_read(self):
+        import hashlib
+        import os
+        from unittest import mock
+        packet = self.vault / "packet.md"
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.vault / "state")}):
+            code, out = self.run_cli("--packet", str(packet), "--section", "Lo establecido vs. lo debatido",
+                                     "--max-chars", "1500")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(out["stored"]), len(out["packets"]))
+        for local, st in zip(out["packets"], out["stored"]):
+            data = Path(local).read_bytes()
+            self.assertEqual(Path(st["path"]).read_bytes(), data)
+            self.assertEqual(st["sha256"], hashlib.sha256(data).hexdigest())
+            self.assertEqual(Path(st["path"]).parent, self.vault / "state" / "packets")
+
+    def test_the_packet_says_where_each_figure_appears_in_the_source(self):
+        packet = self.vault / "packet.md"
+        code, out = self.run_cli("--packet", str(packet), "--section", "Lo establecido vs. lo debatido")
+        self.assertEqual(code, 0, out)
+        text = packet.read_text(encoding="utf-8")
+        self.assertIn("## Dónde aparece cada cifra en el texto citado", text)
+        self.assertIn("- Afirmación 1: «1.1%» → «The toy decoder reaches a threshold of 1.1% at distance 15", text)
+        self.assertIn("«2.5%» → no aparece en el texto citado", text)
+
     def test_a_large_packet_is_split_into_parts_that_cover_every_sentence(self):
         packet = self.vault / "packet.md"
         code, out = self.run_cli("--packet", str(packet), "--section", "Lo establecido vs. lo debatido",
@@ -281,6 +306,30 @@ class NumberMatching(unittest.TestCase):
     def test_thousands_separators_still_match(self):
         self.assertTrue(cs.number_in("10000", ["over 10,000 toy samples"]))
         self.assertTrue(cs.number_in("10,000", ["over 10000 toy samples"]))
+
+
+
+class PlotValuesAndSmallCounts(unittest.TestCase):
+    """A value read off a plot is marked as such and must cite that figure; a small
+    count with a unit is a result like any other."""
+
+    def test_a_plot_reading_is_not_checked_literally_but_must_cite_its_figure(self):
+        ok = "- Weak-scaling efficiency stays ≈0.8 (leído de la Figura 3, no literal) — P-0101 Figura 3"
+        self.assertEqual(cs.numbers(ok), [])
+        self.assertEqual(cs.plot_readings(ok), ["3"])
+        bad = "- Weak-scaling efficiency stays ≈0.8 (leído de la Figura 3, no literal) — P-0101 §3.2"
+        self.assertEqual(cs.plot_readings(bad), ["3"])
+        self.assertEqual(cs.cited_figures(bad), set())
+
+    def test_small_counts_with_a_unit_are_checked(self):
+        self.assertEqual(cs.numbers("- Trained on 8 GPUs with 4 pipeline stages — P-0101 §3.2"),
+                         ["8 GPUs", "4 pipeline stages"])
+        self.assertEqual(cs.numbers("- Two facets, 3 ideas — P-0101 §3.2"), [])
+
+    def test_number_contexts_name_the_source_sentence(self):
+        units = ["We use 8 GPUs per node. The decoder reaches 1.1% at distance 15."]
+        self.assertEqual(cs.number_contexts(["8 GPUs", "1.1%"], units),
+                         {"8 GPUs": "We use 8 GPUs per node.", "1.1%": "The decoder reaches 1.1% at distance 15."})
 
 
 if __name__ == "__main__":

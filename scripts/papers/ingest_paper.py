@@ -46,6 +46,12 @@ current converter — no network, nothing else touched. `rebuild` re-fetches and
 rewrites the three sections of a note ingested before this script existed,
 keeping its frontmatter. A `send: never` note is never opened or rewritten.
 
+Figures: an image inside a figure of the arXiv HTML is fetched into
+`Papers/_fuentes/<P-id>/fig/` (role `figure` in the manifest, sha256 kept) and
+linked under its caption in `## Texto completo` (`![Figure N](…)`), so the
+plot can be looked at; it is never turned into text. An image that cannot be
+fetched is named in the output (`figures.missing`), never replaced.
+
 A preprint that arXiv or OpenAlex says was published (journal_ref, DOI,
 a journal / proceedings location) gets `published_doi`, `published_venue`,
 `published_year` — the note stays anchored on the text it holds.
@@ -91,6 +97,8 @@ SECTIONS = ("Referencia", "Resumen", "Texto completo")
 LOCK_NAME = ".ingest.lock"
 LOCK_WAIT_S = 900.0                 # longer than any single ingestion
 LOCK_STALE_S = 1800.0               # a lock this old was left by a crashed run
+MAX_FIGURES = 40                    # images per paper; more are named, not fetched
+MAX_FIGURE_BYTES = 8 * 1024 * 1024
 
 Fetch = Callable[[str, dict], bytes]
 
@@ -390,6 +398,7 @@ class Store:
         self.date = date
         self.files: list[dict] = []
         self.blobs: dict[str, bytes] = {}
+        self.figures: dict | None = None
 
     def keep(self, name: str, role: str, url: str, data: bytes, **extra) -> None:
         self.blobs[name] = data
@@ -399,6 +408,7 @@ class Store:
     def write(self) -> str:
         self.dir.mkdir(parents=True, exist_ok=True)
         for name, data in self.blobs.items():
+            (self.dir / name).parent.mkdir(parents=True, exist_ok=True)
             (self.dir / name).write_bytes(data)
         manifest = {"tool": TOOL, "converter": vf.TOOL_ID, "files": self.files}
         (self.dir / "fuentes.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -517,9 +527,36 @@ def open_pdf(store: Store, url: str, fetch: Fetch) -> tuple[str | None, str | No
     return block, None
 
 
+def fig_prefix(pid: str) -> str:
+    """Where a note's figure links point, relative to Papers/ (the note's folder)."""
+    return f"{FUENTES_DIR}/{pid}/fig/"
+
+
+def keep_figures(store: Store, html: bytes, page_url: str, fetch: Fetch) -> dict:
+    """Fetch every figure image of the HTML into the store (role `figure`)."""
+    got = vf.figure_images(html.decode("utf-8", errors="replace"), page_url)
+    kept, missing = 0, []
+    for i, (name, url) in enumerate(got):
+        if i >= MAX_FIGURES:
+            missing.append(name)
+            continue
+        try:
+            data = fetch(url, {"Accept": "image/*"})
+        except (net.HttpError, ValueError):
+            missing.append(name)
+            continue
+        if not data or len(data) > MAX_FIGURE_BYTES or data.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
+            missing.append(name)
+            continue
+        store.keep(f"fig/{name}", "figure", url, data)
+        kept += 1
+    return {"kept": kept, "missing": missing}
+
+
 def fulltext(store: Store, arxiv: str, version: str, pdf_text: Path | None, source_url: str | None,
-             fetch_arxiv=vf.fetch_arxiv) -> tuple[str | None, str]:
-    """(Texto completo block or None, kind)."""
+             fetch_arxiv=vf.fetch_arxiv, fetch: Fetch | None = None) -> tuple[str | None, str]:
+    """(Texto completo block or None, kind). With `fetch`, an HTML source's figure
+    images are kept too (`store.figures` says how many and which could not be)."""
     if pdf_text:
         data = pdf_text.read_bytes()
         block = vf.build_from_text(data, source_url or "", "?", store.date)
@@ -531,7 +568,11 @@ def fulltext(store: Store, arxiv: str, version: str, pdf_text: Path | None, sour
     got = fetch_arxiv(arxiv, version=version) if version else fetch_arxiv(arxiv)
     if not got:
         return None, ""
-    block = vf.build(got["kind"], got["url"], got["version"], got["bytes"], store.date)
+    prefix = ""
+    if fetch is not None and got["kind"] != "pdf":
+        store.figures = keep_figures(store, got["bytes"], got["url"], fetch)
+        prefix = fig_prefix(store.dir.name) if store.figures["kept"] else ""
+    block = vf.build(got["kind"], got["url"], got["version"], got["bytes"], store.date, fig_prefix=prefix)
     if block:
         ext = "pdf" if got["kind"] == "pdf" else "html"
         store.keep(f"texto.{ext}", "fulltext", got["url"], got["bytes"], kind=got["kind"], version=got["version"])
@@ -541,6 +582,35 @@ def fulltext(store: Store, arxiv: str, version: str, pdf_text: Path | None, sour
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
+
+HOOK = HERE.parent / "hooks" / "kairo_hook.py"
+
+
+def derived_views(vault: Path, paths: list[Path]) -> dict:
+    """What a Write of these notes would have fired, run for a note this script
+    wrote (the vault hook only sees the Write / Edit tools): the SOTA staleness
+    check and the Smart Connections re-index, through the hook's own router, so
+    each firing lands in ~/.kairo/hook-events.jsonl as it would from the tool.
+    Returns the staleness message (None when no project's map is stale)."""
+    import subprocess
+    stale: list[str] = []
+    for path in paths:
+        payload = {"tool_name": "Write", "tool_input": {"file_path": str(Path(path).resolve())},
+                   "cwd": str(vault), "source": TOOL}
+        try:
+            r = subprocess.run([sys.executable, str(HOOK), "post-write"], input=json.dumps(payload).encode("utf-8"),
+                               capture_output=True, timeout=150, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in r.stdout.decode("utf-8", errors="replace").splitlines():
+            try:
+                msg = json.loads(line).get("systemMessage")
+            except (ValueError, AttributeError):
+                continue
+            if msg and msg not in stale:
+                stale.append(msg)
+    return {"sota_stale": "; ".join(stale) or None}
+
 
 def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: str | None = None) -> dict:
     vault = a.vault.resolve()
@@ -601,7 +671,11 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
 
     tried = [store.files[0]["url"]] if store.files else []
     block, kind = (None, "") if a.no_fulltext else fulltext(
-        store, arxiv, a.version or "", a.pdf_text, a.source_url, fetch_arxiv)
+        store, arxiv, a.version or "", a.pdf_text, a.source_url, fetch_arxiv, fetch)
+    figures = store.figures
+    if figures and figures["missing"]:
+        warn.append(f"{len(figures['missing'])} figura(s) sin imagen descargada (el pie queda; la imagen no): "
+                    + ", ".join(figures["missing"][:10]))
     if not block and not a.no_fulltext and not arxiv:
         block, why = open_pdf(store, meta.get("oa_pdf") or "", fetch)
         kind = "pdf-oa" if block else kind
@@ -659,17 +733,23 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
             "abstract": "found" if meta.get("abstract") else "missing",
             "published_version": meta.get("published_venue") or meta.get("published_doi") or None,
             "fuentes": f"{store.rel}/fuentes.json", "warnings": warn,
+            **({"figures": figures} if figures else {}),
             # for the Zotero add: the fetched metadata, never anything a model wrote
             "csl": {"title": meta.get("title"), "authors": meta.get("authors"), "year": meta.get("year"),
                     "venue": meta.get("venue"), "doi": doi, "arxiv": arxiv,
                     "abstract": meta.get("abstract") or ""}}
 
 
-def convert(f: dict, data: bytes) -> str | None:
-    """The `## Texto completo` block the current converter gives for one kept file."""
+def convert(f: dict, data: bytes, prefix: str = "") -> str | None:
+    """The `## Texto completo` block the current converter gives for one kept file
+    (`prefix`: where its figure links point, when the note kept figure images)."""
     if f["kind"] == "pdf-text":
         return vf.build_from_text(data, f["url"], f.get("version", "?"), f["obtenido"])
-    return vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"])
+    return vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"], fig_prefix=prefix)
+
+
+def manifest_prefix(manifest: dict, mpath: Path) -> str:
+    return fig_prefix(mpath.parent.name) if any(f.get("role") == "figure" for f in manifest["files"]) else ""
 
 
 def _unquoted(block: str) -> str:
@@ -720,7 +800,7 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
         data = raws.get(f["file"])
         if data is None or f["role"] != "fulltext":
             continue
-        block = convert(f, data)
+        block = convert(f, data, manifest_prefix(manifest, mpath))
         got_body = section_body(text, "Texto completo") or ""
         if manifest.get("converter") != vf.TOOL_ID:
             # another converter version wrote it: its `> Fuente:` lines name that version,
@@ -802,7 +882,7 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
             out.append({"id": pid, "status": "refused", "reason": str(e)})
             continue
         version = vn.fm_get(fm, "arxiv_version") or ""
-        block, kind = fulltext(store, arxiv, version, None, None, fetch_arxiv)
+        block, kind = fulltext(store, arxiv, version, None, None, fetch_arxiv, fetch)
         if not block and not arxiv:
             block, why = open_pdf(store, meta.get("oa_pdf") or "", fetch)
             kind = "pdf-oa" if block else kind
@@ -857,7 +937,7 @@ def cmd_reconvert(a) -> dict:
             if sha256(data) != f["sha256"]:
                 out.append({"id": pid, "status": "refused", "reason": f"{f['file']} cambió (sha256 distinto)"})
                 continue
-            block = convert(f, data)
+            block = convert(f, data, manifest_prefix(manifest, mpath))
             if not block:
                 out.append({"id": pid, "status": "refused", "reason": "el convertidor actual no saca texto"})
                 continue
@@ -930,6 +1010,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
             if a.facet and not a.matched:
                 raise Refused("--facet needs --matched (the term that found the paper)")
             out = cmd_add(a, fetch, fetch_arxiv, today)
+            if not a.dry_run and out.get("path") and (out.get("status") == "created" or out.get("project_added")):
+                out.update(derived_views(a.vault.resolve(), [a.vault.resolve() / out["path"]]))
         elif a.cmd == "rebuild":
             out = cmd_rebuild(a, fetch, fetch_arxiv, today)
         elif a.cmd == "verify":

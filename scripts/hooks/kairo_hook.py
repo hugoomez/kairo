@@ -151,10 +151,29 @@ def rel(p: Path, vault: Path) -> str:
 # --------------------------------------------------------------------------
 
 def pre_tool(payload: dict) -> int:
+    import isolation
     import send_guard
     tin = payload.get("tool_input") or {}
     vault = find_vault(payload, tin.get("file_path") or tin.get("path") or tin.get("notePath"))
     tool = str(payload.get("tool_name") or "")
+    # isolated agents (fresh-verifier, screener, …) read their packet and nothing else — fail closed
+    try:
+        applies, reason, receipt = isolation.check_isolated(payload)
+    except Exception as exc:
+        applies = isolation.agent_name(payload) in isolation.ISOLATED_AGENTS
+        reason, receipt = f"comprobación de aislamiento fallida ({exc!r})", None
+    if applies:
+        if reason:
+            record("PreToolUse", "isolation", vault, "blocked", f"{isolation.agent_name(payload)} {tool}")
+            print(f"Kairo: {reason}", file=sys.stderr)
+            return 2
+        try:
+            isolation.record_receipt(receipt)
+        except OSError as exc:
+            print(f"Kairo: no se pudo registrar la lectura del paquete ({exc!r})", file=sys.stderr)
+            return 2
+        record("PreToolUse", "isolated_read", vault, "ok", f"{receipt['agent_type']} {receipt['sha256']}")
+        return 0
     # Outside a vault only the path-based checks (Read, Grep) make sense; the
     # shell check scans the vault for flagged notes and needs one.
     if vault is None and tool in ("Bash", "PowerShell"):
@@ -168,6 +187,15 @@ def pre_tool(payload: dict) -> int:
     if reason:
         record("PreToolUse", "send_guard", vault, "blocked", tool)
         print(f"send_guard (Kairo): {reason}", file=sys.stderr)
+        return 2
+    try:
+        reason = isolation.main_paper_read(payload)
+    except Exception as exc:  # fail open, loudly (as send_guard)
+        reason = None
+        record("PreToolUse", "main_paper_read", vault, "error", repr(exc))
+    if reason:
+        record("PreToolUse", "main_paper_read", vault, "blocked", tool)
+        print(f"Kairo: {reason}", file=sys.stderr)
         return 2
     if vault is not None:
         record("PreToolUse", "send_guard", vault, "allowed", tool)

@@ -44,6 +44,15 @@ The project brief. Minimum to proceed: **Propósito** (central goal/question) an
 **Alcance** (Dentro / Fuera). If either is missing, ask the user for it and stop
 until you have both.
 
+**An existing library** (a Zotero / Better BibTeX `.bib`, or CSL-JSON) the
+researcher wants in the project goes in through
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/import_library.py" --vault <vault> --project <PROJ-XXX> --bib <file> [--zotero-keys]`
+(after step 2; `--dry-run` first, to show the plan and the entries with no
+arXiv id or DOI): it takes only identifiers from the file and ingests each paper
+as step 6 does, so the old library's titles and authors never become vault
+facts. Then run step 6.9's `resolve_refs.py` on the new P-ids, and pass the
+imported ids as snowball seeds if the researcher wants their neighbourhood.
+
 Everything else in `${CLAUDE_PLUGIN_ROOT}/templates/project-template.md` is optional but improves later
 stages — especially **Vocabulario conocido** and **Papers semilla** (feed the
 literature search, step 4) and **type** + **autonomy_defaults** (gate steps 4–5).
@@ -89,6 +98,7 @@ existing fields — never a new `type` value:
 | `producto` | `producto` | — | as today |
 | `ciencia` (default) | `ciencia` | — | as today |
 | `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
+| `corpus` (search and ingest only) | `ciencia` | `seed_hypotheses: false`, `sota_map: false` | as today; steps 3, 7 and 8 are skipped |
 
 **`revision`** is the light path for a question like "state of the art on X,
 last two years" or "compare A, B and C": Propósito is the question itself and
@@ -97,6 +107,14 @@ search → screening → ingestion → the map (with a *Tabla comparativa* when 
 question compares things, see step 7) and stops there: no related-projects
 pass, no seed hypotheses. Say in the report that hypotheses can be generated
 later from the gaps.
+
+**`corpus`** is the cheapest path: a traceable, screened, ingested library
+(`Papers/` notes with their verbatim text, `busqueda.md`, a BibTeX export) and
+no synthesis at all — for a researcher who will read the papers themselves.
+It runs steps 1, 2, 4, 5, 6 and 9–10, then exports the project's references
+(`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/export_bib.py" --vault <vault>
+--project <PROJ-XXX> --out Projects/<slug>/referencias.bib`). The map can be
+built later by running step 7 alone.
 
 Set `template:` to the one used. For `teorico`, tell the researcher once, in
 your report: `default_linea_publicacion: true` means every experiment that
@@ -152,6 +170,21 @@ relevance) + any recency the brief states (the plan's `from`).
 Include the **patent search only if `type` is `producto` or `hibrido`** —
 otherwise omit it entirely (matches that skill's own gate).
 
+**Cost before the heavy passes — an estimate, then the researcher's go-ahead.**
+The screening (one `screener` per page), the map (one `facet-summarizer` per
+≤ 6 papers), the reduce and the verification (one `fresh-verifier` per section
+part) are where a project's time and usage go. Before dispatching the
+screeners, and again before step 7, run
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --run <run dir>                       # before screening
+python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --vault <vault> --papers <P-ids …>    # before step 7
+```
+and show its per-stage subagents, models, tokens and minutes in a few lines.
+With `paper_ingestion: manual`, wait for the researcher's go-ahead (they may
+narrow the plan, pick fewer papers, or switch to the `corpus` template); with
+`autonomo`, say it and go on. It is an estimate from sizes on disk, never a
+measurement — say so.
+
 What steps 5–7 consume, all written by `lit_search.py`: `ranked.md` (the
 screened, justified list), `screened.json` (each candidate's ids and its
 **`facets`** record — per facet, the term that matched it; step 6 persists it
@@ -202,7 +235,10 @@ records, **never typed or pasted by the model**. For each confirmed paper:
      `published_venue`, `published_year`, `journal_ref`) from arXiv's
      declaration and the publisher's Crossref record;
    - keeps every fetched byte in `Papers/_fuentes/<P-id>/` with a manifest
-     (`fuentes.json`: URL, sha256, date, converter version).
+     (`fuentes.json`: URL, sha256, date, converter version);
+   - runs what a note written by hand would fire through the vault hook — the
+     Smart Connections re-index and the SOTA staleness check (`sota_stale` in
+     its output) — since a note a script writes never passes the Write tool.
    Exit 2 = refused (read the reason); exit 1 = a source could not be reached
    (re-run later). `--dry-run` shows what would be written. A `texto_sospechoso`
    warning means the full text holds hidden text (kept inside `[texto oculto en
@@ -227,18 +263,18 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    source returned stays `No disponible — ningún abstract recuperado (…)`.
    Ingestion takes a per-vault lock, so papers may be ingested one after the
    other or in parallel calls: they never share a P-id.
-4. **Zotero (optional).** When Zotero is reachable (see the plugin README →
-   "Zotero"), add the item from the script's own `csl` output (never from
-   anything you wrote): Better BibTeX `item.search` by DOI / arXiv id / title
-   first (reuse an existing item and tag it `PROJ-XXX`), else `POST
-   /connector/saveItems` with `itemType` (`preprint` / `journalArticle` /
-   `conferencePaper`), title, creators, date, DOI, url, abstractNote and the
-   tag. Read back `item.citationkey` and record it with
-   `ingest_paper.py zotero-key --vault <vault> --id <P-id> --key <citekey>`.
-   Zotero unreachable → say so once ("⚠️ Zotero unavailable — P-00NN ingested
-   without a Zotero record") and go on; `zotero_key` stays absent so a later
-   pass can find these notes. The vault exports BibTeX itself
-   (`scripts/papers/export_bib.py`), so nothing depends on Zotero.
+4. **Zotero (optional).** When Zotero is running (see the plugin README →
+   "Zotero"), add the ingested papers and record their citation keys with one
+   command — never by hand-made HTTP calls:
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/zotero_sync.py" --vault <vault> <P-ids …>
+   ```
+   It reuses an existing item (Better BibTeX search by arXiv URL / DOI / title),
+   creates a missing one from the note's fetched metadata only (tagged
+   `PROJ-XXX`), and writes `zotero_key`. `unreachable` → say once ("⚠️ Zotero
+   unavailable — P-00NN ingested without a Zotero record") and go on;
+   `zotero_key` stays absent so a later run finds these notes. The vault exports
+   BibTeX itself (`scripts/papers/export_bib.py`), so nothing depends on Zotero.
 5. **Verify.** After the last paper:
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" verify --vault <vault> --only <P-ids>`
    must report every note `ok` (exit 0). A note whose sections no longer match
@@ -331,6 +367,8 @@ records, **never typed or pasted by the model**. For each confirmed paper:
 
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
 
+*(Skipped for the `corpus` template: `sota_map: false`.)*
+
 **Map — `facet-summarizer` subagents, in parallel.** Read the assignment from
 the notes: `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py"
 --vault <vault> --project <PROJ-XXX> --json` gives, per facet, the papers whose
@@ -381,7 +419,7 @@ establecido"), **do not re-derive the citation independently for the second
 occurrence.** Look up the locator already used the first time and reuse it
 verbatim. If the two occurrences disagree on the section number, that
 disagreement is itself the signal that one of them is wrong — stop and
-re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
+have `paper-reader` re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
 before writing either one; do not resolve the conflict by just picking
 whichever number was written down first. Never let the same fact carry two
 different section citations in the finished document.
@@ -397,9 +435,11 @@ It resolves every `P-XXXX <locator>` with the fresh-verifier's resolver and
 checks every number in a cited sentence — and in every table: a row that
 cites, and each cell of a table whose header names papers (the *Matriz de
 conceptos*) against its column's paper — against the text the locators point
-at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: for each one, re-open the cited
-heading in the paper note and either fix the locator / figure to what the
-paper says or drop the sentence; then run it again. If a problem cannot be
+at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: send them all to one `paper-reader`
+subagent as `check` requests (paper path, locator, the sentence) — this session
+never reads a paper note (the vault hook refuses it) — and either fix the
+locator / figure to what it returns (its `better_locator`, the verbatim `text`)
+or drop the sentence; then run it again. If a problem cannot be
 resolved (the paper does not say it anywhere you can find), drop the
 sentence — never leave a figure the cited text does not contain. Only as a
 last resort, `--write` marks the remaining ones «⚠ …» in place, and the
@@ -418,9 +458,13 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/check_sota.py" --vault <vault> --pr
 
 A large section is split: the JSON lists every part in `packets`
 (`sota-<n>.md`, `sota-<n>-2.md`, …) — dispatch one `fresh-verifier` per part.
-Pass each verifier its packet file's content and nothing else. Every
-`errors_found` finding names an `Afirmación`: re-open its source and fix the
-sentence to what the text says, or drop it, then re-run `check_sota.py`. A
+Each verifier's whole prompt is its part's store path (`stored[i].path`) —
+never the packet's text: its `Read` is held to that file by the vault hook,
+and the read leaves the receipt `verifications.py append --packet-sha256
+<stored[i].sha256>` requires. Every
+`errors_found` finding names an `Afirmación`: have `paper-reader` check its
+source and fix the sentence to what the text says, or drop it, then re-run
+`check_sota.py`. A
 `cannot_assess` is listed in the end-of-run message as `importante`. Record
 the verdicts in the frontmatter's `verifications:` list (one entry per section,
 `scope: section:<heading>`).
@@ -461,8 +505,9 @@ genuinely competing schools exist; include **§9 only if** `type` is
 **Every claim cites a specific paper id + section/table/figure** where possible
 (e.g. `P-0007 §4.2`, `P-0012 Tabla 3`). A claim with no citable source does not
 go in. **Before writing (or copying forward from a subagent's contribution) any
-such locator, re-open that exact heading in the source `Papers/P-XXXX.md` note
-and confirm the sentence paraphrases what's under it — not the paper in
+such locator, have that exact heading in the source `Papers/P-XXXX.md` note
+checked (the Map and Reduce subagents read it themselves; anything this session
+adds goes through `paper-reader`) and confirm the sentence paraphrases what's under it — not the paper in
 general, and not a similar-looking citation used earlier in this document.**
 This applies to §4 and §8, which the Reduce pass drafts itself, exactly as it
 applies to merging subagent contributions.
@@ -485,8 +530,10 @@ cell is a figure or short phrase **taken from the paper** (a number exactly as
 it appears, with its unit), and the row's `fuente` cell holds the locators that
 row's cells come from (`P-0007 Tabla 3; P-0007 §5.2`); a field the paper does
 not report is `no consta`, never estimated or converted; one it shows only in
-a plot is `en figura: Figura N (no extraído)` — never read off the plot, so a
-scaling curve is named, not invented. The values come from
+a plot is `≈<value> (leído de la Figura N, no literal)` when the note links the
+figure's image (the summarizer looks at it), else `en figura: Figura N (no
+extraído)` — a plot reading is always marked as one, so a scaling curve is
+read approximately and said so, never passed off as a printed figure. The values come from
 the facet summarizers' `(comparativa)` lines (they are given the fields),
 never from memory. `check_sota.py` checks every number in a cited row against
 the cited text, and the row goes into the fresh-verifier packet like any cited
@@ -745,7 +792,7 @@ When a paper is already ingested for another project, only append this project's
   location. Drop it or find the source.
 - **Citing a section from memory of a similar earlier citation instead of
   re-reading it.** A cited-but-wrong locator is worse than an obviously
-  missing one — it looks verified and isn't. Re-open the exact heading every
+  missing one — it looks verified and isn't. Have the exact heading read (`paper-reader`) every
   time, even for a paper you just cited two paragraphs ago.
 - **The same fact carrying two different section numbers in one document.**
   If a fact restates something already cited elsewhere in this

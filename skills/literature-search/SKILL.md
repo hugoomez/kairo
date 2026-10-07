@@ -66,7 +66,7 @@ title or abstract shows. `"cross": false` in the plan turns it off.
 
 Every query reports `hits` (records fetched), `total` (what the source says
 matched) and its state: `completa`, `truncada` (an arXiv / OpenAlex query with
-more matches than fetched — raise `per_query` or narrow the facet), `por
+more matches than `max_per_query` — narrow the facet or raise it), `por
 relevancia` (Semantic Scholar, Crossref, OpenReview: keyword search ranked by
 relevance whose total counts loose any-word matches — the top results are read,
 complete coverage is not promised, and it is not a gap) or `perdida` (failed
@@ -99,7 +99,7 @@ copies it in, dated):
             {"id": "B", "term": "decoder", "synonyms": ["BP-OSD", "belief propagation decoding"]}],
  "sources": ["arxiv", "s2", "openalex", "crossref", "openreview"],
  "from": "2024-10-01", "to": null, "arxiv_categories": ["quant-ph", "cs.IT"],
- "per_query": 100, "anchors": 10, "cross": true, "prefilter": true,
+ "per_query": 100, "max_per_query": 1000, "anchors": 10, "cross": true, "prefilter": true, "min_facets": null,
  "include": ["reports a code construction, decoder or benchmark result on facets A and B"],
  "exclude": ["survey with no primary result", "non-English without English abstract"],
  "scope_out": ["<each Alcance: Fuera clause, verbatim>"]}
@@ -108,8 +108,16 @@ copies it in, dated):
 - `from` / `to` carry any recency in the request ("last two years" → a date).
 - `scope_out` lists the project's **`Alcance: Fuera`** clauses verbatim: a paper
   excluded by scope must quote one of them (step 5).
-- `per_query` 100 is the targeted default; for `linea_publicacion: true` use
-  ≥ 300 and snowball to closure.
+- `per_query` 100 is the targeted default; an arXiv / OpenAlex query whose
+  total fits in `max_per_query` (1000) is read whole anyway, so only a query
+  larger than that is `truncada`. For `linea_publicacion: true` use ≥ 300 and
+  snowball to closure.
+- `min_facets` — how many facets a candidate must reach to be read by default
+  (`null` = min(2, facets)). **Set it to 1 when the request is a union, not an
+  intersection**: "códigos qLDPC y sus decodificadores" asks for papers on the
+  codes *and* papers on the decoders, so a code-construction paper that never
+  mentions decoding is in scope; "decoders for qLDPC codes" is an intersection
+  (keep the default). Say which you chose and why in the hand-back.
 
 ### 2. Run, and search the vault
 
@@ -131,7 +139,7 @@ exit `3` = `send: never`: drop it, count it only as "N omitidos (send: never)".
 Read the run's output: `lost` and `truncated` lines are the degraded-coverage
 events; `to_read` is how many candidates you will screen and `prefiltered_out`
 how many the **mechanical prefilter** set aside — those that reach fewer than
-min(2, facets) facets, counting both the facets whose queries found them and
+`min_facets` facets (default min(2, facets)), counting both the facets whose queries found them and
 the facet terms in their title or abstract (anchors are exempt, and so is a
 candidate with no abstract whose title shows one facet term). Terms match
 their inflections ("decoder" ↔ "decoders", "decoding"; "parallelism" ↔
@@ -151,8 +159,9 @@ the researcher now that a free `SEMANTIC_SCHOLAR_API_KEY` removes it (see
 
 ### 3. Snowball (citation graph)
 
-Read the strongest candidates (`lit_search.py show --run <run dir>` prints the
-compact list with abstracts) and snowball from them **and from every seed
+Pick the strongest candidates (`lit_search.py show --run <run dir>` prints the
+compact list: titles, facets, venues — `--with-abstracts` adds the abstracts, which
+you rarely need) and snowball from them **and from every seed
 paper** the caller gave (create-project's *Papers semilla*):
 
 ```
@@ -208,16 +217,24 @@ abstracts in this session's context (where the last pages get read worse than
 the first):
 
 1. Page the candidates: `show --run <run dir> --limit 40 --offset <n>` until
-   `next_offset` is null (`--all` adds the prefiltered-out ones). Each page
-   has an id (`page`), recorded in the run's `pages.json`. Abstracts come
-   whole (the result is usually the last sentence); never pass
-   `--abstract-chars` to a screening page.
+   `next_offset` is null. Each page has an id (`page`), recorded in the run's
+   `pages.json`, and a **packet**: `show` writes the page — the plan's
+   description, facets and criteria verbatim, and the page's candidates with
+   whole abstracts — to Kairo's packet store and prints its `packet.path`.
+   Never pass `--abstract-chars` to a screening page.
 2. Dispatch one `screener` per page, **all in the same turn** (one at a time if
-   the prompt says memory is low). Give each exactly: the plan's
-   `description`, `facets`, `include`, `exclude` and `scope_out` (from
-   `plan.json`, verbatim) and its page's `candidates` array as `show` printed
-   it — nothing else (no other page, no earlier decision, no opinion of yours).
-3. Save each screener's reply **verbatim**, one file per page
+   the prompt says memory is low). Its prompt is the page's `packet.path` and
+   nothing else — never the candidates' text, no other page, no earlier
+   decision, no opinion of yours. The screener's only tool is `Read`, which the
+   vault hook holds to that one file, and its read leaves a receipt: you hand
+   over a path, you never retype a page.
+3. **Read the prefiltered-out candidates too, when they are few.** The
+   mechanical prefilter sets aside what reaches fewer than `min_facets` facets
+   (step 2). If `prefiltered_out` is at most 120, page them with
+   `show --run <run dir> --prefiltered --limit 40 --offset <n>` and dispatch a
+   `screener` per page exactly as above: nothing then goes unread. Above 120,
+   say so to the researcher (the titles are in `prefiltrados.md`) and offer it.
+4. Save each screener's reply **verbatim**, one file per page
    (`<run dir>/blocks/<page id>.txt` — its ```json fence may stay), and let the
    script assemble the decisions:
    ```
@@ -226,14 +243,17 @@ the first):
    ```
    It refuses a block that is not exactly one page's keys (re-dispatch the
    screener with that page — never fill a key in yourself), a key decided
-   twice, and any candidate left without a block. Your own decisions — a
+   twice, any candidate that passed the prefilter left without a block, and a
+   page whose packet no `screener` is recorded as having read (dispatch it
+   again with the path; `--allow-unread` is for a session without Kairo's hooks
+   and is written into `busqueda.md` as such). Your own decisions — a
    prefiltered-out candidate you include on purpose — go in `--extra`, which
    may never overrule a screener. `screen` then refuses a `decisions.json`
    that differs from what `merge` wrote, and `busqueda.md` records how many
    decisions came from screeners and which ones from you.
-4. **Double screening** (always for `linea_publicacion: true`, otherwise when
-   the researcher asks): dispatch a second `screener` on a sample of at least
-   20 candidates (every 5th key of `to_read`, from one or more pages), write its
+5. **Double screening** (always for `linea_publicacion: true`, otherwise when
+   the researcher asks): dispatch a second `screener` on one or more whole
+   pages totalling at least 20 candidates, with the same packet paths, write its
    block to `sample.json`, and run
    `lit_search.py agree --decisions decisions.json --second sample.json`.
    Report the agreement and kappa it prints, and list every disagreement for
