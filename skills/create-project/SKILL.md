@@ -44,6 +44,15 @@ The project brief. Minimum to proceed: **Propósito** (central goal/question) an
 **Alcance** (Dentro / Fuera). If either is missing, ask the user for it and stop
 until you have both.
 
+**An existing library** (a Zotero / Better BibTeX `.bib`, or CSL-JSON) the
+researcher wants in the project goes in through
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/import_library.py" --vault <vault> --project <PROJ-XXX> --bib <file> [--zotero-keys]`
+(after step 2; `--dry-run` first, to show the plan and the entries with no
+arXiv id or DOI): it takes only identifiers from the file and ingests each paper
+as step 6 does, so the old library's titles and authors never become vault
+facts. Then run step 6.9's `resolve_refs.py` on the new P-ids, and pass the
+imported ids as snowball seeds if the researcher wants their neighbourhood.
+
 Everything else in `${CLAUDE_PLUGIN_ROOT}/templates/project-template.md` is optional but improves later
 stages — especially **Vocabulario conocido** and **Papers semilla** (feed the
 literature search, step 4) and **type** + **autonomy_defaults** (gate steps 4–5).
@@ -254,18 +263,18 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    source returned stays `No disponible — ningún abstract recuperado (…)`.
    Ingestion takes a per-vault lock, so papers may be ingested one after the
    other or in parallel calls: they never share a P-id.
-4. **Zotero (optional).** When Zotero is reachable (see the plugin README →
-   "Zotero"), add the item from the script's own `csl` output (never from
-   anything you wrote): Better BibTeX `item.search` by DOI / arXiv id / title
-   first (reuse an existing item and tag it `PROJ-XXX`), else `POST
-   /connector/saveItems` with `itemType` (`preprint` / `journalArticle` /
-   `conferencePaper`), title, creators, date, DOI, url, abstractNote and the
-   tag. Read back `item.citationkey` and record it with
-   `ingest_paper.py zotero-key --vault <vault> --id <P-id> --key <citekey>`.
-   Zotero unreachable → say so once ("⚠️ Zotero unavailable — P-00NN ingested
-   without a Zotero record") and go on; `zotero_key` stays absent so a later
-   pass can find these notes. The vault exports BibTeX itself
-   (`scripts/papers/export_bib.py`), so nothing depends on Zotero.
+4. **Zotero (optional).** When Zotero is running (see the plugin README →
+   "Zotero"), add the ingested papers and record their citation keys with one
+   command — never by hand-made HTTP calls:
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/zotero_sync.py" --vault <vault> <P-ids …>
+   ```
+   It reuses an existing item (Better BibTeX search by arXiv URL / DOI / title),
+   creates a missing one from the note's fetched metadata only (tagged
+   `PROJ-XXX`), and writes `zotero_key`. `unreachable` → say once ("⚠️ Zotero
+   unavailable — P-00NN ingested without a Zotero record") and go on;
+   `zotero_key` stays absent so a later run finds these notes. The vault exports
+   BibTeX itself (`scripts/papers/export_bib.py`), so nothing depends on Zotero.
 5. **Verify.** After the last paper:
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" verify --vault <vault> --only <P-ids>`
    must report every note `ok` (exit 0). A note whose sections no longer match
