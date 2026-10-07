@@ -402,5 +402,46 @@ class FillAbstract(Base):
         self.assertEqual(r["status"], "ingested_by_script")
 
 
+
+class TestDerivedViews(unittest.TestCase):
+    """A note written by this script fires what a Write of it would have fired:
+    the SOTA staleness check and the Smart Connections re-index."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp(prefix="kairo-derived-"))
+        self.env = mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")})
+        self.env.start()
+        self.vault = self.tmp / "vault"
+        proj = self.vault / "Projects" / "demo"
+        proj.mkdir(parents=True)
+        (self.vault / "Papers").mkdir()
+        (proj / "_hub.md").write_text("---\nid: PROJ-971\n---\n", encoding="utf-8")
+        (proj / "Estado-del-arte.md").write_text("---\ngenerated: 2030-01-01\n---\n\n## X\n", encoding="utf-8")
+        self.paths = []
+        for i in range(5):
+            p = self.vault / "Papers" / f"P-097{i} invented {i}.md"
+            p.write_text(f"---\nid: P-097{i}\nprojects: [PROJ-971]\nadded: 2031-0{i + 1}-01\n---\n", encoding="utf-8")
+            self.paths.append(p)
+
+    def tearDown(self):
+        self.env.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_staleness_is_reported_and_the_hook_log_records_it(self):
+        got = ip.derived_views(self.vault, [self.paths[-1]])
+        self.assertIn("PROJ-971", got["sota_stale"])
+        log = (self.tmp / "state" / "hook-events.jsonl").read_text(encoding="utf-8")
+        self.assertIn("sota_staleness", log)
+
+    def test_outside_a_vault_nothing_runs(self):
+        other = self.tmp / "elsewhere" / "Papers"
+        other.mkdir(parents=True)
+        p = other / "P-0001 x.md"
+        p.write_text("---\nid: P-0001\n---\n", encoding="utf-8")
+        self.assertEqual(ip.derived_views(self.tmp / "elsewhere", [p]), {"sota_stale": None})
+
+
 if __name__ == "__main__":
     unittest.main()

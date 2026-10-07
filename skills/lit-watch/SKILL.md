@@ -212,8 +212,9 @@ confirmed paper — mechanically, with `ingest_paper.py`")** exactly:
 
 Then record the decision if the researcher has not:
 `lit_watch.py decide --decision ingerir`. Commit the new paper notes.
-`Estado-del-arte.md` is not regenerated here: its staleness hook will say
-when it is due.
+`Estado-del-arte.md` is not regenerated here: `ingest_paper.py add` runs the
+staleness check itself (and re-indexes Smart Connections) and prints
+`sota_stale` when the map is due — say so in the report.
 
 ## Rules
 

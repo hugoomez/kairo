@@ -202,7 +202,10 @@ records, **never typed or pasted by the model**. For each confirmed paper:
      `published_venue`, `published_year`, `journal_ref`) from arXiv's
      declaration and the publisher's Crossref record;
    - keeps every fetched byte in `Papers/_fuentes/<P-id>/` with a manifest
-     (`fuentes.json`: URL, sha256, date, converter version).
+     (`fuentes.json`: URL, sha256, date, converter version);
+   - runs what a note written by hand would fire through the vault hook — the
+     Smart Connections re-index and the SOTA staleness check (`sota_stale` in
+     its output) — since a note a script writes never passes the Write tool.
    Exit 2 = refused (read the reason); exit 1 = a source could not be reached
    (re-run later). `--dry-run` shows what would be written. A `texto_sospechoso`
    warning means the full text holds hidden text (kept inside `[texto oculto en

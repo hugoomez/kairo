@@ -542,6 +542,35 @@ def fulltext(store: Store, arxiv: str, version: str, pdf_text: Path | None, sour
 # Commands
 # --------------------------------------------------------------------------
 
+HOOK = HERE.parent / "hooks" / "kairo_hook.py"
+
+
+def derived_views(vault: Path, paths: list[Path]) -> dict:
+    """What a Write of these notes would have fired, run for a note this script
+    wrote (the vault hook only sees the Write / Edit tools): the SOTA staleness
+    check and the Smart Connections re-index, through the hook's own router, so
+    each firing lands in ~/.kairo/hook-events.jsonl as it would from the tool.
+    Returns the staleness message (None when no project's map is stale)."""
+    import subprocess
+    stale: list[str] = []
+    for path in paths:
+        payload = {"tool_name": "Write", "tool_input": {"file_path": str(Path(path).resolve())},
+                   "cwd": str(vault), "source": TOOL}
+        try:
+            r = subprocess.run([sys.executable, str(HOOK), "post-write"], input=json.dumps(payload).encode("utf-8"),
+                               capture_output=True, timeout=150, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in r.stdout.decode("utf-8", errors="replace").splitlines():
+            try:
+                msg = json.loads(line).get("systemMessage")
+            except (ValueError, AttributeError):
+                continue
+            if msg and msg not in stale:
+                stale.append(msg)
+    return {"sota_stale": "; ".join(stale) or None}
+
+
 def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: str | None = None) -> dict:
     vault = a.vault.resolve()
     if not (vault / "Papers").is_dir():
@@ -930,6 +959,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
             if a.facet and not a.matched:
                 raise Refused("--facet needs --matched (the term that found the paper)")
             out = cmd_add(a, fetch, fetch_arxiv, today)
+            if not a.dry_run and out.get("path") and (out.get("status") == "created" or out.get("project_added")):
+                out.update(derived_views(a.vault.resolve(), [a.vault.resolve() / out["path"]]))
         elif a.cmd == "rebuild":
             out = cmd_rebuild(a, fetch, fetch_arxiv, today)
         elif a.cmd == "verify":
