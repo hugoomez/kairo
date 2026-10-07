@@ -1,6 +1,16 @@
 ---
 name: assemble-manuscript
-description: Use when a project has hypotheses on a shared `paper_thread` marked `linea_publicacion: true` and wants a manuscript draft assembled from them. Gates on a rigor check first — `apoyada` status (which structurally guarantees replication) AND `completo`-tier preregistration (power-justified thresholds) on every adjudicating experiment — before drafting anything. Refuses to draft around evidence that doesn't clear that bar and says exactly what's missing, per hypothesis, rather than silently omitting or downgrading rigor. Assembles Introducción / Trabajo relacionado / Método / Resultados / Discusión from the project's Estado-del-arte.md and the qualifying hypotheses' own sections, with real APA citations built from Papers/*.md — never the internal `P-XXXX §Sección` shorthand.
+description: >-
+  Use when a project has hypotheses on a shared `paper_thread` marked `linea_publicacion:
+  true` and wants a manuscript draft assembled from them. Gates on a rigor check first —
+  `apoyada` status (which structurally guarantees replication) AND `completo`-tier
+  preregistration (power-justified thresholds) on every adjudicating experiment — before
+  drafting anything. Refuses to draft around evidence that doesn't clear that bar and says
+  exactly what's missing, per hypothesis, rather than silently omitting or downgrading
+  rigor. Assembles Introducción / Trabajo relacionado / Método / Resultados / Discusión
+  from the project's Estado-del-arte.md and the qualifying hypotheses' own sections, with
+  real APA citations built from Papers/*.md — never the internal `P-XXXX §Sección`
+  shorthand.
 ---
 
 # Assemble Manuscript

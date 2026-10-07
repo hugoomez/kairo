@@ -1,6 +1,12 @@
 ---
 name: theorem
-description: Use when a Kairo project needs a lemma or theorem stated, proved, verified or checked — "demuestra que…", "añade el lema…", "verifica la demostración de C-0004", "escribe la comprobación numérica de C-0007". Creates the Claims/ node (kind lema | teorema) with depends_on, drafts the proof, writes the numerical sanity check, and runs the fresh verifier on the proof. Never signs off and never marks anything probado on its own: the rigor gate needs the researcher's sign-off on the statement and the proof.
+description: >-
+  Use when a Kairo project needs a lemma or theorem stated, proved, verified or checked —
+  "demuestra que…", "añade el lema…", "verifica la demostración de C-0004", "escribe la
+  comprobación numérica de C-0007". Creates the Claims/ node (kind lema | teorema) with
+  depends_on, drafts the proof, writes the numerical sanity check, and runs the fresh
+  verifier on the proof. Never signs off and never marks anything probado on its own: the
+  rigor gate needs the researcher's sign-off on the statement and the proof.
 ---
 
 # theorem — lemmas and theorems under the rigor gate
