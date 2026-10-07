@@ -443,5 +443,48 @@ class TestDerivedViews(unittest.TestCase):
         self.assertEqual(ip.derived_views(self.tmp / "elsewhere", [p]), {"sota_stale": None})
 
 
+
+class Figures(Base):
+    """A figure's image is kept beside the source bytes and linked under its caption."""
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"invented image bytes"
+
+    def fetch_with_images(self, missing=()):
+        base = make_fetch()
+
+        def fetch(url, headers):
+            if url.startswith("https://arxiv.org/html/") and url.endswith(".png"):
+                if any(url.endswith(m) for m in missing):
+                    raise ip.net.HttpError(url, 404, "not found")
+                return self.PNG
+            return base(url, headers)
+        return fetch
+
+    @staticmethod
+    def fig_arxiv(aid, version="", pause=0):
+        v = version or "v2"
+        return {"kind": "arxiv-html", "url": f"https://arxiv.org/html/{aid}{v}", "version": v,
+                "bytes": tvf.FIG_HTML.encode("utf-8")}
+
+    def test_images_are_kept_linked_and_verified(self):
+        code, out = self.add("--arxiv", "0000.11111", fetch=self.fetch_with_images(), fetch_arxiv=self.fig_arxiv)
+        self.assertEqual(code, 0, out)
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("![Figure 3](_fuentes/P-0001/fig/x3.png)", text)
+        self.assertEqual((self.vault / "Papers" / "_fuentes" / "P-0001" / "fig" / "x3.png").read_bytes(), self.PNG)
+        self.assertEqual(out["figures"], {"kept": 2, "missing": []})
+        code, res = self.run_cli("verify", "--vault", str(self.vault))
+        self.assertEqual((code, res["notes"][0]["status"]), (0, "ok"), res)
+
+    def test_an_image_that_cannot_be_fetched_is_named_never_invented(self):
+        code, out = self.add("--arxiv", "0000.11111", fetch=self.fetch_with_images(missing=("plot.png",)),
+                             fetch_arxiv=self.fig_arxiv)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["figures"]["missing"], ["extracted_99_figs_plot.png"])
+        self.assertTrue(any("figura" in w for w in out["warnings"]))
+        code, res = self.run_cli("verify", "--vault", str(self.vault))
+        self.assertEqual(res["notes"][0]["status"], "ok", res)
+
+
 if __name__ == "__main__":
     unittest.main()

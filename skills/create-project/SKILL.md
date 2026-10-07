@@ -495,8 +495,10 @@ cell is a figure or short phrase **taken from the paper** (a number exactly as
 it appears, with its unit), and the row's `fuente` cell holds the locators that
 row's cells come from (`P-0007 Tabla 3; P-0007 §5.2`); a field the paper does
 not report is `no consta`, never estimated or converted; one it shows only in
-a plot is `en figura: Figura N (no extraído)` — never read off the plot, so a
-scaling curve is named, not invented. The values come from
+a plot is `≈<value> (leído de la Figura N, no literal)` when the note links the
+figure's image (the summarizer looks at it), else `en figura: Figura N (no
+extraído)` — a plot reading is always marked as one, so a scaling curve is
+read approximately and said so, never passed off as a printed figure. The values come from
 the facet summarizers' `(comparativa)` lines (they are given the fields),
 never from memory. `check_sota.py` checks every number in a cited row against
 the cited text, and the row goes into the fresh-verifier packet like any cited

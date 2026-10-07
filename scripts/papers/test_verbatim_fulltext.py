@@ -256,5 +256,39 @@ class Build(unittest.TestCase):
         self.assertIn("Invented letter sentence number 7 about toy atoms.", block)
 
 
+
+FIG_HTML = """<html><body><article class="ltx_document">
+<section class="ltx_section"><h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">4 </span>Scaling</h2>
+<div class="ltx_para"><p class="ltx_p">Throughput grows with the number of invented devices.</p></div>
+<figure class="ltx_figure"><img src="x3.png" class="ltx_graphics" alt="Refer to caption">
+<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 3: </span>Weak scaling on invented hardware.</figcaption></figure>
+<figure class="ltx_figure"><img src="extracted/99/figs/plot.png" class="ltx_graphics">
+<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 4: </span>Another plot.</figcaption></figure>
+</section></article></body></html>"""
+
+
+class Figures(unittest.TestCase):
+    def test_a_figure_keeps_its_image_linked_under_its_caption(self):
+        body = vf.html_to_body(FIG_HTML, fig_prefix="_fuentes/P-0001/fig/")
+        lines = body.split("\n\n")
+        i = lines.index("**Figure 3:** Weak scaling on invented hardware.")
+        self.assertEqual(lines[i + 1], "![Figure 3](_fuentes/P-0001/fig/x3.png)")
+        self.assertIn("![Figure 4](_fuentes/P-0001/fig/extracted_99_figs_plot.png)", body)
+
+    def test_without_a_prefix_no_link_is_written(self):
+        self.assertNotIn("![", vf.html_to_body(FIG_HTML))
+
+    def test_figure_images_lists_name_and_absolute_url(self):
+        got = vf.figure_images(FIG_HTML, "https://arxiv.org/html/0000.00001v2")
+        self.assertEqual(got, [("x3.png", "https://arxiv.org/html/0000.00001v2/x3.png"),
+                               ("extracted_99_figs_plot.png",
+                                "https://arxiv.org/html/0000.00001v2/extracted/99/figs/plot.png")])
+
+    def test_the_fuente_line_says_figures_are_images_never_text(self):
+        block = vf.build("arxiv-html", "https://arxiv.org/html/0000.00001v2", "v2", FIG_HTML.encode(), "2031-01-01",
+                         fig_prefix="_fuentes/P-0001/fig/")
+        self.assertIn("figuras enlazadas como imagen", block)
+
+
 if __name__ == "__main__":
     unittest.main()

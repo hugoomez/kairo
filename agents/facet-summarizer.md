@@ -153,10 +153,15 @@ you have not just re-read in this pass.
 field's value copied from the text under the locator you give — a figure
 exactly as printed, with its unit, never converted, rounded or computed — or
 `no consta` when the paper does not report it. A value the paper gives only
-in a plot is never read off it (only text and table cells are verbatim): write
-`en figura: Figura N (no extraído)` with the figure's own number, so the
-researcher knows the result exists and where to read it — `no consta` means
-the paper does not report it at all.
+in a plot: when the note links the figure's image under its caption
+(`![Figure N](_fuentes/…/fig/…)`), `Read` that image and write what it shows as
+`≈<value> (leído de la Figura N, no literal)`, with the figure's own number and
+the locator `Figura N` — never as if it were printed; when there is no image,
+write `en figura: Figura N (no extraído)`, so the researcher knows the result
+exists and where to read it. `no consta` means the paper does not report it at
+all. The same rule holds in any section: a plot reading always carries `≈` and
+`(leído de la Figura N, no literal)` — `check_sota.py` refuses one whose
+sentence does not cite that figure.
 
 Include only the sections that have real content. Keep each bullet to one line.
 Never dump a paper's full text or restate a whole abstract.

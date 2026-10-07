@@ -18,7 +18,12 @@ Nothing is paraphrased or reconstructed:
     position it covers, so every column stays aligned with its header. Math with
     no LaTeX, and LaTeXML error nodes, become
     `[extracción dañada]`. The abstract (already in `## Resumen`), front
-    matter, navigation and bibliography are left out.
+    matter, navigation and bibliography are left out. A figure's image is
+    never turned into text: with `fig_prefix` (ingest_paper.py passes
+    `_fuentes/<P-id>/fig/`), each image inside a figure is linked under its
+    caption as `![Figure N](<prefix><name>)`, the file kept beside the source
+    bytes, so a reader (human, or the `paper-reader` subagent, which can look
+    at images) sees the plot. Anything read off a plot is never literal.
   - PDF: prose lines as extracted (ligature glyphs → plain letters). Headings
     numbered "3.2", "3.2.", Roman "II." with lettered "A." subsections, and
     appendices; the text starts at the introduction and stops at
@@ -62,7 +67,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
 import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
 
-__version__ = "1.3.0"   # 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
+__version__ = "1.4.0"   # 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
@@ -235,6 +240,38 @@ def _table(t, out: list[str]) -> None:
     out.append("\n".join(rows) if rows else DAMAGED + " (tabla)")
 
 
+def fig_name(src: str) -> str:
+    """The file name a figure image is kept under: its path in the paper's HTML,
+    flattened (`extracted/99/figs/plot.png` → `extracted_99_figs_plot.png`)."""
+    path = src.split("?", 1)[0].split("#", 1)[0].lstrip("./").lstrip("/")
+    return re.sub(r"[^A-Za-z0-9._-]", "_", path.replace("/", "_"))[:150] or "figura"
+
+
+def _figure_imgs(f) -> list[str]:
+    return [i.attrs.get("src") for i in _iter(f, lambda x: x.tag == "img") if i.attrs.get("src")
+            and not i.attrs.get("src", "").startswith("data:")]
+
+
+def figure_images(html_text: str, page_url: str) -> list[tuple[str, str]]:
+    """(file name, absolute URL) of every image inside a figure, in document order, once each."""
+    import urllib.parse
+    tree = _Tree()
+    tree.feed(html_text)
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for f in _iter(tree.root, lambda x: x.tag == "figure" and not x.has("ltx_table")
+                   and _owner_figure(x) is None):
+        for src in _figure_imgs(f):
+            name = fig_name(src)
+            if name not in seen:
+                seen.add(name)
+                out.append((name, urllib.parse.urljoin(page_url.rstrip("/") + "/", src)))
+    return out
+
+
+_FIG_PREFIX = ""                       # set by html_to_body for one conversion
+
+
 def _figure(f, out: list[str]) -> None:
     is_table = f.has("ltx_table")
     subs = list(_iter(f, lambda x: x.tag == "figure"))
@@ -246,10 +283,18 @@ def _figure(f, out: list[str]) -> None:
                 out.append(f"**{tag}:** {rest}")
             elif norm(text_of(cap)):
                 out.append(f"**Subfigura:** {norm(text_of(cap))}")
+    label = ""
     for cap in _iter(f, lambda x: x.tag == "figcaption" and _owner_figure(x) is f):
         tag, rest = _title(cap)
         tag = tag.rstrip(": ")
-        out.append(f"**{tag or ('Table' if is_table else 'Figure')}:** {rest}")
+        label = tag or ("Table" if is_table else "Figure")
+        out.append(f"**{label}:** {rest}")
+    if _FIG_PREFIX and not is_table and _owner_figure(f) is None:
+        names: list[str] = []
+        for src in _figure_imgs(f):
+            if fig_name(src) not in names:
+                names.append(fig_name(src))
+        out += [f"![{label or 'Figure'}]({_FIG_PREFIX}{n})" for n in names]
     if is_table:
         for t in _iter(f, lambda x: x.tag == "table" and x.has("ltx_tabular")
                        and _owner_figure(x) is f):
@@ -340,7 +385,16 @@ def _walk(n, out: list[str]) -> None:
         _walk(c, out)
 
 
-def html_to_body(html_text: str) -> str:
+def html_to_body(html_text: str, fig_prefix: str = "") -> str:
+    global _FIG_PREFIX
+    _FIG_PREFIX = fig_prefix
+    try:
+        return _html_to_body(html_text)
+    finally:
+        _FIG_PREFIX = ""
+
+
+def _html_to_body(html_text: str) -> str:
     tree = _Tree()
     tree.feed(html_text)
     raw: list[str] = []
@@ -353,7 +407,7 @@ def html_to_body(html_text: str) -> str:
             continue
         if b.startswith("### "):
             seen_section = True
-        if not seen_section and not re.match(r"\*\*(Figure|Table|Subfigura)", b):
+        if not seen_section and not re.match(r"\*\*(Figure|Table|Subfigura)|!\[", b):
             continue          # front matter before the first section: only captions kept
         if blocks and blocks[-1] == b:
             continue
@@ -600,13 +654,15 @@ def pdf_bytes_to_text(data: bytes) -> str | None:
         return txt.read_text(encoding="utf-8", errors="replace")
 
 
-def fuente_line(url: str, version: str, kind: str, sha: str, date: str) -> str:
+def fuente_line(url: str, version: str, kind: str, sha: str, date: str, figures: bool = False) -> str:
     how = {"arxiv-html": "HTML de arXiv (LaTeXML)", "ar5iv": "HTML de ar5iv (LaTeXML)",
            "pdf": ("PDF de arXiv" if "arxiv.org" in url else "PDF") + ", texto extraído con pdftotext"
            }.get(kind, kind)
     rules = ("ecuaciones como su LaTeX fuente ($…$); tablas como filas «| … |» (una celda que abarca varias "
              "columnas o filas se repite en cada una); notas al pie "
              "en línea; se omiten el abstract (en ## Resumen) y la bibliografía"
+             + ("; figuras enlazadas como imagen bajo su pie (nunca convertidas a texto: lo que se lea de "
+                "una gráfica no es literal)" if figures else "")
              if kind != "pdf" else
              "ligaduras tipográficas normalizadas a letras; las filas de cada tabla, tal como "
              "las extrae pdftotext, bajo su pie; se omiten el abstract (en ## Resumen) y la "
@@ -621,18 +677,19 @@ def build_from_text(data: bytes, url: str, version: str, date: str) -> str | Non
     return _assemble("pdf", url, version, data, pdftext_to_body(data.decode("utf-8", errors="replace")), date)
 
 
-def build(kind: str, url: str, version: str, data: bytes, date: str) -> str | None:
+def build(kind: str, url: str, version: str, data: bytes, date: str, fig_prefix: str = "") -> str | None:
     if kind == "pdf":
         txt = pdf_bytes_to_text(data)
         if txt is None:
             return None
         body = pdftext_to_body(txt)
     else:
-        body = html_to_body(data.decode("utf-8", errors="replace"))
-    return _assemble(kind, url, version, data, body, date)
+        body = html_to_body(data.decode("utf-8", errors="replace"), fig_prefix)
+    return _assemble(kind, url, version, data, body, date, figures=bool(fig_prefix) and kind != "pdf")
 
 
-def _assemble(kind: str, url: str, version: str, data: bytes, body: str, date: str) -> str | None:
+def _assemble(kind: str, url: str, version: str, data: bytes, body: str, date: str,
+              figures: bool = False) -> str | None:
     sha = hashlib.sha256(data).hexdigest()
     if not re.search(r"^### ", body, re.M):
         # A letter-format paper (PRL, Nature Physics…) numbers no sections. Its text is
@@ -642,12 +699,12 @@ def _assemble(kind: str, url: str, version: str, data: bytes, body: str, date: s
             return None                  # nothing usable recovered
         # without sections nothing can be cut off safely: say what stays in
         head = re.sub(r"; se omiten el abstract \(en ## Resumen\) y la bibliografía", "",
-                      fuente_line(url, version, kind, sha, date))
+                      fuente_line(url, version, kind, sha, date, figures))
         return (head
                 + "\n> La fuente no numera secciones: el texto va entero, en el orden del documento,"
                   " bajo un solo encabezado, incluidos su cabecera, su resumen y su bibliografía."
                 + f"\n\n### {UNSECTIONED_HEADING}\n\n" + body)
-    return fuente_line(url, version, kind, sha, date) + "\n\n" + body
+    return fuente_line(url, version, kind, sha, date, figures) + "\n\n" + body
 
 
 def main(argv=None) -> int:
