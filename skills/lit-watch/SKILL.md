@@ -26,7 +26,10 @@ may say what a hypothesis says.
 
 **Running it every week.** The `delta` step is a plain script with no model:
 schedule it with the OS (cron, Task Scheduler) or a Claude Code routine
-(`/schedule`), and run this skill on the run files it leaves for triage.
+(`/schedule`), and run this skill on the run files it leaves for triage. Each
+run also leaves a page to read, `_vigilancia/vigilancia-<date>.md` (strong
+candidates by title, what they cite, lost / truncated / relevance-ranked
+coverage), so a scheduled watch is useful before any model has triaged it.
 
 **A novelty threat is not evidence.** It is your judgement that a new paper
 may already report the hypothesis's claim.
@@ -186,8 +189,11 @@ threat without a severity or with a sentence that is not in the abstract. Fix
 each one with `triage` / `threat`, then check again. Do not commit an
 incomplete run.
 
-- Commit the run file, `_hub.md` (`last_watch`) and any hypothesis that got a
-  Revisión de vigencia line, together:
+- Refresh the page: `lit_watch.py digest --project-dir <dir> --run <run file>`
+  (it adds your triage lines, the threats with their quoted sentences and any
+  decision to `vigilancia-<date>.md`).
+- Commit the run file, its `.md` page, `_hub.md` (`last_watch`) and any
+  hypothesis that got a Revisión de vigencia line, together:
   `Vigilancia de literatura <PROJ>: <n> nuevos, <m> alertas`.
 - Report in a few lines:
   - the window;
@@ -196,7 +202,8 @@ incomplete run.
     for the next watch, and offer to triage them now with a larger `--top`;
   - each threat, as severity + hypothesis + paper + the quoted sentence;
   - the lost and truncated queries (and that the window stays open).
-- End with: "Las alertas son juicios de un modelo; decide tú en la bandeja."
+- Name the page (`vigilancia-<date>.md`) and end with: "Las alertas son juicios
+  de un modelo; decide tú (en esa página, o en la bandeja de la interfaz si la usas)."
 
 ### 5. Ingest (mode ingest only)
 

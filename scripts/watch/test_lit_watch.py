@@ -367,6 +367,29 @@ class TestLitWatch(unittest.TestCase):
             self.assertIn(status, out["error"])
             self.assertNotIn("Revisión de vigencia", h.read_text(encoding="utf-8"))
 
+    def test_delta_writes_a_readable_digest_next_to_the_run(self):
+        _, res = self.delta()
+        md = self.run_file(res).with_suffix(".md")
+        self.assertEqual(res["digest"], md.relative_to(self.vault).as_posix())
+        text = md.read_text(encoding="utf-8")
+        self.assertIn("# Vigilancia de literatura", text)
+        self.assertIn("Blue widgets spin faster", text)              # the strong candidate, by title
+        self.assertIn("arxiv:2031.00002", text)
+        self.assertIn("Cobertura por relevancia", text)              # S2 / Crossref: not a full window
+
+    def test_the_digest_is_refreshed_with_triage_and_threats(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        self.cli("triage", "--project-dir", str(self.p), "--run", run, "--key", "arxiv:2031.00002",
+                 "--why", "Mide lo mismo que H-0961.")
+        self.threat(run, "fictional blue widgets rotate faster than red widgets")
+        code, out = self.cli("digest", "--project-dir", str(self.p), "--run", run)
+        self.assertEqual(code, 0, out)
+        text = Path(run).with_suffix(".md").read_text(encoding="utf-8")
+        self.assertIn("Mide lo mismo que H-0961.", text)
+        self.assertIn("H-0961", text)
+        self.assertIn("«fictional blue widgets rotate faster than red widgets»", text)
+
     def test_no_abstract_no_threat(self):
         _, res = self.delta()
         run = Path(self.run_file(res))
@@ -840,6 +863,8 @@ class TestCitationsAndIndexedWindows(TestLitWatch):
         keys = [c["key"] for c in json.loads(self.run_file(res).read_text(encoding="utf-8"))["candidates"]]
         self.assertIn("doi:10.9999/late.1", keys)              # published before the window, registered in it
         self.assertNotIn("doi:10.9999/ancient.1", keys)        # before the project's own start
+
+
 
 
 if __name__ == "__main__":

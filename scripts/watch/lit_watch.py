@@ -95,6 +95,14 @@ evidence:
     the threat is recorded in the run file.
   - Never touches `status`, confidence or any frontmatter.
 
+`digest` (re)writes the run's readable page, `vigilancia-<date>.md` beside the
+JSON (delta writes it first; triage, threats and decisions are added by
+re-running it): the window, what was lost or truncated, which queries are
+ranked by relevance (Semantic Scholar, Crossref — their top results read, a
+full window not promised), the strong candidates by title with ids, facets,
+what they cite, their triage line and any novelty threat with its quoted
+sentence. It is what a researcher reads without the Kairo interface.
+
 `decide` / `threat-decide` record the researcher's decision on a candidate or
 a threat. A threat decision appends one more dated line to the hypothesis.
 
@@ -501,6 +509,70 @@ def hypotheses(pdir: Path) -> list[tuple[str, set[str]]]:
 # --------------------------------------------------------------------------
 # delta
 # --------------------------------------------------------------------------
+
+def digest_md(run: dict) -> str:
+    """The run as a page to read: no model wrote any of it except the triage lines
+    and threat judgements, which say so."""
+    L = [f"# Vigilancia de literatura — {run.get('project') or ''} — {run.get('until')}", "",
+         f"*Ventana:* desde {run.get('since')} (consultado desde {run.get('queried_from')}) hasta {run.get('until')} · "
+         f"*Consultas de:* {run.get('queries_from')}", ""]
+    if run.get("lost") or run.get("truncated"):
+        L += ["## ⚠️ Cobertura degradada", ""]
+        L += [f"- Perdida (su ventana sigue abierta): {x}" for x in run.get("lost") or []]
+        L += [f"- Truncada (su ventana sigue abierta): {x}" for x in run.get("truncated") or []]
+        L.append("")
+    ranked = [q for q in run.get("queries") or [] if q.get("source") in ("s2", "crossref") and not q.get("error")
+              and (q.get("total") or 0) > (q.get("hits") or 0)]
+    if ranked:
+        L += ["## Cobertura por relevancia", "",
+              "Semantic Scholar y Crossref ordenan por relevancia y su total cuenta coincidencias sueltas: de estas "
+              "consultas se leyeron los primeros resultados de la ventana, no la ventana entera.", ""]
+        L += [f"- {q.get('id')} {q.get('source')} «{q.get('query')}»: {q.get('hits')} leídos de {q.get('total')}"
+              for q in ranked]
+        L.append("")
+    if run.get("sources_left_out"):
+        L += ["## Fuentes fuera de la vigilancia", ""] + [f"- {x}" for x in run["sources_left_out"]] + [""]
+    threats = {}
+    for t in run.get("threats") or []:
+        threats.setdefault(t["key"], []).append(t)
+    strong = [c for c in run.get("candidates") or [] if c.get("strong")]
+    L += [f"## Candidatos fuertes ({len(strong)})", ""]
+    for c in strong:
+        ids = " · ".join(x for x in (f"arXiv:{c['arxiv']}" if c.get("arxiv") else "",
+                                     f"DOI:{c['doi']}" if c.get("doi") else "") if x) or (c.get("url") or "")
+        L.append(f"- **{c.get('title')}** ({c.get('date') or 's. f.'}) — {ids} · `{c['key']}`")
+        meta = [f"facetas {', '.join(sorted(c.get('facets') or [])) or '—'}"]
+        if c.get("cita_a"):
+            meta.append("cita " + ", ".join(c["cita_a"]))
+        if c.get("pendiente_desde"):
+            meta.append(f"pendiente desde {c['pendiente_desde']}")
+        if c.get("sospechoso"):
+            meta.append("⚠️ texto que parece una instrucción a un modelo: " + ", ".join(c["sospechoso"]))
+        L.append("  " + " · ".join(meta))
+        if c.get("why"):
+            L.append(f"  *Triage (modelo):* {c['why']}")
+        elif c.get("triage"):
+            L.append("  *Triage:* pendiente")
+        for t in threats.get(c["key"], []):
+            L.append(f"  *Posible amenaza de novedad para {t['hypothesis']}* (juicio de un modelo, gravedad "
+                     f"{t['severity']}): «{t['sentence']}» — {t['judgement']}")
+        if c.get("decision"):
+            L.append(f"  *Decisión:* {c['decision'].get('decision')} ({c['decision'].get('by')})")
+    weak = sum(1 for c in run.get("candidates") or [] if not c.get("strong"))
+    L += ["", f"*Otros {weak} candidatos débiles en el JSON de la ejecución.*", ""]
+    return "\n".join(L)
+
+
+def write_digest(run_file: Path, run: dict) -> Path:
+    md = run_file.with_suffix(".md")
+    md.write_text(digest_md(run), encoding="utf-8", newline="\n")
+    return md
+
+
+def cmd_digest(a) -> dict:
+    md = write_digest(a.run, load_run(a.run))
+    return {"digest": md.name}
+
 
 def run_path(pdir: Path, today: date) -> Path:
     folder = pdir / "_vigilancia"
@@ -942,6 +1014,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     if not lost_all:
         out = run_path(pdir, today)
         save_run(out, run)
+        digest = write_digest(out, run)
         # Coverage is kept per query. One that answered — in full, or capped at
         # MAX_RESULTS by relevance (reported as truncated, never hidden) — is covered
         # up to today; a lost one keeps its own start, so its window stays open
@@ -962,7 +1035,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         text, nl = read_text(hub_path(pdir))
         write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
         moved = True
-    return {"run": out.relative_to(vault).as_posix() if out else None, "since": run["since"],
+    return {"run": out.relative_to(vault).as_posix() if out else None,
+            "digest": digest.relative_to(vault).as_posix() if out else None, "since": run["since"],
             "queried_from": run["queried_from"], "until": run["until"],
             "queries": len(log), "lost": len(lost), "lost_all": lost_all,
             "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
@@ -1179,11 +1253,11 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--top", type=int, default=10)
     p.add_argument("--no-citations", action="store_true",
                    help="skip the pass over new papers citing the project's papers and seeds")
-    for name in ("triage", "threat", "decide", "threat-decide", "check", "judge-packet"):
+    for name in ("triage", "threat", "decide", "threat-decide", "check", "judge-packet", "digest"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
         p.add_argument("--run", required=True, type=Path)
-        if name != "check":
+        if name not in ("check", "digest"):
             p.add_argument("--key", required=True)
         p.add_argument("--vault", type=Path, default=None)
         if name == "triage":
@@ -1226,7 +1300,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
                 raise Refused("--run must be a file in this project's _vigilancia/")
             out = {"triage": cmd_triage, "threat": cmd_threat, "decide": cmd_decide,
                    "threat-decide": cmd_threat_decide, "check": cmd_check,
-                   "judge-packet": cmd_judge_packet}[a.cmd](a)
+                   "judge-packet": cmd_judge_packet, "digest": cmd_digest}[a.cmd](a)
     except Refused as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 2
