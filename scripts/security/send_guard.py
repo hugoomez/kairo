@@ -42,8 +42,14 @@ Hook mode (default; reads the PreToolUse JSON from stdin):
 
   Paths are trimmed of surrounding whitespace/quotes first, as the tools do.
 
-  Limits (stated, not hidden): a shell command can reach a flagged note without
-  naming it (`grep -r x .`, `cat Papers/*`). The Bash check catches the direct cases;
+  A reader command (`cat`, `grep`, `rg`, `Get-Content`, `Select-String`, …)
+  that reaches a flagged note without naming it is refused too: a glob that
+  matches one (`cat Papers/*`) or a recursive reader over a folder holding one
+  (`grep -r x Papers`, `rg x .`).
+
+  Limits (stated, not hidden): a program can still open a flagged note in ways
+  no command line shows (`python -c …`, a script). The Bash check catches the
+  direct cases;
   the instruction in every skill/agent that reads the vault is the primary
   control. Smart Connections search results carry path + title + heading name
   only, never note text, so they are not blocked here.
@@ -177,6 +183,43 @@ def _rel(p: Path, base: Path) -> str:
         return p.as_posix()
 
 
+_SHELL_READER = re.compile(r"(?:^|[\s;|&(`])(?:cat|type|more|less|head|tail|sed|awk|grep|egrep|fgrep|rg|"
+                           r"findstr|get-content|gc|select-string|sls|bat|nl|strings|od|xxd|xargs)(?:\.exe)?\b",
+                           re.IGNORECASE)
+_RECURSIVE = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|-recurse|/s)(?=\s|$)", re.IGNORECASE)
+
+
+def _shell_reach(cmd: str, root: Path, cwd: Path) -> str | None:
+    """A reader command that reaches a flagged note without naming it: a glob that
+    matches one (`cat Papers/*`), or a recursive reader over a folder holding one
+    (`grep -r x Papers`, `rg x .`). Best effort, like every shell check here."""
+    if not _SHELL_READER.search(cmd):
+        return None
+    flagged = list(flagged_under(root))
+    if not flagged:
+        return None
+    toks = [a or b or c for a, b, c in re.findall(r'"([^"]*)"|\'([^\']*)\'|(\S+)', cmd)]
+    recursive = bool(_RECURSIVE.search(cmd)) or bool(re.search(r"(?:^|[\s;|&(])rg(?:\.exe)?\b", cmd))
+    for tok in toks:
+        t = tok.replace("\\", "/")
+        if any(c in t for c in "*?["):
+            for p in flagged:
+                rel = _rel(p, root).replace("\\", "/").lower()
+                full = str(p).replace("\\", "/").lower()
+                pat = t.lower().lstrip("./")
+                if fnmatch(rel, pat) or fnmatch(full, t.lower()) or fnmatch(rel, f"*/{pat}") or \
+                        (recursive and fnmatch(p.name.lower(), Path(pat).name)):
+                    return f"El comando alcanza con «{tok}» una nota `send: never` ({_rel(p, root)}); no se ejecuta."
+        elif recursive and not t.startswith("-"):
+            d = _resolve(t, cwd)
+            if d.is_dir():
+                hit = next((p for p in flagged if d == p.parent or d in p.parents), None)
+                if hit:
+                    return (f"El comando recorre «{tok}», que contiene una nota `send: never` "
+                            f"({_rel(hit, root)}); acota la ruta.")
+    return None
+
+
 def decide(event: dict, vault: Path | None) -> str | None:
     """Return a block reason, or None to allow."""
     tool = str(event.get("tool_name") or "")
@@ -248,7 +291,7 @@ def decide(event: dict, vault: Path | None) -> str | None:
             if m and re.search(rf"(?<![a-z0-9]){re.escape(m.group(1).lower())}(?!\d)", norm):
                 return (f"El comando menciona {m.group(1)}, una nota `send: never` ({rel}); "
                         "no se ejecuta.")
-        return None
+        return _shell_reach(cmd, root, Path(event.get("cwd") or root))
 
     if tool.startswith("mcp__") and tool.endswith("__get_note"):
         np_ = _clean(tin.get("notePath") or "")
