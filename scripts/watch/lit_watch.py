@@ -557,7 +557,8 @@ NOT_WINDOWABLE = {"openreview": "su búsqueda no filtra ni ordena por fecha: una
 def _watch_plan(plan: dict, start: date, today: date) -> dict:
     srcs = [x for x in plan.get("sources") or [] if x not in NOT_WINDOWABLE]
     return {**plan, "sources": srcs, "from": start.isoformat(), "to": today.isoformat(), "anchors": 0,
-            "per_query": MAX_RESULTS, "window_by": "indexed", "pub_floor": plan.get("from")}
+            "per_query": MAX_RESULTS, "max_per_query": MAX_RESULTS, "window_by": "indexed",
+            "pub_floor": plan.get("from")}
 
 
 def structured_signatures(plan: dict, today: date) -> list[str]:

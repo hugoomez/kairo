@@ -66,7 +66,7 @@ title or abstract shows. `"cross": false` in the plan turns it off.
 
 Every query reports `hits` (records fetched), `total` (what the source says
 matched) and its state: `completa`, `truncada` (an arXiv / OpenAlex query with
-more matches than fetched — raise `per_query` or narrow the facet), `por
+more matches than `max_per_query` — narrow the facet or raise it), `por
 relevancia` (Semantic Scholar, Crossref, OpenReview: keyword search ranked by
 relevance whose total counts loose any-word matches — the top results are read,
 complete coverage is not promised, and it is not a gap) or `perdida` (failed
@@ -99,7 +99,7 @@ copies it in, dated):
             {"id": "B", "term": "decoder", "synonyms": ["BP-OSD", "belief propagation decoding"]}],
  "sources": ["arxiv", "s2", "openalex", "crossref", "openreview"],
  "from": "2024-10-01", "to": null, "arxiv_categories": ["quant-ph", "cs.IT"],
- "per_query": 100, "anchors": 10, "cross": true, "prefilter": true,
+ "per_query": 100, "max_per_query": 1000, "anchors": 10, "cross": true, "prefilter": true, "min_facets": null,
  "include": ["reports a code construction, decoder or benchmark result on facets A and B"],
  "exclude": ["survey with no primary result", "non-English without English abstract"],
  "scope_out": ["<each Alcance: Fuera clause, verbatim>"]}
@@ -108,8 +108,16 @@ copies it in, dated):
 - `from` / `to` carry any recency in the request ("last two years" → a date).
 - `scope_out` lists the project's **`Alcance: Fuera`** clauses verbatim: a paper
   excluded by scope must quote one of them (step 5).
-- `per_query` 100 is the targeted default; for `linea_publicacion: true` use
-  ≥ 300 and snowball to closure.
+- `per_query` 100 is the targeted default; an arXiv / OpenAlex query whose
+  total fits in `max_per_query` (1000) is read whole anyway, so only a query
+  larger than that is `truncada`. For `linea_publicacion: true` use ≥ 300 and
+  snowball to closure.
+- `min_facets` — how many facets a candidate must reach to be read by default
+  (`null` = min(2, facets)). **Set it to 1 when the request is a union, not an
+  intersection**: "códigos qLDPC y sus decodificadores" asks for papers on the
+  codes *and* papers on the decoders, so a code-construction paper that never
+  mentions decoding is in scope; "decoders for qLDPC codes" is an intersection
+  (keep the default). Say which you chose and why in the hand-back.
 
 ### 2. Run, and search the vault
 
@@ -131,7 +139,7 @@ exit `3` = `send: never`: drop it, count it only as "N omitidos (send: never)".
 Read the run's output: `lost` and `truncated` lines are the degraded-coverage
 events; `to_read` is how many candidates you will screen and `prefiltered_out`
 how many the **mechanical prefilter** set aside — those that reach fewer than
-min(2, facets) facets, counting both the facets whose queries found them and
+`min_facets` facets (default min(2, facets)), counting both the facets whose queries found them and
 the facet terms in their title or abstract (anchors are exempt, and so is a
 candidate with no abstract whose title shows one facet term). Terms match
 their inflections ("decoder" ↔ "decoders", "decoding"; "parallelism" ↔

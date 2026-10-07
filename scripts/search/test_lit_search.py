@@ -985,5 +985,131 @@ class ScreeningProvenance(Base):
         self.assertIn("no consta", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
 
 
+
+class ThirdAuditFixes(Base):
+    """Recall and record fixes from the 2026-10-07 audit (invented papers)."""
+
+    def test_min_facets_one_reads_papers_on_a_single_facet(self):
+        plan = ls.load_plan_dict({**PLAN, "min_facets": 1})
+        c = {"title": "A toy code construction", "abstract": "We build a toy code.", "facets": {"A": "toy code"}}
+        ls.mark_prefilter([c], plan)
+        self.assertTrue(c["prefilter"]["pass"])
+        ls.mark_prefilter([c], ls.load_plan_dict(PLAN))
+        self.assertFalse(c["prefilter"]["pass"])
+        for bad in (0, 3, "two"):
+            with self.assertRaises(ls.Refused):
+                ls.load_plan_dict({**PLAN, "min_facets": bad})
+
+    def test_a_query_whose_total_fits_is_read_whole(self):
+        class Pages(FakeWeb):
+            def __init__(self, total):
+                super().__init__()
+                self.total = total
+
+            def __call__(self, url, headers):
+                if "export.arxiv.org" in url:
+                    self.urls.append(url)
+                    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                    start, size = int(qs["start"][0]), int(qs["max_results"][0])
+                    n = max(0, min(size, self.total - start))
+                    return atom([(f"0001.{start + i:05d}", f"Toy code paper {start + i} with toy decoder",
+                                  "toy code toy decoder", "2030-06-01") for i in range(n)], self.total)
+                return super().__call__(url, headers)
+        self.plan.write_text(json.dumps({**PLAN, "sources": ["arxiv"], "per_query": 100}), encoding="utf-8")
+        self.run_search(Pages(250))
+        a = next(q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+                 if q["facet"] == "A")
+        self.assertEqual((a["fetched"], a["truncated"], a.get("extended_to")), (250, False, 250))
+        shutil.rmtree(self.run_dir)
+        self.plan.write_text(json.dumps({**PLAN, "sources": ["arxiv"], "per_query": 100, "max_per_query": 200}),
+                             encoding="utf-8")
+        self.run_search(Pages(250))
+        a = next(q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+                 if q["facet"] == "A")
+        self.assertEqual((a["fetched"], a["truncated"]), (100, True))
+
+    def test_a_retitled_published_version_joins_its_preprint(self):
+        base = {"facet": "A", "matched": "toy code", "date": None, "abstract": "", "citations": None, "url": None,
+                "anchor": False}
+        recs = [{**base, "title": "Fast toy decoders for invented codes", "doi": None, "arxiv": "0000.11111",
+                 "authors": ["Jane Doe", "Rui Roe"], "source": "arxiv", "rank": 1, "year": 2030, "venue": None,
+                 "query": "Q1"},
+                {**base, "title": "Fast toy decoders for invented quantum codes", "doi": "10.0000/j.1",
+                 "arxiv": None, "authors": ["Doe, Jane"], "source": "crossref", "rank": 2, "year": 2031,
+                 "venue": "Invented Journal", "query": "Q2"},
+                {**base, "title": "Fast toy decoders for invented quantum codes", "doi": "10.0000/other",
+                 "arxiv": None, "authors": ["Li Wu"], "source": "openalex", "rank": 3, "year": 2031,
+                 "venue": "Other Journal", "query": "Q3"}]
+        cands = ls.dedup(recs)
+        self.assertEqual(len(cands), 2)
+        joined = next(c for c in cands if c.get("arxiv") == "0000.11111")
+        self.assertEqual(joined["doi"], "10.0000/j.1")
+        self.assertEqual(joined["years"], [2030, 2031])
+        self.assertIn("Invented Journal", joined["venues"])
+        self.assertIn("título aproximado", joined["merged_by"])
+
+    def test_a_capped_citation_snowball_is_completed_inside_the_window_by_openalex(self):
+        class Capped(FakeWeb):
+            def __call__(self, url, headers):
+                u = urllib.parse.unquote(url)
+                if "/citations" in url:
+                    self.urls.append(url)
+                    off = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["offset"][0])
+                    data = [{"citingPaper": {"paperId": f"o{off + i}", "title": f"Old unrelated note {off + i}",
+                                             "abstract": "nothing", "year": 2010, "externalIds": {},
+                                             "authors": []}} for i in range(ls.SNOWBALL_PAGE)]
+                    return json.dumps({"offset": off, "next": off + ls.SNOWBALL_PAGE, "data": data}).encode()
+                if "api.openalex.org/works/doi:" in u:
+                    self.urls.append(url)
+                    return json.dumps({"id": "https://openalex.org/W90"}).encode()
+                if "api.openalex.org/works?" in url and "cites:W90" in u:
+                    self.urls.append(url)
+                    return json.dumps({"meta": {"count": 1, "next_cursor": None}, "results": [
+                        {"id": "https://openalex.org/W91", "doi": "https://doi.org/10.0000/recent.citer",
+                         "title": "A recent toy code paper with a toy decoder", "publication_date": "2031-03-03",
+                         "publication_year": 2031, "authorships": [],
+                         "abstract_inverted_index": {"toy": [0], "code": [1], "decoder": [2]}}]}).encode()
+                return super().__call__(url, headers)
+        web = Capped()
+        self.run_search(web)
+        code, out = self.cli("snowball", "--run", str(self.run_dir), "--seeds", "DOI:10.0000/famous",
+                             "--direction", "citations", web=web)
+        self.assertEqual(code, 0, out)
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        self.assertIn("10.0000/recent.citer", [c.get("doi") for c in cands])
+        qs = [q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+              if q["pass"] == "snowball-citations"]
+        self.assertEqual([(q["source"], q.get("truncated")) for q in qs], [("s2", True), ("openalex", False)])
+        self.assertTrue(qs[1].get("complement_for"))
+        self.assertTrue(any("from_publication_date:2030-01-01" in urllib.parse.unquote(u)
+                            for u in web.urls if "cites:W90" in urllib.parse.unquote(u)))
+
+    def test_the_screening_model_comes_from_the_policy(self):
+        pages, off = [], 0
+        self.run_search()
+        self.cli("retraction", "--run", str(self.run_dir))
+        while off is not None:
+            _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "40", "--offset", str(off))
+            isolation.record_receipt({"sha256": shown["packet"]["sha256"], "agent_type": "screener", "agent_id": "s"})
+            pages.append(shown)
+            off = shown["next_offset"]
+        blocks = []
+        for i, p in enumerate(pages):
+            f = self.tmp / f"b{i}.txt"
+            f.write_text(json.dumps({c["key"]: {"decision": "exclude", "reason": "relevancia baja",
+                                                "why": "Invented, not relevant here."} for c in p["candidates"]}),
+                         encoding="utf-8")
+            blocks.append(str(f))
+        out = self.tmp / "d.json"
+        self.cli("merge", "--run", str(self.run_dir), "--blocks", *blocks, "--out", str(out))
+        policy = re.search(r"^model:\s*(\S+)", (HERE.parent.parent / "agents" / "screener.md")
+                           .read_text(encoding="utf-8"), re.M).group(1)
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out))
+        self.assertEqual((code, res["screened_by"]), (0, policy))
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out),
+                             "--screened-by", "claude-other-1")
+        self.assertIn("difiere", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

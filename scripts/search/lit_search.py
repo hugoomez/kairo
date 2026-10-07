@@ -60,8 +60,10 @@ Facet terms are matched as whole-word sequences after light suffix stripping
 words are never joined. A multi-word term also matches its content words
 close together in another order ("toy model training" ~ "training of toy
 models", within its length + NEAR_SLACK words).
-An arXiv or OpenAlex query whose source reports more matches than were fetched
-is `truncated`; a query that failed after retries is `lost`. Both are listed as
+An arXiv or OpenAlex query whose total fits in `max_per_query` (default 1000)
+is read whole even past `per_query` (`extended_to` records it); one whose
+source reports more matches than that is `truncated`; a query that failed
+after retries is `lost`. Both are listed as
 degraded coverage, never hidden. Semantic Scholar, Crossref and OpenReview rank
 keyword matches by relevance and their totals count records matching any word
 (Crossref: ~7,000 for a three-word query over two weeks), so their queries read
@@ -73,7 +75,10 @@ prefilter (`enrich`, default true; each lookup a recorded query that never
 counts as identified).
 
 Dedup: records sharing a normalised DOI, an arXiv id, or a normalised title
-(≥ 4 words) are one candidate; a preprint and its published version found
+(≥ 4 words) are one candidate; a preprint with no DOI and a published record
+with no arXiv id also join when their titles are close (similarity ≥ 0.85)
+and their first authors share a surname — a retitled camera-ready
+(`merged_by` says so); a preprint and its published version found
 separately are merged and both identifiers kept. A title never joins two
 records with different DOIs (a conference paper and its journal extension
 stay two candidates, each with its own year and venue). Each candidate keeps, per
@@ -82,7 +87,8 @@ OR-group, the first facet term found in its title or abstract, else the
 OR-group itself).
 
 Prefilter (`prefilter`, default true): a candidate that reaches fewer than
-min(2, facets) facets — counting the facets whose queries found it and the
+`min_facets` facets (default min(2, facets); 1 for a question that is a union,
+"codes and their decoders", where a paper on one facet alone is in scope) — counting the facets whose queries found it and the
 facet terms in its title or abstract — is excluded mechanically by `screen`
 (reason `prefiltro`, counted on its own line), unless decisions.json decides
 it explicitly. Anchor candidates are exempt, and so is a candidate with no
@@ -172,6 +178,8 @@ BOOLEAN_CROSS = ("arxiv", "openalex")  # cross queries that AND every facet (S2 
 # so total > fetched says nothing about coverage. These queries read their top
 # `per_query` and are recorded as "por relevancia", never as truncated.
 RANKED = ("s2", "crossref", "openreview", "dblp")
+MAX_PER_QUERY = 1000                 # an arXiv / OpenAlex query whose total fits is read whole
+TITLE_CLOSE = 0.85                   # preprint ↔ retitled published version (same first author)
 MIN_WHY_WORDS_EXCLUDE = 3
 RELEVANCE = ("alta", "media", "baja")
 
@@ -275,6 +283,11 @@ def load_plan_dict(plan: dict) -> dict:
         if plan.get(k) and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", plan[k]):
             raise Refused(f"`{k}` must be YYYY-MM-DD")
     plan["per_query"] = int(plan.get("per_query") or 100)
+    plan["max_per_query"] = max(plan["per_query"], int(plan.get("max_per_query") or MAX_PER_QUERY))
+    if "min_facets" in plan and plan["min_facets"] is not None:
+        mf = plan["min_facets"]
+        if not isinstance(mf, int) or isinstance(mf, bool) or not 1 <= mf <= len(facets):
+            raise Refused(f"`min_facets` must be an integer from 1 to {len(facets)}")
     plan["anchors"] = int(plan.get("anchors") if plan.get("anchors") is not None else 10)
     plan["cross"] = bool(plan.get("cross", True))
     plan["prefilter"] = bool(plan.get("prefilter", True))
@@ -617,6 +630,10 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
         (raw_dir / name).write_bytes(data)
         q["raw"].append({"file": name, "url": net.redact(url), "sha256": hashlib.sha256(data).hexdigest()})
         q["total"] = total
+        if (q["source"] in BOOLEAN_CROSS and total and total > cap
+                and total <= plan.get("max_per_query", MAX_PER_QUERY)):
+            cap = total                         # the whole result fits: read it all, never truncate it
+            q["extended_to"] = total
         full_page = len(got) >= size
         got = got[:cap] if q["source"] == "s2-anchor" else got[:want]
         recs.extend(got)
@@ -738,8 +755,55 @@ def dedup(records: list[dict]) -> list[dict]:
         c["key"] = ("doi:" + c["doi"]) if c["doi"] else ("arxiv:" + c["arxiv"]) if c["arxiv"] else \
             "t:" + hashlib.sha256(norm_title(c["title"]).encode()).hexdigest()[:12]
         out.append(c)
+    out = join_retitled(out)
     out.sort(key=lambda c: (-len(c["facets"]), c["best_rank"], -(c["year"] or 0)))
     return out
+
+
+def _first_surname(authors: list) -> str:
+    a = str((authors or [""])[0] or "").strip()
+    a = a.split(",", 1)[0] if "," in a else (a.split()[-1] if a.split() else "")
+    return norm_title(a)
+
+
+def join_retitled(cands: list[dict]) -> list[dict]:
+    """A preprint with no DOI and a published record with no arXiv id whose titles
+    are close and whose first authors share a surname are one work: the
+    camera-ready was retitled. Never joins two DOIs or two arXiv ids."""
+    import difflib
+    pre = [c for c in cands if c.get("arxiv") and not c.get("doi")]
+    pub = [c for c in cands if c.get("doi") and not c.get("arxiv")]
+    by_name: dict[str, list[dict]] = {}
+    for c in pub:
+        if _first_surname(c.get("authors")):
+            by_name.setdefault(_first_surname(c["authors"]), []).append(c)
+    gone: set[int] = set()
+    for a in pre:
+        name = _first_surname(a.get("authors"))
+        ta = norm_title(a.get("title", ""))
+        best, score = None, TITLE_CLOSE
+        for b in by_name.get(name, []) if name and len(ta.split()) >= 4 else []:
+            if id(b) in gone:
+                continue
+            r = difflib.SequenceMatcher(None, ta, norm_title(b.get("title", ""))).ratio()
+            if r >= score:
+                best, score = b, r
+        if best is None:
+            continue
+        gone.add(id(best))
+        a["doi"] = best["doi"]
+        a["key"] = "doi:" + best["doi"]
+        for k in ("venues", "years", "sources", "queries"):
+            a[k] = sorted(set(a.get(k) or []) | set(best.get(k) or []), key=str)
+        for f, t in (best.get("facets") or {}).items():
+            a["facets"].setdefault(f, t)
+        a["abstract"] = a.get("abstract") or best.get("abstract") or ""
+        a["citations"] = max([x for x in (a.get("citations"), best.get("citations")) if x is not None], default=None)
+        a["anchor"] = bool(a.get("anchor") or best.get("anchor"))
+        a["best_rank"] = min(a["best_rank"], best["best_rank"])
+        a["merged_by"] = (f"título aproximado ({score:.2f}) + primer autor: «{best.get('title')}» "
+                          f"({best['doi']}) es la versión publicada de este preprint")
+    return [c for c in cands if id(c) not in gone]
 
 
 def known_vault_keys(vault: Path | None) -> set[str]:
@@ -815,7 +879,7 @@ def enrich_abstracts(cands: list[dict], plan: dict, raw_dir: Path, queries: list
 
 
 def prefilter_need(plan: dict) -> int:
-    return min(2, len(plan["facets"]))
+    return plan.get("min_facets") or min(2, len(plan["facets"]))
 
 
 def mark_prefilter(cands: list[dict], plan: dict) -> None:
@@ -1077,6 +1141,31 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                 recs, _ = parse_s2(json.dumps({"data": papers}).encode())
             q["fetched"] = len(recs)
             q["total"] = len(recs) if not q["truncated"] else None
+            if q["truncated"] and q["source"] == "s2" and (plan.get("from") or plan.get("to")):
+                # Semantic Scholar capped the list before the window could be applied:
+                # OpenAlex filters by date on its side, so the in-window part is read whole
+                queries.append(q)
+                c = {**q, "id": f"S{len(queries) + 1:03d}", "source": "openalex", "raw": [], "error": None,
+                     "total": None, "fetched": 0, "complement_for": q["id"]}
+                c.pop("kept", None)
+                try:
+                    extra = _openalex_neighbours(run, c, pid, rel, plan, fetch)
+                except (net.HttpError, json.JSONDecodeError, ValueError, KeyError) as e3:
+                    c["error"] = net.redact(str(e3))[:200]
+                    extra = []
+                c["fetched"] = len(extra)
+                kept_c = 0
+                for rank, r in enumerate(extra, 1):
+                    fm = snowball_keep(r, plan)
+                    if not fm or not in_window(r.get("date"), r.get("year"), plan):
+                        continue
+                    kept_c += 1
+                    for fid, t in fm.items():
+                        new_records.append({**r, "query": c["id"], "facet": fid, "source": "openalex",
+                                            "anchor": False, "rank": rank, "matched": t, "snowball_from": k,
+                                            "sin_abstract": not r.get("abstract")})
+                c["kept"] = kept_c
+                q = {**q, "_complement": c}
             kept = 0
             for rank, r in enumerate(recs, 1):
                 fm = snowball_keep(r, plan)
@@ -1088,7 +1177,12 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                                         "rank": rank, "matched": t, "snowball_from": k,
                                         "sin_abstract": not r.get("abstract")})
             q["kept"] = kept
-            queries.append(q)
+            comp = q.pop("_complement", None)
+            if comp is None:
+                queries.append(q)
+            else:
+                queries[-1] = q                 # appended above, before its complement got an id
+                queries.append(comp)
     # re-merge: existing candidates are re-expanded into one record per facet
     old = []
     for c in cands:
@@ -1296,8 +1390,17 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
               "prefiltro": tally[PREFILTER],
               "motivos": {k: v for k, v in tally.items() if k != PREFILTER},
               "relevante_fuera_de_alcance": tally["fuera de alcance"]}
-    # who wrote the decisions: the judgement is a model's, so its id is part of the record
-    plan["screened_by"] = ws(screened_by) or None
+    # who wrote the decisions: the judgement is a model's, so its id is part of the record —
+    # the screener agent's own model (agents/screener.md, set by config/models.toml) when the
+    # decisions came from screeners; a different --screened-by is recorded as such
+    policy = screener_model()
+    given = ws(screened_by) or None
+    if merged.is_file():
+        plan["screened_by"] = given or policy
+        plan["screened_by_note"] = (f"difiere del modelo de agents/screener.md ({policy})"
+                                    if given and policy and given != policy else None)
+    else:
+        plan["screened_by"], plan["screened_by_note"] = given, None
     save(run / "plan.json", plan)
     (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts, provenance_line(run)),
                                      encoding="utf-8", newline="\n")
@@ -1363,6 +1466,16 @@ def degraded_lines(queries: list[dict]) -> list[str]:
     return out
 
 
+def screener_model() -> str | None:
+    """The model agents/screener.md runs on (written there from config/models.toml)."""
+    try:
+        text = (HERE.parent.parent / "agents" / "screener.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"^model:\s*(\S+)", text, re.M)
+    return m.group(1) if m else None
+
+
 def screener_record() -> str:
     """The plugin version and the screener prompt's hash: the instructions the
     screening model followed are part of what makes a run reproducible."""
@@ -1393,6 +1506,7 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
                                                   if plan["arxiv_categories"] else ""),
           "**Fechas:** arXiv = envío de la v1; Semantic Scholar, OpenAlex y Crossref = fecha de publicación.",
           "**Cribado por:** " + (plan.get("screened_by") or "no consta")
+          + (f" — {plan['screened_by_note']}" if plan.get("screened_by_note") else "")
           + f" ({screener_record()}; el modelo que decidió cada candidato; los conteos son del script)",
           *([provenance] if provenance else []),
           "**Criterios de inclusión:** " + ("; ".join(plan["include"]) or "—"),
@@ -1416,7 +1530,7 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
           "- Identificados: " + ", ".join(f"{k} {v}" for k, v in c["identificados"].items())
           + f" (total {c['identificados_total']})",
           f"- Tras deduplicación: {c['tras_deduplicacion']}",
-          f"- Excluidos por el prefiltro mecánico (alcanzan menos de min(2, facetas) facetas en consultas y "
+          f"- Excluidos por el prefiltro mecánico (alcanzan menos de {prefilter_need(plan)} faceta(s) en consultas y "
           f"título/resumen; nadie los leyó; sus títulos, en `prefiltrados.md`): {c.get('prefiltro', 0)} → "
           f"quedan {c.get('tras_prefiltro', '—')}",
           f"- Tras cribado por retracción/retirada: {c['tras_retraccion']}",
