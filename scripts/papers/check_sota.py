@@ -426,7 +426,9 @@ def number_contexts(tokens: list[str], units: list[str]) -> dict[str, str | None
 
 def check(vault: str, project: str | None, text: str) -> dict:
     report = {"tool": TOOL, "citations": 0, "without_locator": [], "problems": [], "numbers_checked": 0,
-              "table_rows_checked": 0}
+              "table_rows_checked": 0,
+              # values read off a plot: never checkable against text — say how many there are
+              "plot_readings": len(PLOT.findall(text))}
     for start, end, block in blocks(text):
         for fig in plot_readings(block):
             if fig not in cited_figures(block):

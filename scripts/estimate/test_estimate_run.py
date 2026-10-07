@@ -68,6 +68,22 @@ class TestEstimate(unittest.TestCase):
         self.assertEqual(out["stages"]["ingest"]["papers"], 20)
         self.assertGreater(out["total"]["wall_minutes"], 0)
 
+    def test_ingestion_time_counts_figures_at_arxivs_spacing(self):
+        # every figure image is one more request to arxiv.org, 3 s apart, up to 40 a paper
+        code, out = self.cli("--planned-papers", "10")
+        ing = out["stages"]["ingest"]
+        self.assertEqual(ing["wall_minutes"], round(10 * (er.INGEST_BASE_SECONDS + er.TYPICAL_FIGURES * 3) / 60, 1))
+        self.assertEqual(ing["wall_minutes_max"], round(10 * (er.INGEST_BASE_SECONDS + 40 * 3) / 60, 1))
+        self.assertGreaterEqual(ing["wall_minutes"], 10)
+
+    def test_abstract_only_ingestion_fetches_no_text_or_figures(self):
+        code, out = self.cli("--planned-papers", "30", "--abstract-only")
+        ing = out["stages"]["ingest"]
+        self.assertEqual(ing["wall_minutes"], round(30 * er.ABSTRACT_ONLY_SECONDS / 60, 1))
+        self.assertEqual(ing["wall_minutes_max"], ing["wall_minutes"])
+        # no full text: no map, reduce or verification to run
+        self.assertEqual(sorted(out["stages"]), ["ingest"])
+
 
 if __name__ == "__main__":
     unittest.main()

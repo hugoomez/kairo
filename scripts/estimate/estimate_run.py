@@ -14,7 +14,8 @@ subscription the tokens are usage, not money).
 
 Everything is an **estimate** from sizes on disk: characters / 3.6 per token,
 a re-read factor for the summarizers (they re-open each locator before citing
-it), arXiv's 3 s spacing for ingestion. It is never a measurement; the run's
+it), arXiv's 3 s spacing for ingestion, figure images included (a typical
+count, and `wall_minutes_max` for a figure-heavy corpus). It is never a measurement; the run's
 own numbers are what happened.
 
   --run             a lit_search run directory (candidates.json): the screening stage
@@ -45,7 +46,17 @@ OUT_TOKENS = {"screener_per_candidate": 60, "facet_summarizer": 2_500, "sota_syn
               "fresh_verifier": 1_500}
 VERIFY_SHARE = 0.25             # share of the cited papers' text that lands in the section packets
 MAX_PACKET_CHARS = 150_000
-INGEST_SECONDS = 45             # per paper: abstract page, HTML, ~10 figures at 3 s, metadata, resolution
+# Ingestion is bound by arXiv's 3 s spacing between requests to arxiv.org (shared
+# across processes, so parallel ingestion is no faster): metadata, the abstract
+# page, the HTML (after its own 3 s pause), OpenAlex / Crossref and the reference
+# check take about INGEST_BASE_SECONDS; then every figure image is one more
+# arxiv.org request, up to MAX_FIGURES (ingest_paper.py) a paper.
+INGEST_BASE_SECONDS = 25
+ARXIV_SPACING_SECONDS = 3
+TYPICAL_FIGURES = 12
+MAX_FIGURES = 40
+# `ligero` / --abstract-only: metadata, abstract and the reference check — no text, no figures
+ABSTRACT_ONLY_SECONDS = 12
 SUBAGENT_SECONDS = 150          # one subagent turn-set, running in parallel with its siblings
 
 
@@ -97,7 +108,12 @@ def downstream(sizes: list[int], already_ingested: int, sections: int) -> dict:
     to_ingest = n - already_ingested
     return {
         "ingest": {"papers": n, "to_fetch": to_ingest, "subagents": 0, "model": None, "input_tokens": 0,
-                   "output_tokens": 0, "wall_minutes": round(to_ingest * INGEST_SECONDS / 60, 1)},
+                   "output_tokens": 0,
+                   "wall_minutes": round(to_ingest * (INGEST_BASE_SECONDS + TYPICAL_FIGURES * ARXIV_SPACING_SECONDS)
+                                         / 60, 1),
+                   # a figure-heavy corpus (MAX_FIGURES images a paper)
+                   "wall_minutes_max": round(to_ingest * (INGEST_BASE_SECONDS + MAX_FIGURES * ARXIV_SPACING_SECONDS)
+                                             / 60, 1)},
         "map": {"subagents": summarizers, "model": policy_model("facet_summarizer"),
                 "input_tokens": tokens(total * REREAD) + summarizers * PROMPT_TOKENS["facet_summarizer"],
                 "output_tokens": summarizers * OUT_TOKENS["facet_summarizer"],
@@ -126,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--papers", nargs="*", default=[])
     ap.add_argument("--planned-papers", type=int, default=0)
     ap.add_argument("--sections", type=int, default=8, help="Estado-del-arte sections with citations")
+    ap.add_argument("--abstract-only", action="store_true",
+                    help="the `ligero` template: abstract-only notes, no full text, map or verification")
     a = ap.parse_args(argv)
     if not (a.run or a.papers or a.planned_papers):
         print(json.dumps({"error": "give --run, --papers or --planned-papers"}))
@@ -140,11 +158,17 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as e:
         print(json.dumps({"error": f"cannot read the run: {e}"}, ensure_ascii=False))
         return 2
-    if a.papers or a.planned_papers:
+    if a.abstract_only and (a.papers or a.planned_papers):
+        n = a.planned_papers
+        stages["ingest"] = {"papers": n + len(a.papers), "to_fetch": n, "subagents": 0, "model": None,
+                            "input_tokens": 0, "output_tokens": 0,
+                            "wall_minutes": round(n * ABSTRACT_ONLY_SECONDS / 60, 1),
+                            "wall_minutes_max": round(n * ABSTRACT_ONLY_SECONDS / 60, 1)}
+    elif a.papers or a.planned_papers:
         stages.update(downstream(paper_sizes(a.vault, a.papers, a.planned_papers), len(a.papers), a.sections))
     total = {k: round(sum(s[k] for s in stages.values()), 1) for k in ("input_tokens", "output_tokens",
                                                                        "wall_minutes", "subagents")}
-    print(json.dumps({"tool": "kairo/estimate_run@1.0.0", "stages": stages, "total": total,
+    print(json.dumps({"tool": "kairo/estimate_run@1.1.0", "stages": stages, "total": total,
                       "note": "estimación a partir de tamaños en disco (caracteres / 3.6 por token, factores fijos); "
                               "no es una medida — la ejecución dirá lo que costó"}, ensure_ascii=False, indent=1))
     return 0

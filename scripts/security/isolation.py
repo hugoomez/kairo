@@ -51,6 +51,8 @@ _READERS = re.compile(r"(?:^|[\s;|&(`])(?:cat|type|more|less|head|tail|sed|awk|g
 _PAPERS_PATH = re.compile(r"papers[/\\](?:p-\d|\*|[\"']?\s|[\"']?$)", re.I)
 # scripts whose output is a paper's own text (for an interface, never the main session)
 _TEXT_SCRIPTS = re.compile(r"\bcite_text\.py\b", re.I)
+# a search listing that prints the candidates' abstracts (third-party text) into the caller's context
+_ABSTRACTS = re.compile(r"\blit_search\.py\b.*\bshow\b.*--with-abstracts", re.I | re.S)
 
 
 def state_dir() -> Path:
@@ -179,6 +181,9 @@ def main_paper_read(event: dict) -> str | None:
             return f"el comando lee notas de Papers/: {why}."
         if _TEXT_SCRIPTS.search(cmd):
             return f"cite_text.py imprime texto de un paper: {why}."
+        if _ABSTRACTS.search(cmd):
+            return ("lit_search.py show --with-abstracts imprime abstracts de terceros en el hilo principal: "
+                    "pasa la ruta del paquete de la página a un `screener` (lo lee él), o quita --with-abstracts.")
     return None
 
 
