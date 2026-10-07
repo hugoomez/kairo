@@ -50,7 +50,11 @@
     `SEMANTIC_SCHOLAR_API_KEY` / `OPENALEX_API_KEY` are used when set.
   - Drops papers already in `Papers/` (arXiv id, DOI or the published DOI of
     an ingested preprint, normalised title) and papers offered by an earlier
-    watch of this project.
+    watch of this project. Another version of either — the published, often
+    retitled version of a preprint: same first author, title similarity ≥
+    lit_search.TITLE_CLOSE, no identifier telling them apart — is listed in
+    `publicadas` (`of`: the P-id or the earlier key) and on the page, never
+    offered again as a new paper.
   - A candidate is *strong* when it reaches two or more facets — the facets
     whose queries found it, plus (with a plan) the facet terms in its title or
     abstract, by lit_search's rule (or the project has one facet) — or when it
@@ -147,7 +151,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.8.0"
+TOOL = "kairo/lit_watch@1.9.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -469,6 +473,66 @@ def known_papers(vault: Path) -> tuple[set[str], set[str], set[str]]:
     return arx, dois, titles
 
 
+def _work(ref: str, title: str, authors: list, arxiv: str | None, doi: str | None, run: str = "") -> dict:
+    from lit_search import _first_surname
+    return {"ref": ref, "title": norm_title(title or ""), "surname": _first_surname(authors or []),
+            "arxiv": re.sub(r"v\d+$", "", (arxiv or "").lower()) or None, "doi": (doi or "").lower() or None,
+            "run": run}
+
+
+def vault_works(vault: Path) -> list[dict]:
+    """Every paper note as a work to compare a new record with (id, title, first author, ids)."""
+    from vaultnotes import fm_raw, parse_flow_list
+    out = []
+    for p in (vault / "Papers").glob("P-*.md"):
+        if is_model_notes(p.resolve()) or is_flagged(p):
+            continue
+        parts = split_frontmatter(read_text(p)[0])
+        if not parts:
+            continue
+        fm = parts[0]
+        out.append(_work(fm_get(fm, "id") or p.name.split(" ")[0], fm_get(fm, "title") or "",
+                         parse_flow_list(fm_raw(fm, "authors")), fm_get(fm, "arxiv"), fm_get(fm, "doi")))
+    return out
+
+
+def earlier_works(pdir: Path) -> list[dict]:
+    """Every candidate an earlier watch of this project listed, as a work."""
+    out = []
+    for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json")):
+        try:
+            for c in load_run(f).get("candidates", []):
+                out.append(_work(c["key"], c.get("title") or "", c.get("authors") or [], c.get("arxiv"),
+                                 c.get("doi"), f.name))
+        except (OSError, json.JSONDecodeError, KeyError):
+            continue
+    return out
+
+
+def other_version(c: dict, works: list[dict]) -> dict | None:
+    """The known work a new record is another version of — a preprint and its
+    published (possibly retitled) version: close titles (lit_search's
+    TITLE_CLOSE), the same first author's surname, and no identifier that
+    tells them apart (two different arXiv ids, or two different DOIs)."""
+    import difflib
+
+    from lit_search import TITLE_CLOSE
+    me = _work("", c.get("title") or "", c.get("authors") or [], c.get("arxiv"), c.get("doi"))
+    if not me["surname"] or len(me["title"].split()) < 4:
+        return None
+    for w in works:
+        if w["surname"] != me["surname"] or not w["title"]:
+            continue
+        if (me["arxiv"] and w["arxiv"] and me["arxiv"] != w["arxiv"]) or (me["doi"] and w["doi"]
+                                                                           and me["doi"] != w["doi"]):
+            continue
+        if (me["arxiv"] and me["arxiv"] == w["arxiv"]) or (me["doi"] and me["doi"] == w["doi"]):
+            continue                                 # the same record, handled by the key checks
+        if difflib.SequenceMatcher(None, me["title"], w["title"]).ratio() >= TITLE_CLOSE:
+            return w
+    return None
+
+
 def earlier_keys(pdir: Path) -> tuple[dict[str, bool], dict[str, tuple[str, dict]]]:
     """Every candidate an earlier watch listed → whether it was offered in full
     (triaged or decided; a run written before `strong` existed counts as full),
@@ -532,6 +596,16 @@ def digest_md(run: dict) -> str:
         L.append("")
     if run.get("sources_left_out"):
         L += ["## Fuentes fuera de la vigilancia", ""] + [f"- {x}" for x in run["sources_left_out"]] + [""]
+    if run.get("publicadas"):
+        L += [f"## Versiones publicadas de papers ya vistos ({len(run['publicadas'])})", "",
+              "Mismo primer autor y título parecido a un preprint ya visto, sin otro identificador que los "
+              "distinga: no se ofrecen como papers nuevos. Confírmalo antes de citar la versión publicada.", ""]
+        for p in run["publicadas"]:
+            ids = " · ".join(x for x in (f"DOI:{p['doi']}" if p.get("doi") else "",
+                                         f"arXiv:{p['arxiv']}" if p.get("arxiv") else "") if x)
+            L.append(f"- **{p.get('title')}** — {p.get('venue') or 'venue no consta'} ({p.get('date') or 's. f.'})"
+                     f" — {ids} · otra versión de `{p['of']}` ({p['where']})")
+        L.append("")
     threats = {}
     for t in run.get("threats") or []:
         threats.setdefault(t["key"], []).append(t)
@@ -930,8 +1004,14 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     enrich_log: list[dict] = []
     raw_dir = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    lit_search.enrich_abstracts([c for c in merged.values() if not (c.get("arxiv") and c["arxiv"].lower() in arx)
-                                 and not (c.get("doi") and c["doi"] in dois)], plan or {}, raw_dir, enrich_log, fetch)
+    # only a candidate that could be strong is worth a lookup: a credited facet, a facet
+    # term in its title, or a citation of the project's papers — not a keyword source's
+    # loose matches, which can be thousands a week and spend OpenAlex's keyless budget
+    lit_search.enrich_abstracts(
+        [c for c in merged.values() if not (c.get("arxiv") and c["arxiv"].lower() in arx)
+         and not (c.get("doi") and c["doi"] in dois)], plan or {}, raw_dir, enrich_log, fetch,
+        only=lambda c: bool(c.get("facets") or c.get("cita_a")
+                            or (plan and lit_search.facet_matches(c, plan, title_only=True))))
     if plan:
         for cur in merged.values():                    # facet terms its own text shows count too
             for fid in lit_search.facet_matches(cur, plan):
@@ -942,10 +1022,24 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     def in_vault(c: dict) -> bool:
         return bool((c.get("arxiv") and c["arxiv"].lower() in arx) or (c.get("doi") and c["doi"] in dois)
                     or norm_title(c["title"]) in titles)
+    # the published version of a preprint the vault holds or a watch already offered
+    # (often retitled, and with a DOI where the preprint had an arXiv id) is not new
+    # work: it is reported as that version, never offered again as a paper
+    by_vault, by_earlier = vault_works(vault), earlier_works(pdir)
+    publicadas = []
     cands = []
     for c in merged.values():
         if in_vault(c):
             continue
+        if c["key"] not in seen_before:
+            prev = other_version(c, by_vault) or other_version(c, by_earlier)
+            if prev:
+                publicadas.append({"key": c["key"], "of": prev["ref"], "title": c.get("title"),
+                                   "doi": c.get("doi"), "arxiv": c.get("arxiv"), "venue": c.get("venue") or "",
+                                   "date": c.get("date"),
+                                   "where": "en el vault" if prev["ref"].startswith("P-")
+                                   else f"ofrecido en {prev['run']}"})
+                continue
         # strong: two facets; or it cites the project's papers and shows a facet (or cites two of them)
         cites = c.get("cita_a") or []
         c["strong"] = len(c["facets"]) >= 2 or len(facets_all) == 1 or \
@@ -1008,7 +1102,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
            "sources_left_out": [f"{x}: {NOT_WINDOWABLE[x]}" for x in (plan or {}).get("sources") or []
                                 if x in NOT_WINDOWABLE],
            "citation_roots": len(roots), "citation_root_errors": root_errors, "abstract_lookups": enrich_log,
-           "queries": log, "candidates": cands, "threats": []}
+           "queries": log, "candidates": cands, "publicadas": publicadas, "threats": []}
     out = None
     moved = False
     if not lost_all:
@@ -1048,8 +1142,13 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
             "novelty_candidates": sum(1 for c in cands if c["novelty"]),
             "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
+            "publicadas": len(publicadas),
             "citation_root_errors": root_errors,
-            "suspicious": sum(1 for c in cands if c.get("sospechoso"))}
+            "suspicious": sum(1 for c in cands if c.get("sospechoso")),
+            # citations always go through OpenAlex
+            "config_warnings": lit_search.config_warnings(
+                {"sources": sorted(set((plan or {}).get("sources") or [q["source"] for q in queries])
+                                   | ({"openalex"} if citations else set()))})}
 
 
 # --------------------------------------------------------------------------
