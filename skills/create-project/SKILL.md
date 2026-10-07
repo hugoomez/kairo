@@ -89,6 +89,7 @@ existing fields — never a new `type` value:
 | `producto` | `producto` | — | as today |
 | `ciencia` (default) | `ciencia` | — | as today |
 | `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
+| `corpus` (search and ingest only) | `ciencia` | `seed_hypotheses: false`, `sota_map: false` | as today; steps 3, 7 and 8 are skipped |
 
 **`revision`** is the light path for a question like "state of the art on X,
 last two years" or "compare A, B and C": Propósito is the question itself and
@@ -97,6 +98,14 @@ search → screening → ingestion → the map (with a *Tabla comparativa* when 
 question compares things, see step 7) and stops there: no related-projects
 pass, no seed hypotheses. Say in the report that hypotheses can be generated
 later from the gaps.
+
+**`corpus`** is the cheapest path: a traceable, screened, ingested library
+(`Papers/` notes with their verbatim text, `busqueda.md`, a BibTeX export) and
+no synthesis at all — for a researcher who will read the papers themselves.
+It runs steps 1, 2, 4, 5, 6 and 9–10, then exports the project's references
+(`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/export_bib.py" --vault <vault>
+--project <PROJ-XXX> --out Projects/<slug>/referencias.bib`). The map can be
+built later by running step 7 alone.
 
 Set `template:` to the one used. For `teorico`, tell the researcher once, in
 your report: `default_linea_publicacion: true` means every experiment that
@@ -151,6 +160,21 @@ relevance) + any recency the brief states (the plan's `from`).
 
 Include the **patent search only if `type` is `producto` or `hibrido`** —
 otherwise omit it entirely (matches that skill's own gate).
+
+**Cost before the heavy passes — an estimate, then the researcher's go-ahead.**
+The screening (one `screener` per page), the map (one `facet-summarizer` per
+≤ 6 papers), the reduce and the verification (one `fresh-verifier` per section
+part) are where a project's time and usage go. Before dispatching the
+screeners, and again before step 7, run
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --run <run dir>                       # before screening
+python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --vault <vault> --papers <P-ids …>    # before step 7
+```
+and show its per-stage subagents, models, tokens and minutes in a few lines.
+With `paper_ingestion: manual`, wait for the researcher's go-ahead (they may
+narrow the plan, pick fewer papers, or switch to the `corpus` template); with
+`autonomo`, say it and go on. It is an estimate from sizes on disk, never a
+measurement — say so.
 
 What steps 5–7 consume, all written by `lit_search.py`: `ranked.md` (the
 screened, justified list), `screened.json` (each candidate's ids and its
@@ -333,6 +357,8 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    above.
 
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
+
+*(Skipped for the `corpus` template: `sota_map: false`.)*
 
 **Map — `facet-summarizer` subagents, in parallel.** Read the assignment from
 the notes: `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py"
