@@ -342,8 +342,8 @@ there and are not marked — the instruction-like-text heuristic still applies.
   is marked, as at ingestion). `--zotero-keys` keeps the citation keys;
   `--dry-run` shows the plan.
 - `scripts/papers/paper_refs.py` — a paper's own bibliography, read from the
-  bytes ingestion kept (no network; the note is never touched, so old notes
-  get it too): `extract` writes `Papers/_fuentes/<P-id>/referencias.json` —
+  bytes ingestion kept (no network; the note is never touched; a `legacy` note,
+  ingested before bytes were kept, needs `ingest_paper.py rebuild` first): `extract` writes `Papers/_fuentes/<P-id>/referencias.json` —
   each entry's label as printed (`[12]`), its LaTeXML anchor (what the body's
   citations link to), its text verbatim, and only the arXiv ids / DOIs the
   text itself states; `list` shows them with their vault matches (`--text`

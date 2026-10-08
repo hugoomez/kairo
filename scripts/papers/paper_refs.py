@@ -9,8 +9,10 @@ A paper note's `## Texto completo` stops at the bibliography (the note holds the
 paper's prose). The references are still in the bytes kept in
 `Papers/_fuentes/<P-id>/`: `extract` reads them from there and writes
 `Papers/_fuentes/<P-id>/referencias.json` beside them — the note itself is never
-touched, so `ingest_paper.py verify` is unaffected and old notes get their
-references without a re-ingestion:
+touched, so `ingest_paper.py verify` is unaffected and a note already ingested
+with its bytes kept gets its references without a re-ingestion. A `legacy` note
+(ingested before ingest_paper.py kept bytes) has nothing to read: it needs
+`ingest_paper.py rebuild --only <P-id>` (a network re-fetch) first.
 
   - arXiv HTML / ar5iv (LaTeXML): each `ltx_bibitem` — its label as printed
     (`[12]`, `Doe et al. (2020)`), its text verbatim (math as `$…$`), and the
