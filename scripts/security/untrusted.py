@@ -41,7 +41,9 @@ _PATTERNS = (
     ("ignore … instructions (es/pt/it)",
      r"\b(?:ignora|ignore|ignorar|olvida|esquece|dimentica|descarta)\b[^.]{0,40}"
      r"\b(?:instrucciones|instruções|instruzioni|indicaciones|reglas|regras|regole)\b"),
-    ("ignore … instructions (fr)", r"\b(?:ignore[zr]?|oublie[zr]?)\b[^.]{0,40}\b(?:instructions|consignes|règles)\b"),
+    # a French article after the verb, so the English "ignore … instructions" is not counted twice
+    ("ignore … instructions (fr)", r"\b(?:ignore[zr]?|oublie[zr]?)\s+(?:toutes\s+)?(?:les|tes|vos)\b[^.]{0,30}"
+                                   r"\b(?:instructions|consignes|règles)\b"),
     ("ignore … instructions (de)", r"\b(?:ignorier(?:e|en)?|vergiss)\b[^.]{0,40}"
                                    r"\b(?:anweisungen|instruktionen|regeln)\b"),
     ("ignore … instructions (zh)", r"(?:忽略|无视|忽视)[^。]{0,20}(?:指令|指示|提示|规则)"),
