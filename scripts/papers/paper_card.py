@@ -163,6 +163,34 @@ def retitled_candidates(c: Card, ident: dict) -> list[dict]:
 CITING_ORDERS = ("recent", "cited")
 
 
+def openreview_search_url(title: str) -> str:
+    return ("https://api2.openreview.net/notes/search?term=" + urllib.parse.quote(title)
+            + "&type=terms&content=all&source=forum&limit=10")
+
+
+def openreview_acceptance(title: str, authors: list, raw: bytes | None) -> dict | None:
+    """The OpenReview record (from a `notes/search` answer) that shows this paper
+    accepted: exactly this title, or a close one (a retitled camera-ready) by the
+    same first author, with a venue (submitted / withdrawn / rejected are none).
+    `retitled` holds the published title's note, empty for an exact title."""
+    recs = lit_search.parse_openreview(raw)[0] if raw else []
+    first = rr.surname_of((authors or [""])[0] or "")
+
+    def same(r: dict) -> str | None:
+        level = rr.title_level(title, r.get("title") or "")[0]
+        if level == "exact":
+            return ""
+        if level == "close" and first and r.get("authors") and rr.surname_matches(first, r["authors"][0]):
+            return f"; título publicado: «{r['title']}»"
+        return None
+    for r in recs:
+        if r.get("venue"):
+            s = same(r)
+            if s is not None:
+                return {**r, "retitled": s}
+    return None
+
+
 def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir: Path | None,
           vault: Path | None = None, order: str = "recent") -> dict:
     c = Card(fetch, raw_dir)
@@ -330,23 +358,10 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
         # year. A record accepted there counts with exactly this title, or with a close one
         # (resolve_refs' rule: a retitled camera-ready) by the same first author — and the
         # card then shows the published title.
-        raw = c.get("openreview.json", "https://api2.openreview.net/notes/search?term="
-                    + urllib.parse.quote(ident["title"]) + "&type=terms&content=all&source=forum&limit=10",
-                    {"Accept": "application/json"})
-        recs = lit_search.parse_openreview(raw)[0] if raw else []
-        first = rr.surname_of((ident.get("authors") or [""])[0] or "")
-
-        def same(r: dict) -> str | None:
-            level = rr.title_level(ident["title"], r.get("title") or "")[0]
-            if level == "exact":
-                return ""
-            if level == "close" and first and r.get("authors") and rr.surname_matches(first, r["authors"][0]):
-                return f"; título publicado: «{r['title']}»"
-            return None
-        hit = next(((r, same(r)) for r in recs if r.get("venue") and same(r) is not None), None)
+        raw = c.get("openreview.json", openreview_search_url(ident["title"]), {"Accept": "application/json"})
+        hit = openreview_acceptance(ident["title"], ident.get("authors") or [], raw)
         if hit:
-            hit, retitled = hit
-            card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}{retitled})",
+            card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}{hit['retitled']})",
                                       "doi": hit.get("doi") or "", "venue": hit["venue"],
                                       "year": str(hit.get("year") or ""), "url": hit["url"]})
     if arxiv and ident.get("title") and not [p for p in card["published"]

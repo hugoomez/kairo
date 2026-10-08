@@ -86,7 +86,20 @@ lost or truncated, and the counts.
   were lost, so never call the run "nothing new" for those queries.
 - `sources_left_out`: a source the plan used whose search cannot be limited to
   a window (OpenReview: no date filter or sort). Name it in the report; new ML
-  preprints reach the watch through arXiv.
+  preprints reach the watch through arXiv, and OpenReview decisions on the
+  project's own preprints come through `tus_papers` (below).
+- `tus_papers` (unless `--no-own-papers`): what changed for the project's own
+  ingested papers — `versiones` (a newer arXiv version than the one the note
+  and its locators hold), `publicadas_arxiv` (a published version arXiv now
+  declares that the note does not record) and `aceptadas_openreview` (a
+  preprint OpenReview shows accepted, exact or retitled title by the same first
+  author; up to 30 preprints asked per watch, the least recently asked first —
+  `openreview_pendientes` wait their turn). The page lists them under «Tus
+  papers: qué ha cambiado». Nothing is written to a paper note: offer
+  `ingest_paper.py rebuild --only <P-id>` (and re-check what cites it) for a
+  new version, and `resolve_refs.py --only <P-id> --write` for a publication;
+  the researcher decides. A paper first posted earlier but revised in the
+  window is a new candidate only with the plan's `arxiv_revisions: true`.
 - Some queries `truncated`: an arXiv or OpenAlex query with more than 500
   matches has its window split in halves (up to three times) until each part is
   read whole; one still capped after that is `truncated`, is **not** counted as

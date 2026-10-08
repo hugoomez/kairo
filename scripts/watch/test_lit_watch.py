@@ -462,7 +462,7 @@ class TestQueriesAndCoverage(TestLitWatch):
         net = Busy()
         code, res = self.delta(net)
         self.assertEqual(code, 0, res)
-        self.assertEqual(sum(1 for u in net.urls if "arxiv" in u), 5)    # 5 pages of 100 = MAX_RESULTS
+        self.assertEqual(sum(1 for u in net.urls if "arxiv" in u and "search_query" in u), 5)  # 5 pages = MAX_RESULTS
         self.assertTrue(res["truncated"])
         # capped at MAX_RESULTS: reported as truncated and never counted as covered —
         # the arXiv query keeps its window open; the query read whole moves on
@@ -502,7 +502,8 @@ class TestQueriesAndCoverage(TestLitWatch):
         net = FakeNet()
         code, res = self.delta(net)
         self.assertEqual(code, 0, res)
-        self.assertFalse(any("openreview" in u for u in net.urls))
+        # the plan's queries never go to OpenReview (the own-papers check asks it by one title)
+        self.assertFalse(any("openreview" in u and "widgets" in u for u in net.urls))
         self.assertEqual(res["sources_left_out"], ["openreview"])
         data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         self.assertIn("openreview", data["sources_left_out"][0])

@@ -2,6 +2,7 @@
 """Literature watch: what is new since the last watch, and does it threaten a hypothesis?
 
     lit_watch.py delta   --vault <vault> --project-dir <dir> [--since YYYY-MM-DD] [--top 10] [--no-citations]
+                         [--no-own-papers]
     lit_watch.py triage  --project-dir <dir> --run <file> --key <k> --why "<one line>"
     lit_watch.py threat  --vault <vault> --project-dir <dir> --run <file> --key <k>
                          --hypothesis H-XXXX --sentence "<verbatim from the abstract>"
@@ -67,6 +68,12 @@
     counts `strong_not_triaged` and `carried`.
   - Each candidate keeps `abstract_sha256`, the hash of the abstract exactly
     as the source returned it, so a later threat can only quote that text.
+  - The project's own papers (unless `--no-own-papers`): a newer arXiv
+    version than the one ingested, a published version arXiv now declares, and
+    an acceptance OpenReview shows for a preprint with no published version
+    (at most OPENREVIEW_PER_RUN asked per watch, least recently asked first,
+    `_vigilancia/openreview.json`) — reported under `tus_papers`, never
+    written to a note. A failure there is reported and never costs the watch.
   - Novelty prefilter: word overlap between each active hypothesis's (not
     `refutada`, not `descartada`, not `send: never`)
     `## Claim` and each candidate's title + abstract. Only ids and scores are
@@ -151,7 +158,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.9.0"
+TOOL = "kairo/lit_watch@1.10.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -606,6 +613,24 @@ def digest_md(run: dict) -> str:
             L.append(f"- **{p.get('title')}** — {p.get('venue') or 'venue no consta'} ({p.get('date') or 's. f.'})"
                      f" — {ids} · otra versión de `{p['of']}` ({p['where']})")
         L.append("")
+    own = run.get("tus_papers") or {}
+    if any(own.get(k) for k in ("versiones", "publicadas_arxiv", "aceptadas_openreview", "perdidas")):
+        L += ["## Tus papers: qué ha cambiado", "",
+              "Papers del proyecto ya ingeridos. Nada se ha cambiado en sus notas: decide tú si re-ingerir "
+              "(`ingest_paper.py rebuild`) o registrar la versión publicada (`resolve_refs.py --write`).", ""]
+        L += [f"- **{v['id']}** — nueva versión en arXiv: {v['ultima']} ({v.get('fecha') or 's. f.'}); la nota y "
+              f"sus localizadores son de la {v['leida']}" for v in own.get("versiones") or []]
+        L += [f"- **{v['id']}** — arXiv declara ahora una versión publicada: "
+              + " · ".join(x for x in (f"DOI {v['doi']}" if v.get("doi") else "", v.get("journal_ref") or "") if x)
+              for v in own.get("publicadas_arxiv") or []]
+        L += [f"- **{v['id']}** — aceptado en OpenReview: {v['venue']} (decisión «{v.get('decision')}»"
+              + (f"; título publicado: «{v['titulo_publicado']}»" if v.get("titulo_publicado") else "") + ")"
+              for v in own.get("aceptadas_openreview") or []]
+        L += [f"- ⚠️ No se pudo comprobar: {x}" for x in own.get("perdidas") or []]
+        if own.get("openreview_pendientes"):
+            L.append(f"- {own['openreview_pendientes']} preprints esperan su turno para OpenReview (se consultan "
+                     f"{OPENREVIEW_PER_RUN} por vigilancia, los menos recientes primero)")
+        L.append("")
     threats = {}
     for t in run.get("threats") or []:
         threats.setdefault(t["key"], []).append(t)
@@ -933,8 +958,102 @@ def citation_delta(roots: dict[str, str], starts: dict[str, date], today: date, 
     return results, log
 
 
+OPENREVIEW_PER_RUN = 30    # project preprints asked about an OpenReview decision per watch (1 req/s)
+
+
+def first_author(authors: str) -> str:
+    """The first name of a frontmatter list as ingest_paper writes it:
+    `["Jane Doe", "Rui Roe"]` or `[Doe, …]`."""
+    m = re.match(r'\s*\[\s*(?:"((?:[^"\\]|\\.)*)"|([^,\]]+))', authors)
+    if not m:
+        return authors.strip()
+    return (json.loads(f'"{m.group(1)}"') if m.group(1) is not None else m.group(2)).strip()
+
+
+def project_papers(vault: Path, pid: str | None) -> list[dict]:
+    """The project's own paper notes (never `send: never`, never model notes):
+    id, title, first author, arXiv id and version, and whether a published
+    version is recorded."""
+    out = []
+    if not pid:
+        return out
+    for p in sorted((vault / "Papers").glob("P-*.md")):
+        if is_model_notes(p.resolve()) or is_flagged(p):
+            continue
+        text, _ = read_text(p)
+        parts = split_frontmatter(text)
+        if not parts:
+            continue
+        fm = parts[0]
+        if not re.search(r"(?<![\w-])" + re.escape(pid) + r"(?![\w-])", fm_get(fm, "projects") or ""):
+            continue
+        out.append({"id": fm_get(fm, "id") or p.stem.split(" ")[0], "title": (fm_get(fm, "title") or "").strip(),
+                    "first_author": first_author(fm_get(fm, "authors") or ""),
+                    "arxiv": re.sub(r"v\d+$", "", (fm_get(fm, "arxiv") or "").strip()),
+                    "version": (fm_get(fm, "arxiv_version") or "").strip(),
+                    "published": any((fm_get(fm, k) or "").strip()
+                                     for k in ("published_doi", "published_venue", "journal_ref", "doi"))})
+    return out
+
+
+def own_papers_news(vault: Path, pdir: Path, fetch: Fetch, today: date) -> tuple[dict, dict]:
+    """What changed for the project's own papers since they were ingested: a newer
+    arXiv version (its locators point into the old one), a published version arXiv
+    now declares, and — for preprints with no published version — an acceptance
+    OpenReview shows (ICLR / NeurIPS / ICML / MLSys / TMLR have no DOI). OpenReview
+    is asked about at most OPENREVIEW_PER_RUN preprints a watch, the least recently
+    asked first (`_vigilancia/openreview.json`). Returns (news, the updated asked-on
+    record). Nothing is written to a paper note: `version_check.py --write`,
+    `resolve_refs.py --write` and `ingest_paper.py rebuild` stay the researcher's."""
+    sys.path.insert(0, str(HERE.parent / "papers"))
+    import paper_card
+    import retraction
+    papers = project_papers(vault, hub_field(pdir, "id"))
+    news: dict = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [], "perdidas": []}
+    with_arxiv = [p for p in papers if p["arxiv"]]
+    entries, lost = retraction.fetch_arxiv([p["arxiv"] for p in with_arxiv], get=fetch) if with_arxiv else ({}, {})
+    for p in with_arxiv:
+        aid = retraction.normalize_arxiv(p["arxiv"])
+        if aid in lost:
+            news["perdidas"].append(f"{p['id']} arXiv: {lost[aid][:120]}")
+            continue
+        e = entries.get(aid)
+        if not e:
+            continue
+        stored = int(p["version"][1:]) if re.fullmatch(r"v\d+", p["version"]) else None
+        if e.get("version") and stored and e["version"] > stored:
+            news["versiones"].append({"id": p["id"], "arxiv": aid, "leida": p["version"],
+                                      "ultima": f"v{e['version']}", "fecha": (e.get("updated") or "")[:10] or None})
+        declared = e.get("doi") or e.get("journal_ref")
+        if declared and not p["published"] and not retraction.is_arxiv_doi(e.get("doi") or ""):
+            news["publicadas_arxiv"].append({"id": p["id"], "doi": e.get("doi") or None,
+                                             "journal_ref": e.get("journal_ref") or None})
+    asked_path = pdir / "_vigilancia" / "openreview.json"
+    try:
+        asked = json.loads(asked_path.read_text(encoding="utf-8")) if asked_path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        asked = {}
+    pending = [p for p in papers if p["arxiv"] and not p["published"] and p["title"]
+               and not any(x["id"] == p["id"] for x in news["publicadas_arxiv"])]
+    pending.sort(key=lambda p: (asked.get(p["id"]) or "", p["id"]))
+    for p in pending[:OPENREVIEW_PER_RUN]:
+        try:
+            raw = fetch(paper_card.openreview_search_url(p["title"]), {"Accept": "application/json"})
+            hit = paper_card.openreview_acceptance(p["title"], [p["first_author"]], raw)
+        except (net.HttpError, json.JSONDecodeError, ValueError) as exc:
+            news["perdidas"].append(f"{p['id']} OpenReview: {net.redact(str(exc))[:120]}")
+            continue
+        asked[p["id"]] = today.isoformat()
+        if hit:
+            news["aceptadas_openreview"].append({"id": p["id"], "venue": hit["venue"],
+                                                 "decision": hit.get("openreview_venue"), "year": hit.get("year"),
+                                                 "url": hit.get("url"), "titulo_publicado": hit["retitled"] or None})
+    news["openreview_pendientes"] = max(0, len(pending) - OPENREVIEW_PER_RUN)
+    return news, asked
+
+
 def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
-          citations: bool = True) -> dict:
+          citations: bool = True, own: bool = True) -> dict:
     if not hub_path(pdir).is_file():
         raise Refused(f"{pdir} is not a project folder (no _hub.md)")
     plan, plan_run = structured_plan(pdir)
@@ -1090,6 +1209,13 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     for i, c in enumerate(cands):
         c["triage"] = c["strong"] and i < top
         c.update({"why": None, "decision": None})
+    own_news, asked = None, None
+    if own:
+        try:
+            own_news, asked = own_papers_news(vault, pdir, fetch, today)
+        except Exception as exc:  # noqa: BLE001 — an extra check never costs the watch itself
+            own_news = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [],
+                        "perdidas": [f"comprobación de tus papers: {net.redact(str(exc))[:160]}"]}
     truncated = [x for x in log if x.get("truncated")]
     lost = [x for x in log if x.get("error")]
     run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(),
@@ -1102,7 +1228,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
            "sources_left_out": [f"{x}: {NOT_WINDOWABLE[x]}" for x in (plan or {}).get("sources") or []
                                 if x in NOT_WINDOWABLE],
            "citation_roots": len(roots), "citation_root_errors": root_errors, "abstract_lookups": enrich_log,
-           "queries": log, "candidates": cands, "publicadas": publicadas, "threats": []}
+           "queries": log, "candidates": cands, "publicadas": publicadas, "threats": [],
+           **({"tus_papers": own_news} if own_news is not None else {})}
     out = None
     moved = False
     if not lost_all:
@@ -1126,6 +1253,9 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                 if not explicit or not prev or start <= date.fromisoformat(prev):
                     cursors[sig] = today.isoformat()
         save_cursors(pdir, cursors)
+        if asked is not None:
+            (pdir / "_vigilancia" / "openreview.json").write_text(
+                json.dumps(asked, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         text, nl = read_text(hub_path(pdir))
         write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
         moved = True
@@ -1143,6 +1273,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
             "novelty_candidates": sum(1 for c in cands if c["novelty"]),
             "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
             "publicadas": len(publicadas),
+            **({"tus_papers": {k: len(v) if isinstance(v, list) else v for k, v in own_news.items()}}
+               if own_news is not None else {}),
             "citation_root_errors": root_errors,
             "suspicious": sum(1 for c in cands if c.get("sospechoso")),
             # citations always go through OpenAlex
@@ -1352,6 +1484,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--top", type=int, default=10)
     p.add_argument("--no-citations", action="store_true",
                    help="skip the pass over new papers citing the project's papers and seeds")
+    p.add_argument("--no-own-papers", action="store_true",
+                   help="skip the check of the project's own papers (new arXiv versions, published versions, "
+                        "OpenReview decisions)")
     for name in ("triage", "threat", "decide", "threat-decide", "check", "judge-packet", "digest"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
@@ -1390,7 +1525,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
         elif a.cmd == "delta":
             since = date.fromisoformat(a.since) if a.since else None
             out = delta(a.vault.resolve(), a.project_dir.resolve(), since, a.top, fetch, today or date.today(),
-                        citations=not a.no_citations)
+                        citations=not a.no_citations, own=not a.no_own_papers)
         else:
             a.project_dir = a.project_dir.resolve()
             run_file = a.run if a.run.is_absolute() else (a.vault or Path.cwd()) / a.run
