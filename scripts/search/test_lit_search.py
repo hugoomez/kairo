@@ -736,6 +736,28 @@ class SeniorAuditFixes(Base):
         self.assertEqual(sum(1 for c in cands if c.get("arxiv") == "0000.12345"), 1)
         self.assertEqual(len(cands), 2)
 
+    def test_a_group_with_two_dois_is_keyed_by_a_stated_rule(self):
+        """One arXiv id joins two DOIs: the key is the DOI most records carry, then the
+        earliest year — never whichever string sorts first."""
+        base = {"facet": "A", "matched": "toy code", "date": None, "authors": [], "abstract": "",
+                "citations": None, "url": None, "anchor": False, "venue": None, "arxiv": "0000.22222"}
+        recs = [{**base, "title": "Toy codes I", "doi": "10.0000/zzz.late", "source": "crossref", "rank": 1,
+                 "year": 2031, "query": "Q1"},
+                {**base, "title": "Toy codes I", "doi": "10.0000/zzz.late", "source": "openalex", "rank": 2,
+                 "year": 2031, "query": "Q2"},
+                {**base, "title": "Toy codes I", "doi": "10.0000/aaa.early", "source": "s2", "rank": 3,
+                 "year": 2030, "query": "Q3"}]
+        [c] = ls.dedup(recs)
+        self.assertEqual(c["doi"], "10.0000/zzz.late")          # two records agree on it
+        self.assertEqual(c["other_ids"]["doi"], ["10.0000/aaa.early"])
+        self.assertIn("doi_choice", c)
+        recs[1]["doi"] = "10.0000/aaa.early"                      # one each: the earliest year wins
+        recs[1]["year"] = 2030
+        recs[2]["doi"] = "10.0000/mmm.other"
+        recs[2]["year"] = 2032
+        [c] = ls.dedup(recs)
+        self.assertEqual(c["doi"], "10.0000/aaa.early")
+
     def test_the_snowball_falls_back_to_openalex_when_semantic_scholar_is_lost(self):
         class S2Down(FakeWeb):
             def __call__(self, url, headers):

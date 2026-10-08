@@ -84,7 +84,10 @@ and their first authors share a surname — a retitled camera-ready
 (`merged_by` says so); a preprint and its published version found
 separately are merged and both identifiers kept. A title never joins two
 records with different DOIs (a conference paper and its journal extension
-stay two candidates, each with its own year and venue). Each candidate keeps, per
+stay two candidates, each with its own year and venue). A group that still holds
+two DOIs (one arXiv id declared by both) is keyed by the DOI most of its records
+carry, then the earliest year, then alphabetical order (`doi_choice` says so; the
+others stay in `other_ids`). Each candidate keeps, per
 facet, the term that matched it (the query term for per-term queries; for an
 OR-group, the first facet term found in its title or abstract, else the
 OR-group itself).
@@ -780,6 +783,28 @@ def record_keys(r: dict) -> list[str]:
     return ks
 
 
+DOI_CHOICE_RULE = ("varios DOI en un grupo: el que dan más registros, luego el de año más antiguo, "
+                   "luego el orden alfabético; los demás en other_ids")
+
+
+def primary_first(rs: list[dict]) -> list[str]:
+    """A group's DOIs, the one it is keyed and cited by first: the DOI most of its
+    records carry (the sources agree on it), then the earliest year (the version
+    first published), then alphabetical order — a stated rule, never an accident
+    of which string sorts first."""
+    count: dict[str, int] = {}
+    year: dict[str, int] = {}
+    for r in rs:
+        d = r.get("doi")
+        if not d:
+            continue
+        count[d] = count.get(d, 0) + 1
+        y = r.get("year") or ((r.get("date") or "")[:4] if (r.get("date") or "")[:4].isdigit() else None)
+        if y:
+            year[d] = min(year.get(d, 9999), int(y))
+    return sorted(count, key=lambda d: (-count[d], year.get(d, 9999), d))
+
+
 def dedup(records: list[dict]) -> list[dict]:
     parent: dict[int, int] = {}
 
@@ -814,7 +839,7 @@ def dedup(records: list[dict]) -> list[dict]:
     for rs in groups.values():
         rs = sorted(rs, key=lambda r: order.get(r["source"], 9))
         first = rs[0]
-        dois = sorted({r["doi"] for r in rs if r.get("doi")})
+        dois = primary_first(rs)
         arx = sorted({r["arxiv"] for r in rs if r.get("arxiv")})
         years = sorted({int(r["year"] or (r["date"] or "")[:4]) for r in rs
                         if r.get("year") or (r.get("date") or "")[:4].isdigit()})
@@ -836,6 +861,8 @@ def dedup(records: list[dict]) -> list[dict]:
              "best_rank": min(r["rank"] for r in rs)}
         if len(dois) > 1 or len(arx) > 1:
             c["other_ids"] = {"doi": dois[1:], "arxiv": arx[1:]}
+        if len(dois) > 1:
+            c["doi_choice"] = DOI_CHOICE_RULE
         c["key"] = ("doi:" + c["doi"]) if c["doi"] else ("arxiv:" + c["arxiv"]) if c["arxiv"] else \
             "t:" + hashlib.sha256(norm_title(c["title"]).encode()).hexdigest()[:12]
         out.append(c)
