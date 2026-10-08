@@ -100,6 +100,21 @@ class TestNet(unittest.TestCase):
             net.get("https://x.test/a")
         self.assertEqual(self.sleeps, [2.0, 60.0])
 
+    def test_gzip_body_is_bounded_after_decompression(self):
+        """A small compressed body that inflates past max_bytes is refused, not kept."""
+        import gzip as _gz
+        bomb = _gz.compress(b"0" * 5000)
+        resp = FakeResp(bomb)
+        resp.headers = {"Content-Encoding": "gzip"}
+        with mock.patch("urllib.request.urlopen", side_effect=[resp]):
+            with self.assertRaises(net.HttpError) as cm:
+                net.get("https://x.test/a", max_bytes=1000)
+        self.assertIn("decompressed", str(cm.exception))
+        ok = FakeResp(_gz.compress(b"hello"))
+        ok.headers = {"Content-Encoding": "gzip"}
+        with mock.patch("urllib.request.urlopen", side_effect=[ok]):
+            self.assertEqual(net.get("https://x.test/a", max_bytes=1000), b"hello")
+
     def test_host_spacing(self):
         clock = iter([100.0, 100.5, 103.0])
         with mock.patch.object(net, "monotonic", side_effect=lambda: next(clock)), \
