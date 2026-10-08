@@ -1,5 +1,5 @@
 {
-  "description": "Kairo vault hooks: send_guard, derived views (digest, ledger, Smart Connections index, SOTA staleness), Bitácora commit log, session capture, isolated agents' replies. All routed by scripts/hooks/kairo_hook.py; a silent no-op outside a Kairo vault.",
+  "description": "Kairo vault hooks: send_guard, derived views (digest, ledger, Smart Connections index, SOTA staleness), Bitácora commit log, session capture, isolated agents' replies. All routed by scripts/hooks/kairo_hook.py, started by kairo_hook.sh (python, else python3; without either it says so and refuses reads inside a vault); a silent no-op outside a Kairo vault.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.py\" pre-tool",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.sh\" pre-tool",
             "timeout": 30
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.py\" post-write",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.sh\" post-write",
             "timeout": 90
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.py\" post-shell",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.sh\" post-shell",
             "timeout": 30
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.py\" subagent-stop",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.sh\" subagent-stop",
             "timeout": 30
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.py\" session-end",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.sh\" session-end",
             "timeout": 120
           }
         ]

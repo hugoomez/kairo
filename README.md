@@ -18,7 +18,8 @@ plain Markdown with YAML frontmatter — but nothing here depends on it.
 ## Quickstart (15 minutes)
 
 1. **Prerequisites:** Claude Code on a Pro / Max / Team plan, `git`, Python 3.10+
-   (as `python`) and Node 20+ on your PATH. Strongly recommended: poppler's
+   (as `python`: the skills' commands call it so — where only `python3` exists, add
+   the alias, e.g. `python-is-python3`) and Node 20+ on your PATH. Strongly recommended: poppler's
    `pdftotext` (`choco install poppler`, `brew install poppler`, `apt install
    poppler-utils`) — without it a paper whose only open text is a PDF is
    ingested abstract-only (ingestion says so).
@@ -44,7 +45,9 @@ Zotero for references, and Semantic Scholar / OpenAlex keys for heavier
 literature work. Each has a section at the end of this README.
 
 **Hooks come with the plugin.** They are declared in `hooks/hooks.json` and routed
-by `scripts/hooks/kairo_hook.py`:
+by `scripts/hooks/kairo_hook.py`, started by `kairo_hook.sh` (`python`, else
+`python3`; with neither it says so on every call and refuses reads inside a
+vault rather than let the guards lapse):
 - `send_guard` keeps `send: never` notes and model-written reading notes from
   ever being read;
 - `_digest.md` and `_ledger.md` are rebuilt when a hypothesis or claim changes;

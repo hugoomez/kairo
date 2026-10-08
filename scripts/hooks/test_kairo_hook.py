@@ -172,5 +172,58 @@ class TestKairoHook(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+LAUNCHER = HOOK.with_name("kairo_hook.sh")
+SH = shutil.which("sh")
+
+
+@unittest.skipUnless(SH, "no sh on PATH")
+class TestLauncher(unittest.TestCase):
+    """kairo_hook.sh: the command hooks.json runs. It finds python or python3, and
+    without either says so and refuses reads inside a vault (never a silent pass)."""
+
+    setUp = TestKairoHook.setUp
+    tearDown = TestKairoHook.tearDown
+
+    def launch(self, event: str, payload: dict, path: str, project_dir: Path) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "KAIRO_VAULT")}
+        env.update({"KAIRO_STATE_DIR": str(self.state), "PYTHONIOENCODING": "utf-8", "PATH": path,
+                    "CLAUDE_PROJECT_DIR": str(project_dir)})
+        return subprocess.run([SH, LAUNCHER.as_posix(), event], input=json.dumps(payload).encode(),
+                              capture_output=True, env=env, cwd=project_dir, timeout=120)
+
+    def test_hooks_json_runs_every_hook_through_the_launcher(self):
+        hooks = json.loads((HOOK.parents[2] / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        commands = [h["command"] for groups in hooks.values() for g in groups for h in g["hooks"]]
+        self.assertTrue(commands)
+        for c in commands:
+            self.assertTrue(c.startswith('sh "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/kairo_hook.sh" '), c)
+
+    def test_with_python_on_the_path_the_guard_runs(self):
+        target = str(self.vault / "Papers" / "P-0972 private.md")
+        path = os.pathsep.join([str(Path(sys.executable).parent), str(Path(SH).parent)])
+        r = self.launch("pre-tool", {"tool_name": "Read", "tool_input": {"file_path": target}}, path, self.vault)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("send: never", r.stderr.decode("utf-8"))
+
+    def test_without_python_a_read_in_a_vault_is_refused_and_said(self):
+        empty = self.tmp / "empty-path"
+        empty.mkdir()
+        payload = {"tool_name": "Read", "tool_input": {"file_path": str(self.vault / "Papers" / "P-0971 invented.md")}}
+        r = self.launch("pre-tool", payload, str(empty), self.vault)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no se encontró Python", r.stderr.decode("utf-8"))
+        r = self.launch("pre-tool", payload, str(empty), self.root)              # the vault/ subfolder counts
+        self.assertEqual(r.returncode, 2)
+
+    def test_without_python_outside_a_vault_or_after_a_write_nothing_is_blocked(self):
+        empty = self.tmp / "empty-path"
+        empty.mkdir()
+        r = self.launch("pre-tool", {"tool_name": "Bash", "tool_input": {"command": "ls"}}, str(empty), self.outside)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("no se encontró Python", r.stderr.decode("utf-8"))        # said, even here
+        r = self.launch("post-write", {"tool_input": {"file_path": str(self.vault / "x.md")}}, str(empty), self.vault)
+        self.assertEqual(r.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
