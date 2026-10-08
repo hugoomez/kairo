@@ -50,7 +50,8 @@ by `scripts/hooks/kairo_hook.py`:
 - `_digest.md` and `_ledger.md` are rebuilt when a hypothesis or claim changes;
 - the Smart Connections index is refreshed when a paper note changes;
 - the Bitácora logs every commit;
-- a session that wrote research notes keeps its transcript.
+- a session that wrote research notes or did literature work on a project keeps
+  its transcript (and its subagents' transcripts).
 
 They activate in any session whose folder (or `vault/` subfolder, or
 `$KAIRO_VAULT`) is a Kairo vault, and do nothing anywhere else. Each firing is
@@ -434,7 +435,7 @@ there and are not marked — the instruction-like-text heuristic still applies.
 - `scripts/analysis/evidence_gate.py` — the mechanical rule that exploratory
   experiments never count as evidence (`check`, `gather`).
 - `scripts/papers/cite_text.py` — the verbatim text behind one `P-XXXX <locator>` citation, through the fresh-verifier's own resolver (JSON; `send: never` papers give no text), so an interface can show exactly what a hypothesis cites.
-- `scripts/traces/session_capture.py` — vault `SessionEnd` hook: a Claude Code session that wrote research notes (`Hipotesis/`, `Experimentos/`, `Claims/`, …) has its transcript kept in `Projects/<slug>/_trazas-agente/cli/`, logged in the notebook with the notes it touched, and committed alone.
+- `scripts/traces/session_capture.py` — vault `SessionEnd` hook: a Claude Code session that wrote research notes (`Hipotesis/`, `Experimentos/`, `Claims/`, …) or did literature work on a project (wrote `Estado-del-arte.md`, `_busquedas/`, `_vigilancia/`, `Notas de proyecto/`, or ran `lit_search.py`, `ingest_paper.py`, `check_sota.py`, `lit_watch.py`, … on it) has its transcript — and its subagents' transcripts, when Claude Code keeps them — kept in `Projects/<slug>/_trazas-agente/cli/`, logged in the notebook with the notes it touched, and committed alone. A state-of-the-art map can be followed back to each facet summary and the prompt that asked for it.
 - `scripts/manuscript/manuscript.py` — the paper a `teorico` project is organised around from day one: `init` (outline with per-section `depends_on` + a skeleton of marked placeholders), `bind`, `coverage` (which section is backed and what each dependency lacks → `coverage-<thread>.md`) and `write-section`, which refuses a section whose dependencies have not passed their gate.
 - `scripts/ledger/hypothesis_status.py` — update-confidence's status writer, the only code that changes a hypothesis's `status`. `propose` computes the edge the state table allows now (adjudicating experiments from `evidence_gate.py`, two combined with `combine_effects.py`; `apoyada` conditional on the fresh verifier); `apply` writes one table edge with its `history` entry; `discard` is the researcher's terminal `descartada` (refused in agent sessions). `review.py` holds the researcher's other decisions (mark reviewed, acknowledge verifier findings).
 - `scripts/report/build_report.py` — a shareable project report from an explicit allow-list (sections, hypotheses, experiments; the default is empty). Deterministic: it copies the selected notes' own claim / prediction / result fields, drops template placeholders, never includes a `send: never` note, and reuses `ai_disclosure.py` for the AI-use section. Before writing, it blocks any unselected H-/E-/C- id, the id or title of any `send: never` note, and what `check_bundle.py` blocks (plus any vault-relative path). Writes `Informes/informe-<date>.md` + a self-contained printable `.html`; `--dry-run` previews.
