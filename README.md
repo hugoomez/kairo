@@ -762,6 +762,16 @@ every time over a real sample, it likely isn't adding independent signal, and
 that's worth investigating (prompt leakage, too weak a model, or a checklist
 that leaves no real judgement call) rather than trusting the mode by default.
 
+**The map, checked by another family too.** With the second critic on,
+`scripts/second_critic/cross_verify.py` sends each state-of-the-art section's
+verification packet — the same file the `fresh-verifier` read — to DeepSeek
+with the fresh-verifier's error checklist, and reports its verdict, the cost
+from the API's own token counts, and whether it agrees with the
+fresh-verifier (`--dry-run` estimates the cost and sends nothing). It is
+offered in `create-project` step 7, never run on its own; the packets (the
+map's sentences and the cited papers' text, never a `send: never` paper)
+leave your machine for DeepInfra.
+
 **Not the same as `fresh-verifier`.** `second-critic` (this section) buys
 *model-family* independence on test-design judgement, opt-in. `fresh-verifier`
 buys *context* independence — a fresh Claude instance that sees only the

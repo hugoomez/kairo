@@ -513,6 +513,19 @@ source and fix the sentence to what the text says, or drop it, then re-run
 the verdicts in the frontmatter's `verifications:` list (one entry per section,
 `scope: section:<heading>`).
 
+**Optional: a second model family on the same packets.** `fresh-verifier` is
+independent of this conversation, not of the model family that wrote the
+map. When the second critic is on (`python "${CLAUDE_PLUGIN_ROOT}/scripts/second_critic/status.py"`
+says `available` — `KAIRO_SECOND_CRITIC=on` and `DEEPINFRA_TOKEN`), offer it
+once with the cost `--dry-run` prints for each part, and on the researcher's
+yes run, per part:
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/second_critic/cross_verify.py" --packet <stored[i].path> --fresh-verdict <that part's verdict> --out Projects/<slug>/_verificacion-cruzada/<date>-<n>.json`.
+Its findings are handled exactly like the fresh-verifier's (paper-reader
+checks the source; fix or drop the sentence). A disagreement between the two
+verdicts is listed in the end-of-run message — never averaged, never resolved
+by picking one. It sends the packets (the map's sentences and the cited
+papers' text) to DeepInfra: say so when offering it.
+
 **The Búsqueda ejecutada block** is the run's `busqueda.md`, appended
 unchanged (never retyped). **If it starts with `## ⚠️ Cobertura degradada`**
 (a query lost or truncated), reproduce that block **verbatim at the very top of
