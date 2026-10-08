@@ -7,7 +7,9 @@ was retracted, who cites it, and its BibTeX — all from public records.
 
 Sources (no model involved, each answer kept with --raw-dir):
   - arXiv: the API entry (title, authors, journal_ref, declared DOI) and the
-    abstract page's submission history — every version with its date;
+    abstract page's submission history — every version with its date; a paper
+    asked for by DOI or title whose arXiv preprint OpenAlex or Crossref names
+    gets the same arXiv record, versions and withdrawal check;
   - OpenAlex: the work (by DOI, and by the arXiv DOI 10.48550/arXiv.<id>): its
     locations (repository vs journal / conference), cited_by_count — when
     OpenAlex keeps the preprint and the published paper as two works, both are
@@ -72,7 +74,7 @@ import resolve_refs as rr  # noqa: E402
 import retraction  # noqa: E402
 from fill_abstract import from_jats  # noqa: E402
 
-TOOL = "kairo/paper_card@1.3.0"
+TOOL = "kairo/paper_card@1.4.0"
 S2 = "https://api.semanticscholar.org/graph/v1"
 # preprint servers and repositories: where a preprint is, never a published version
 REPOSITORY = re.compile(r"arxiv|biorxiv|medrxiv|chemrxiv|techrxiv|ssrn|research ?square|preprints\.org|zenodo|"
@@ -191,6 +193,32 @@ def openreview_acceptance(title: str, authors: list, raw: bytes | None) -> dict 
     return None
 
 
+def arxiv_record(c: Card, card: dict, arxiv: str, primary: bool) -> dict | None:
+    """The arXiv entry (identity, declared published version) and its versions.
+    `primary`: the paper was asked for by its arXiv id, so arXiv names it; a
+    preprint found later from a DOI only fills what the publisher left empty."""
+    ident = card["identity"]
+    raw = c.get("arxiv-api.xml", retraction.ARXIV_QUERY.format(urllib.parse.quote(arxiv, safe="/"), 1),
+                {"Accept": "application/atom+xml"})
+    e = retraction.parse_arxiv_feed(raw).get(arxiv) if raw else None
+    if e:
+        found = {"title": e["title"], "authors": e["authors"], "year": (e["published"] or "")[:4]}
+        for k, v in found.items():
+            if primary:
+                ident[k] = v
+            else:
+                ident.setdefault(k, v)
+        ident["arxiv"] = arxiv
+        if e.get("doi") or e.get("journal_ref"):
+            # journal_ref is free text ("Invented J. 7, 11 (2031)"): its year, when it names one
+            years = re.findall(r"\b(?:19|20)\d{2}\b", e.get("journal_ref") or "")
+            card["published"].append({"source": "arXiv (declarado por los autores)", "doi": e.get("doi") or "",
+                                      "venue": e.get("journal_ref") or "", "year": years[-1] if years else ""})
+    page = c.get("arxiv-abs.html", f"https://arxiv.org/abs/{arxiv}")
+    card["versions"] = arxiv_versions(page.decode("utf-8", "replace")) if page else []
+    return e
+
+
 def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir: Path | None,
           vault: Path | None = None, order: str = "recent") -> dict:
     c = Card(fetch, raw_dir)
@@ -199,21 +227,11 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                   "published": [], "retraction": None, "citations": {}, "citing": [], "citing_order": order,
                   "errors": c.errors}
     ident = card["identity"]
+    asked_arxiv = arxiv
     if arxiv:
-        raw = c.get("arxiv-api.xml", retraction.ARXIV_QUERY.format(urllib.parse.quote(arxiv, safe="/"), 1),
-                    {"Accept": "application/atom+xml"})
-        e = retraction.parse_arxiv_feed(raw).get(arxiv) if raw else None
-        arxiv_entry = e
+        e = arxiv_entry = arxiv_record(c, card, arxiv, primary=True)
         if e:
-            ident.update(title=e["title"], authors=e["authors"], year=(e["published"] or "")[:4], arxiv=arxiv)
-            if e.get("doi") or e.get("journal_ref"):
-                # journal_ref is free text ("Invented J. 7, 11 (2031)"): its year, when it names one
-                years = re.findall(r"\b(?:19|20)\d{2}\b", e.get("journal_ref") or "")
-                card["published"].append({"source": "arXiv (declarado por los autores)", "doi": e.get("doi") or "",
-                                          "venue": e.get("journal_ref") or "", "year": years[-1] if years else ""})
             doi = doi or (e.get("doi") if e.get("doi") and not retraction.is_arxiv_doi(e["doi"]) else None)
-        page = c.get("arxiv-abs.html", f"https://arxiv.org/abs/{arxiv}")
-        card["versions"] = arxiv_versions(page.decode("utf-8", "replace")) if page else []
     oa_key = os.environ.get("OPENALEX_API_KEY")
     crossref_msg = None
     oa_ids = ([f"doi:{doi}"] if doi else []) + ([f"doi:10.48550/arXiv.{arxiv}"] if arxiv else [])
@@ -279,7 +297,24 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             for k in ("is-preprint-of", "has-preprint"):
                 for r in rel.get(k) or []:
                     card["published"].append({"source": f"Crossref relation {k}", "doi": r.get("id", ""), "venue": ""})
+                    rd = retraction.normalize_doi(r.get("id"))
+                    if k == "has-preprint" and not arxiv and rd and retraction.is_arxiv_doi(rd):
+                        arxiv = retraction.arxiv_from_doi(rd)       # the publisher names its arXiv preprint
+                        ident["arxiv"] = arxiv
             ident.setdefault("abstract", from_jats(msg.get("abstract")))
+    if arxiv and not asked_arxiv:
+        # asked by DOI (or title), the preprint found on the way: its versions and its
+        # withdrawal check come from arXiv like for a paper asked by its arXiv id, and
+        # the preprint's own OpenAlex work counts among the works cited
+        arxiv_entry = arxiv_record(c, card, arxiv, primary=False)
+        raw = c.get("openalex.json", "https://api.openalex.org/works/doi:10.48550/arXiv."
+                    + urllib.parse.quote(arxiv, safe="/") + (f"?api_key={urllib.parse.quote(oa_key)}" if oa_key else ""))
+        if raw:
+            w = json.loads(raw)
+            wid = (w.get("id") or "").rsplit("/", 1)[-1]
+            if wid and wid not in works:
+                works[wid] = w.get("cited_by_count")
+                card["citations"]["openalex_works"] = works
     s2_id = f"arXiv:{arxiv}" if arxiv else (f"DOI:{doi}" if doi else None)
     if s2_id:
         hdr = {"x-api-key": os.environ["SEMANTIC_SCHOLAR_API_KEY"]} if os.environ.get("SEMANTIC_SCHOLAR_API_KEY") else {}

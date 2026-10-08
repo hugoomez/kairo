@@ -87,6 +87,42 @@ class PaperCard(unittest.TestCase):
         self.assertIn("eprint = {0000.44444}", card["bibtex"])
         self.assertIn("pages = {1--12}", card["bibtex"])           # from the publisher's record
 
+    def test_a_paper_asked_by_doi_gets_its_preprints_versions_from_crossref_relation(self):
+        # Crossref's has-preprint names the arXiv preprint: arXiv itself is then asked
+        code, out = self.run_cli("--doi", "10.0000/sc.444", "--json")
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual(card["identity"]["arxiv"], "0000.44444")
+        self.assertEqual([v["version"] for v in card["versions"]], ["v1", "v2", "v3"])
+        self.assertEqual(card["retraction"]["status"], "clear")
+        self.assertEqual(card["identity"]["title"], "Distributed Toy State-Vector Simulation")
+
+    def test_a_paper_asked_by_doi_gets_its_preprint_found_in_openalex(self):
+        work = {**OPENALEX, "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.44444",
+                                           "source": {"type": "repository", "display_name": "arXiv"}}]}
+        cr = {"message": {**CROSSREF["message"], "relation": {}}}
+        code, out = self.run_cli("--doi", "10.0000/sc.444", "--json", fetch=self._with(work, cr))
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual([v["version"] for v in card["versions"]], ["v1", "v2", "v3"])
+        self.assertEqual(card["retraction"]["status"], "clear")
+        self.assertNotIn("no respondió", " ".join(card["retraction"]["evidence"]))
+        self.assertIn("eprint = {0000.44444}", card["bibtex"])
+        self.assertIn("year = {2030}", card["bibtex"])          # the publisher's year, not the preprint's
+
+    def test_a_preprint_found_from_a_doi_and_kept_by_openalex_as_its_own_work_is_counted(self):
+        pre = {**OPENALEX, "id": "https://openalex.org/W555", "cited_by_count": 7, "locations": [],
+               "doi": "https://doi.org/10.48550/arxiv.0000.44444", "primary_location": {}}
+        pub = {**OPENALEX, "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.44444"}]}
+
+        def fetch(url, headers):
+            if "api.openalex.org/works/doi:10.48550" in url:
+                return json.dumps(pre).encode()
+            return self._with(pub)(url, headers)
+        code, out = self.run_cli("--doi", "10.0000/sc.444", "--json", "--citations", "0", fetch=fetch)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["citations"]["openalex_works"], {"W444": 31, "W555": 7})
+
     def test_markdown_names_a_failed_source(self):
         code, out = self.run_cli("--arxiv", "0000.44444", fetch=web(fail=("api.crossref.org",)))
         self.assertEqual(code, 0)
