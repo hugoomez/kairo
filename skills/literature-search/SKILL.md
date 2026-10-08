@@ -362,6 +362,13 @@ check), excludes without a few words of why (`duplicado` aside), or excludes
 
 ### 6. Hand back
 
+If the project has `_eval/gold.json`, `screen` measured the run against it
+(`gold_recall` in its output, a line in `busqueda.md`): say the recall and
+name every gold paper missed or excluded — that is the run's measured quality,
+not an impression. With no gold set, say once that the screening's quality is
+unmeasured for this question and that `quality_report.py gold-init` /
+`human-sheet` measure it (README → "What it cannot do").
+
 Give the caller `busqueda.md` (it goes into Estado-del-arte.md or the
 hypothesis's *Justificación* unchanged — never retyped), `ranked.md`, and the
 run directory path. Mention degraded coverage in the first lines of what you

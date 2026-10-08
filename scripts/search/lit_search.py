@@ -1686,13 +1686,41 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
     else:
         plan["screened_by"], plan["screened_by_note"] = given, None
     save(run / "plan.json", plan)
-    (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts, provenance_line(run)),
-                                     encoding="utf-8", newline="\n")
+    gold = gold_recall(run)
+    (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts, provenance_line(run))
+                                     + (gold_md(gold) if gold else ""), encoding="utf-8", newline="\n")
     (run / "ranked.md").write_text(ranked_md(cands, plan), encoding="utf-8", newline="\n")
     (run / "prefiltrados.md").write_text(prefiltered_md(cands), encoding="utf-8", newline="\n")
     return {"tool": TOOL, "counts": counts, "screened_by": plan["screened_by"],
             "busqueda": (run / "busqueda.md").as_posix(),
-            "ranked": (run / "ranked.md").as_posix()}
+            "ranked": (run / "ranked.md").as_posix(), **({"gold_recall": gold} if gold else {})}
+
+
+def gold_recall(run: Path) -> dict | None:
+    """The project's gold set (`Projects/<slug>/_eval/gold.json`, the researcher's own
+    list of papers any competent search must find), measured on this run."""
+    gold = run.parent.parent / "_eval" / "gold.json"
+    if run.parent.name != "_busquedas" or not gold.is_file():
+        return None
+    sys.path.insert(0, str(HERE.parent / "quality"))
+    import quality_report
+    try:
+        return {"gold_file": gold.relative_to(run.parent.parent).as_posix(), **quality_report.eval_search(run, gold)}
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        return {"gold_file": gold.name, "error": str(e)}
+
+
+def gold_md(g: dict) -> str:
+    if g.get("error"):
+        return f"\n**Conjunto de referencia (`{g['gold_file']}`):** no se pudo medir ({g['error']}).\n"
+    line = (f"\n**Conjunto de referencia (`{g['gold_file']}`, escrito por el investigador):** "
+            f"{g['gold']} papers; identificados {round(g['recall_identified'] * 100)} %, incluidos "
+            f"{round((g['recall_included'] or 0) * 100)} %.")
+    if g.get("missed"):
+        line += " No encontrados: " + ", ".join(f"`{x}`" for x in g["missed"]) + "."
+    if g.get("excluded_but_gold"):
+        line += " Encontrados pero excluidos en el cribado: " + ", ".join(f"`{x}`" for x in g["excluded_but_gold"]) + "."
+    return line + "\n"
 
 
 def prefiltered_md(cands: list[dict]) -> str:
