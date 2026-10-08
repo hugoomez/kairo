@@ -98,7 +98,7 @@ copies it in, dated):
  "facets": [{"id": "A", "term": "qLDPC codes", "synonyms": ["quantum LDPC", "bivariate bicycle codes"]},
             {"id": "B", "term": "decoder", "synonyms": ["BP-OSD", "belief propagation decoding"]}],
  "sources": ["arxiv", "s2", "openalex", "crossref", "openreview"],
- "from": "2024-10-01", "to": null, "arxiv_categories": ["quant-ph", "cs.IT"],
+ "from": "2024-10-01", "to": null, "arxiv_categories": ["quant-ph", "cs.IT"], "fields": ["physics", "computer-science"],
  "per_query": 100, "max_per_query": 1000, "anchors": 10, "cross": true, "prefilter": true, "min_facets": null,
  "exhaustive": false, "arxiv_revisions": false,
  "include": ["reports a code construction, decoder or benchmark result on facets A and B"],
@@ -120,6 +120,17 @@ copies it in, dated):
   no recency (e.g. a mature field's whole literature), for `linea_publicacion:
   true`, or when a run came back `truncada` and the researcher wants it whole —
   it costs more queries and more candidates to screen; say so.
+- `fields` — the research fields OpenAlex (each work's primary topic) and
+  Semantic Scholar (fields of study) are limited to: `computer-science`,
+  `physics`, `mathematics`, `engineering`, `materials-science`, `chemistry`,
+  `medicine`, `economics`. `arxiv_categories` only limits arXiv; without
+  `fields` the other sources search every field, so a generic term
+  ("decoder", "parallelism", "simulation") brings in other fields' papers to
+  screen. Set it whenever the question belongs to one or two fields — always
+  with `min_facets: 1` (the run warns otherwise). Crossref and OpenReview
+  cannot be limited (`busqueda.md` says so). A work OpenAlex has not yet
+  classified has no primary topic and is left out by the filter: for a
+  very recent window, arXiv and Semantic Scholar still find it.
 - `arxiv_revisions` — the arXiv window is the first version's date by default;
   `true` also takes a paper first posted earlier but revised inside the window.
 - `min_facets` — how many facets a candidate must reach to be read by default

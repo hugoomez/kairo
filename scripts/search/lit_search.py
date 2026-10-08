@@ -22,7 +22,7 @@ happens here, from the raw responses kept in `<run>/raw/` with their sha256.
 plan.json
     {"description": "<verbatim>", "facets": [{"id": "A", "term": "…", "synonyms": ["…"]}],
      "sources": ["arxiv", "s2", "openalex", "dblp"], "from": "2024-01-01", "to": null,
-     "arxiv_categories": ["quant-ph"], "per_query": 100, "anchors": 10,
+     "arxiv_categories": ["quant-ph"], "fields": ["physics"], "per_query": 100, "anchors": 10,
      "cross": true, "prefilter": true, "exhaustive": false, "arxiv_revisions": false,
      "include": ["…"], "exclude": ["…"], "scope_out": ["<Alcance: Fuera clause>", …]}
 
@@ -45,6 +45,10 @@ Sources and how each facet is queried
               answers with an anti-bot challenge page, which is recorded as a lost
               query and never worked around
 Default sources: arxiv, s2, openalex, crossref, openreview.
+`fields` (see FIELDS) limits OpenAlex to works whose primary topic is in one of
+those fields and Semantic Scholar to those fields of study; `arxiv_categories`
+limits arXiv; Crossref and OpenReview cannot be limited. A two-facet plan with
+`min_facets: 1` and no `fields` is warned about in `config_warnings`.
 Cross pass (`cross`, default true with ≥ 2 facets): one more query per source
 that asks for every facet at once — arXiv and OpenAlex `(A-group) AND
 (B-group)`, Semantic Scholar and Crossref the facets' main terms together —
@@ -191,6 +195,19 @@ BOOLEAN_CROSS = ("arxiv", "openalex")  # cross queries that AND every facet (S2 
 # `per_query` and are recorded as "por relevancia", never as truncated.
 RANKED = ("s2", "crossref", "openreview", "dblp")
 MAX_PER_QUERY = 1000                 # an arXiv / OpenAlex query whose total fits is read whole
+# `fields` in the plan: the research fields a non-arXiv source is limited to (arXiv has
+# `arxiv_categories`). OpenAlex filters by the field of each work's primary topic, Semantic
+# Scholar by its fields of study; Crossref and OpenReview cannot be limited and say so.
+FIELDS = {
+    "computer-science": ("17", "Computer Science"),
+    "physics": ("31", "Physics"),
+    "mathematics": ("26", "Mathematics"),
+    "engineering": ("22", "Engineering"),
+    "materials-science": ("25", "Materials Science"),
+    "chemistry": ("16", "Chemistry"),
+    "medicine": ("27", "Medicine"),
+    "economics": ("20", "Economics"),
+}
 OPENALEX_KEYLESS_CALLS = 100         # keyless list calls a day ($0.10 at $0.001 each, checked 2026-09-24)
 TITLE_CLOSE = 0.85                   # preprint ↔ retitled published version (same first author)
 MIN_WHY_WORDS_EXCLUDE = 3
@@ -307,8 +324,11 @@ def load_plan_dict(plan: dict) -> dict:
     plan["enrich"] = bool(plan.get("enrich", True))
     plan["exhaustive"] = bool(plan.get("exhaustive", False))
     plan["arxiv_revisions"] = bool(plan.get("arxiv_revisions", False))
-    for k in ("include", "exclude", "scope_out", "arxiv_categories"):
+    for k in ("include", "exclude", "scope_out", "arxiv_categories", "fields"):
         plan[k] = list(plan.get(k) or [])
+    bad_fields = [x for x in plan["fields"] if x not in FIELDS]
+    if bad_fields:
+        raise Refused(f"unknown fields {bad_fields}; use {sorted(FIELDS)}")
     if not ws(plan.get("description")):
         raise Refused("the plan needs the verbatim `description`")
     return plan
@@ -538,6 +558,16 @@ def _oa_key() -> str:
     return f"&api_key={urllib.parse.quote(k)}" if k else ""
 
 
+def _s2_fields(plan: dict) -> str:
+    fs = plan.get("fields") or []
+    return "&fieldsOfStudy=" + urllib.parse.quote(",".join(FIELDS[x][1] for x in fs)) if fs else ""
+
+
+def _openalex_fields(plan: dict) -> list[str]:
+    fs = plan.get("fields") or []
+    return ["primary_topic.field.id:" + "|".join(FIELDS[x][0] for x in fs)] if fs else []
+
+
 def _s2_headers() -> dict:
     k = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
     return {"x-api-key": k} if k else {}
@@ -555,6 +585,13 @@ def config_warnings(plan: dict) -> list[str]:
                    "resolución de referencias y la vigilancia: cada consulta lee solo sus primeros `per_query` "
                    "(nunca se amplía hasta su total) y una ejecución grande puede agotarlo igualmente (consultas "
                    "perdidas); clave gratuita en https://openalex.org/settings/api")
+    if (len(plan.get("facets") or []) >= 2 and prefilter_need(plan) == 1 and not plan.get("fields")
+            and srcs & {"openalex", "s2", "crossref"}):
+        out.append("min_facets 1 sin `fields`: con una sola faceta basta para leer un candidato, y OpenAlex, "
+                   "Semantic Scholar y Crossref no se limitan a ningún campo (las categorías de arXiv solo valen "
+                   "para arXiv): un término genérico («decoder», «parallelism») trae papers de otros campos que "
+                   "habrá que cribar. Añade `fields` al plan (" + ", ".join(sorted(FIELDS)) + ") o términos "
+                   "propios del dominio")
     if "s2" in srcs and not os.environ.get("SEMANTIC_SCHOLAR_API_KEY"):
         out.append("SEMANTIC_SCHOLAR_API_KEY: sin clave, Semantic Scholar responde a menudo HTTP 429 (consultas "
                    "perdidas); clave gratuita en https://www.semanticscholar.org/product/api")
@@ -568,12 +605,12 @@ def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tup
                 {"Accept": "application/atom+xml"})
     if source == "s2":
         return (f"{S2}/paper/search?query={urllib.parse.quote(query)}&offset={start}&limit={size}"
-                f"&fields={S2_FIELDS}" + s2_window(plan), _s2_headers())
+                f"&fields={S2_FIELDS}" + s2_window(plan) + _s2_fields(plan), _s2_headers())
     if source == "s2-anchor":
         return (f"{S2}/paper/search/bulk?query={urllib.parse.quote(query)}&sort=citationCount:desc"
-                f"&fields={S2_FIELDS}" + s2_window(plan), _s2_headers())
+                f"&fields={S2_FIELDS}" + s2_window(plan) + _s2_fields(plan), _s2_headers())
     if source == "openalex":
-        flt = []
+        flt = _openalex_fields(plan)
         if plan.get("from"):
             flt.append(f"from_publication_date:{plan['from']}")
         if plan.get("to"):
@@ -1647,7 +1684,9 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
     L += [f"| {f['id']} | {f['term']} | {', '.join(f['synonyms'])} |" for f in plan["facets"]]
     window = f"{plan.get('from') or 'sin límite'} → {plan.get('to') or plan['date']}"
     L += ["", f"**Ventana de fechas:** {window}" + (f" · **Categorías arXiv:** {', '.join(plan['arxiv_categories'])}"
-                                                  if plan["arxiv_categories"] else ""),
+                                                  if plan["arxiv_categories"] else "")
+          + (f" · **Campos (OpenAlex por tema principal, Semantic Scholar por campo de estudio; Crossref y "
+             f"OpenReview sin filtro):** {', '.join(plan['fields'])}" if plan.get("fields") else ""),
           "**Fechas:** arXiv = envío de la v1; Semantic Scholar, OpenAlex y Crossref = fecha de publicación.",
           "**Cribado por:** " + (plan.get("screened_by") or "no consta")
           + (f" — {plan['screened_by_note']}" if plan.get("screened_by_note") else "")
