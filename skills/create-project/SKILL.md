@@ -856,7 +856,8 @@ When a paper is already ingested for another project, only append this project's
   `resolution_*` come only from the script; `resolved: true` without an OpenAlex
   id breaks the contract other skills rely on.
 
-## Not in v1
+## Not in this skill
 
-- Automatic Zotero sync (create Obsidian notes directly; Zotero is a fast-follow).
 - Promotion / experiment scaffolding (separate skills).
+- Zotero is optional, never required: step 6.4 adds the papers when Zotero is
+  running (`zotero_sync.py`), and `export_bib.py` exports BibTeX without it.
