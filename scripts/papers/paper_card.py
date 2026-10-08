@@ -17,7 +17,8 @@ Sources (no model involved, each answer kept with --raw-dir):
   - OpenReview: an accepted record with exactly this title (ICLR, NeurIPS,
     ICML, MLSys, TMLR — venues with no DOI) gives the venue and its year;
   - Semantic Scholar: citation count and the list of citing papers
-    (the newest first, up to --citations); a page that does not come marks
+    (the newest first, up to --citations; `--citing-order cited` lists the most
+    cited ones instead, each with its own citation count); a page that does not come marks
     the list `citing_incomplete`;
   - the shared retraction / withdrawal check (Crossref + arXiv).
 
@@ -159,12 +160,16 @@ def retitled_candidates(c: Card, ident: dict) -> list[dict]:
     return out
 
 
+CITING_ORDERS = ("recent", "cited")
+
+
 def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir: Path | None,
-          vault: Path | None = None) -> dict:
+          vault: Path | None = None, order: str = "recent") -> dict:
     c = Card(fetch, raw_dir)
     arxiv_entry = None
     card: dict = {"tool": TOOL, "query": {"arxiv": arxiv, "doi": doi}, "identity": {}, "versions": [],
-                  "published": [], "retraction": None, "citations": {}, "citing": [], "errors": c.errors}
+                  "published": [], "retraction": None, "citations": {}, "citing": [], "citing_order": order,
+                  "errors": c.errors}
     ident = card["identity"]
     if arxiv:
         raw = c.get("arxiv-api.xml", retraction.ARXIV_QUERY.format(urllib.parse.quote(arxiv, safe="/"), 1),
@@ -266,10 +271,12 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             # OpenAlex sorts the citing works by date itself: the newest really are the newest;
             # `cites:W1|W2` lists the papers citing any of the paper's works, each once
             cited = "|".join(works) or ident["openalex"]
-            raw = c.get("openalex-citing.json",
+            sort = "cited_by_count:desc" if order == "cited" else "publication_date:desc"
+            raw = c.get(f"openalex-citing{'-cited' if order == 'cited' else ''}.json",
                         f"https://api.openalex.org/works?filter=cites:{cited}"
-                        f"&sort=publication_date:desc&per-page={min(max(n_cit, 1), 100)}"
-                        "&select=id,doi,title,publication_year,publication_date,authorships,primary_location,locations"
+                        f"&sort={sort}&per-page={min(max(n_cit, 1), 100)}"
+                        "&select=id,doi,title,publication_year,publication_date,authorships,primary_location,locations,"
+                        "cited_by_count"
                         + (f"&api_key={urllib.parse.quote(oa_key)}" if oa_key else ""))
             data = json.loads(raw) if raw else {}
             if data.get("results"):
@@ -285,6 +292,7 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                         "arxiv": _oa_arxiv(w) or (retraction.arxiv_from_doi(d) if d and retraction.is_arxiv_doi(d)
                                                   else None),
                         "doi": d if d and not retraction.is_arxiv_doi(d) else None,
+                        "cited_by": w.get("cited_by_count"),
                         "first_author": (((w.get("authorships") or [{}])[0] or {}).get("author") or {}).get(
                             "display_name")})
         if n_cit and not card["citing"]:
@@ -294,7 +302,7 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             while offset < 1000:
                 raw = c.get(f"s2-citations-{offset}.json",
                             f"{S2}/paper/{urllib.parse.quote(s2_id, safe=':/')}/citations?offset={offset}&limit=100"
-                            "&fields=title,year,publicationDate,venue,externalIds,authors", hdr)
+                            "&fields=title,year,publicationDate,venue,externalIds,authors,citationCount", hdr)
                 if not raw:
                     card["citing_incomplete"] = True          # a page did not come: the list is partial
                     break
@@ -304,11 +312,15 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                     ext = q.get("externalIds") or {}
                     citing.append({"title": q.get("title"), "year": q.get("year"), "date": q.get("publicationDate"),
                                    "venue": q.get("venue") or None, "arxiv": ext.get("ArXiv"), "doi": ext.get("DOI"),
+                                   "cited_by": q.get("citationCount"),
                                    "first_author": ((q.get("authors") or [{}])[0] or {}).get("name")})
                 if data.get("next") is None:
                     break
                 offset = data["next"]
-            citing.sort(key=lambda x: (x.get("date") or str(x.get("year") or "")), reverse=True)
+            if order == "cited":
+                citing.sort(key=lambda x: x.get("cited_by") or 0, reverse=True)
+            else:
+                citing.sort(key=lambda x: (x.get("date") or str(x.get("year") or "")), reverse=True)
             card["citing_total_listed"] = len(citing)
             # S2 pages in its own order: past 1000, "newest" means newest of the first 1000 it gave
             card["citing_truncated"] = offset >= 1000
@@ -420,12 +432,14 @@ def markdown(card: dict) -> str:
     if card["citing"]:
         scope = (f"entre las {card.get('citing_total_listed', 0)} primeras que devuelve Semantic Scholar"
                  if card.get("citing_truncated") else f"de {card.get('citing_total_listed', 0)}")
-        L += [f"- Las {len(card['citing'])} más recientes {scope} (fuente: {card.get('citing_source', '—')}):", ""]
+        which = "más citadas" if card.get("citing_order") == "cited" else "más recientes"
+        L += [f"- Las {len(card['citing'])} {which} {scope} (fuente: {card.get('citing_source', '—')}):", ""]
         for q in card["citing"]:
             ids = " · ".join(x for x in (f"arXiv:{q['arxiv']}" if q.get("arxiv") else "",
                                          f"DOI:{q['doi']}" if q.get("doi") else "") if x)
             L.append(f"  - {q.get('title')} — {q.get('first_author') or ''} ({q.get('date') or q.get('year') or 's. f.'})"
-                     + (f", {q['venue']}" if q.get("venue") else "") + (f" — {ids}" if ids else ""))
+                     + (f", {q['venue']}" if q.get("venue") else "") + (f" — {ids}" if ids else "")
+                     + (f" — citado {q['cited_by']} veces" if q.get("cited_by") is not None else ""))
     if card["errors"]:
         L += ["", "## ⚠️ Fuentes que fallaron", ""] + [f"- {e}" for e in card["errors"]]
     L += ["", "## BibTeX", "", "```bibtex", card["bibtex"].rstrip(), "```", ""]
@@ -496,6 +510,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:
     g.add_argument("--title", help="find the paper by its title (OpenAlex); an ambiguous title lists candidates")
     ap.add_argument("--vault", type=Path)
     ap.add_argument("--citations", type=int, default=25)
+    ap.add_argument("--citing-order", choices=CITING_ORDERS, default="recent",
+                    help="the citing papers listed: the newest (default) or the most cited")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--raw-dir", type=Path)
     a = ap.parse_args(argv)
@@ -512,7 +528,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:
         return 2
     if doi and retraction.is_arxiv_doi(doi):
         arxiv, doi = retraction.arxiv_from_doi(doi), None
-    card = build(arxiv, doi, a.citations, fetch, a.raw_dir, a.vault)
+    card = build(arxiv, doi, a.citations, fetch, a.raw_dir, a.vault, order=a.citing_order)
     if not card["identity"].get("title"):
         print(json.dumps({"tool": TOOL, "error": "no source knows this paper", "errors": card["errors"]},
                          ensure_ascii=False))

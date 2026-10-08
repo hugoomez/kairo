@@ -321,8 +321,9 @@ there and are not marked — the instruction-like-text heuristic still applies.
   title (`--title`: an exact OpenAlex title match, else the candidates are
   listed): arXiv versions and dates, the published version with which source
   says so (arXiv, OpenAlex, Crossref relations, Semantic Scholar), retraction
-  status, citation counts and the newest citing papers (sorted by OpenAlex;
-  Semantic Scholar as fallback), and its BibTeX; says whether it is already in
+  status, citation counts and the newest citing papers — or, with
+  `--citing-order cited`, the most cited ones, each with its count (sorted by
+  OpenAlex; Semantic Scholar as fallback), and its BibTeX; says whether it is already in
   the vault. A preprint server is never a published venue. When no source
   links a published version, Crossref is searched by title + first author and
   a close match is shown as a **candidate** to confirm — never in the BibTeX.

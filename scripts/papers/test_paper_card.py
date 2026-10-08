@@ -219,6 +219,41 @@ class PaperCard(unittest.TestCase):
         self.assertEqual(card["citing_source"], "OpenAlex")
         self.assertEqual(card["citing"][0]["title"], "Newest citing toy paper")
 
+    def test_the_most_cited_citing_papers_on_request(self):
+        """`--citing-order cited` asks OpenAlex to sort by citations and shows each count."""
+        cites = [{"id": "https://openalex.org/W7", "title": "Influential citing toy paper", "publication_year": 2031,
+                  "cited_by_count": 120, "authorships": []}]
+        seen = []
+        base = self._with(lists={"sort=cited_by_count:desc": cites})
+
+        def fetch(url, headers):
+            seen.append(urllib.parse.unquote(url))
+            return base(url, headers)
+        code, out = self.run_cli("--arxiv", "0000.44444", "--citing-order", "cited", fetch=fetch)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(any("cites:W444" in u and "sort=cited_by_count:desc" in u for u in seen))
+        self.assertIn("más citadas", out)
+        self.assertIn("citado 120 veces", out)
+
+    def test_the_semantic_scholar_fallback_sorts_by_citations_too(self):
+        page = {"data": [
+            {"citingPaper": {"title": "Rarely cited", "year": 2033, "publicationDate": "2033-01-01",
+                             "citationCount": 1, "externalIds": {}, "authors": []}},
+            {"citingPaper": {"title": "Often cited", "year": 2031, "publicationDate": "2031-01-01",
+                             "citationCount": 50, "externalIds": {}, "authors": []}}]}
+        base = self._with(lists={})
+
+        def fetch(url, headers):
+            if "/citations" in url:
+                return json.dumps(page).encode()
+            if "api.semanticscholar.org" in url:
+                return json.dumps({"paperId": "S1", "citationCount": 2}).encode()
+            return base(url, headers)
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", "--citing-order", "cited", fetch=fetch)
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual([c["title"] for c in card["citing"]][:2], ["Often cited", "Rarely cited"])
+
     def test_citations_of_the_preprint_and_the_published_work_are_both_counted(self):
         """OpenAlex may keep the arXiv preprint and the published paper as two works:
         the citing papers of both are one list."""
