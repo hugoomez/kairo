@@ -201,7 +201,12 @@ matches its name. Every read leaves a receipt, and the scripts that record a
 result — `lit_search.py merge`, `verifications.py append`,
 `critique_note.py write`, `check_quotes.py --support`, `lit_watch.py threat` —
 refuse it unless an agent of the right kind is recorded as having read that
-exact packet (`--allow-unread` records it as unproven). `model_policy.py
+exact packet (`--allow-unread` records it as unproven). The answer travels the
+same way: Kairo's `SubagentStop` hook stores each isolated agent's final
+answer tied to the packet it read (`~/.kairo/replies/`), `lit_search.py merge
+--from-store` assembles the screening from those answers, and a screening
+block or a fresh-verifier verdict the orchestrator passes by hand is refused
+when it differs from what the agent actually said. `model_policy.py
 check` (run in the tests) fails if an isolated agent gains a tool or the hook
 does not know it.
 

@@ -123,7 +123,91 @@ def record_receipt(receipt: dict) -> None:
 
 def received(sha: str, agent: str | None = None) -> list[dict]:
     """Every recorded read of packet `sha` (by `agent`, when given)."""
+    return [r for r in _receipts()
+            if r.get("sha256") == sha and (agent is None or r.get("agent_type") == agent.rsplit(":", 1)[-1])]
+
+
+# --------------------------------------------------------------------------
+# 3. Replies travel by hook, never retyped.
+#    When an isolated agent stops, Claude Code's SubagentStop hook hands over its
+#    final answer (`last_assistant_message`, else the last assistant text of its
+#    own transcript). The hook stores it by content (`<state>/replies/<sha>.txt`)
+#    and records which packet(s) that agent read, so a script that records the
+#    agent's verdict can check it against what the agent actually said — the
+#    orchestrator saves the reply, but can no longer change it unseen.
+# --------------------------------------------------------------------------
+
+REPLIES = "agent-replies.jsonl"
+
+
+def replies_dir() -> Path:
+    return state_dir() / "replies"
+
+
+def _last_assistant_text(transcript: Path) -> str:
+    text = ""
+    try:
+        lines = transcript.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for raw in lines:
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            continue
+        msg = obj.get("message") if isinstance(obj, dict) else None
+        if not isinstance(msg, dict) or msg.get("role", obj.get("type")) != "assistant":
+            continue
+        content = msg.get("content")
+        parts = [content] if isinstance(content, str) else [
+            b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text"]
+        joined = "".join(parts).strip()
+        if joined:
+            text = joined
+    return text
+
+
+def capture_reply(event: dict) -> dict | None:
+    """SubagentStop: keep an isolated agent's final answer, tied to the packets it read."""
+    name = agent_name(event)
+    aid = event.get("agent_id")
+    if name not in ISOLATED_AGENTS or not aid:
+        return None
+    text = str(event.get("last_assistant_message") or "").strip()
+    if not text and event.get("agent_transcript_path"):
+        text = _last_assistant_text(Path(str(event["agent_transcript_path"])))
+    if not text:
+        return None
+    packets = sorted({r["sha256"] for r in _receipts() if r.get("agent_id") == aid and r.get("sha256")})
+    data = text.encode("utf-8")
+    sha = hashlib.sha256(data).hexdigest()
+    d = replies_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{sha}.txt").write_bytes(data)
+    rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "agent_type": name, "agent_id": aid,
+           "packets": packets, "reply_sha256": sha}
+    with open(state_dir() / REPLIES, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
+def _receipts() -> list[dict]:
     f = state_dir() / RECEIPTS
+    if not f.is_file():
+        return []
+    out = []
+    for raw in f.read_text(encoding="utf-8").splitlines():
+        try:
+            out.append(json.loads(raw))
+        except ValueError:
+            continue
+    return out
+
+
+def replies(packet_sha: str, agent: str | None = None) -> list[dict]:
+    """The stored final answers of the agents that read packet `packet_sha` (by
+    `agent`, when given), oldest first, each with its `text`."""
+    f = state_dir() / REPLIES
     if not f.is_file():
         return []
     out = []
@@ -132,9 +216,35 @@ def received(sha: str, agent: str | None = None) -> list[dict]:
             r = json.loads(raw)
         except ValueError:
             continue
-        if r.get("sha256") == sha and (agent is None or r.get("agent_type") == agent.rsplit(":", 1)[-1]):
-            out.append(r)
+        if packet_sha not in (r.get("packets") or []):
+            continue
+        if agent is not None and r.get("agent_type") != agent.rsplit(":", 1)[-1]:
+            continue
+        try:
+            r["text"] = (replies_dir() / f"{r['reply_sha256']}.txt").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out.append(r)
     return out
+
+
+def json_of(text: str):
+    """The JSON object an agent's reply carries (bare, or in its last ```json
+    fence — the block an agent's instructions put at the end), or None."""
+    fences = re.findall(r"```(?:json)?\s*\n?(\{.*?\})\s*\n?```", text, re.S)
+    try:
+        return json.loads(fences[-1] if fences else text)
+    except (ValueError, TypeError):
+        return None
+
+
+def reply_matches(packet_sha: str, agent: str, obj) -> bool | None:
+    """Does `obj` equal the JSON of a stored reply of `agent` to this packet?
+    None when no reply was stored (a session without Kairo's hooks)."""
+    got = replies(packet_sha, agent)
+    if not got:
+        return None
+    return any(json_of(r["text"]) == obj for r in got)
 
 
 def _is_paper_note(p: Path) -> bool:

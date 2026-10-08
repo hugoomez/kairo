@@ -267,6 +267,31 @@ def parse_report(path: str) -> dict:
     return rep
 
 
+def _report_from_store(packet_sha: str | None, verdict: str, report: str | None) -> str | None:
+    """The fresh-verifier's own answer, as Kairo's SubagentStop hook stored it, decides
+    what may be recorded: the verdict (and the --report, when one is given) must be
+    one the verifier gave for this packet. With no --report, the stored answer is
+    the report. No stored answer (a session without Kairo's hooks): unchanged."""
+    if not packet_sha:
+        return report
+    stored = isolation.replies(packet_sha, "fresh-verifier")
+    if not stored:
+        return report
+    objs = [(r, isolation.json_of(r["text"])) for r in stored]
+    if report:
+        given = parse_report(report)
+        if not any(o == given for _, o in objs):
+            raise InputError("--report differs from every answer a fresh-verifier gave for packet "
+                             f"{packet_sha} (stored by the SubagentStop hook): pass the answer unchanged, "
+                             "or leave --report out to use the stored one")
+        return report
+    match = [r for r, o in objs if isinstance(o, dict) and o.get("verdict") == verdict]
+    if not match:
+        raise InputError(f"--verdict {verdict} is not what the fresh-verifier answered for packet {packet_sha} "
+                         f"({', '.join(str((o or {}).get('verdict')) for _, o in objs)})")
+    return str(isolation.replies_dir() / f"{match[-1]['reply_sha256']}.txt")
+
+
 # --------------------------------------------------------------------------
 # Writing
 # --------------------------------------------------------------------------
@@ -461,6 +486,7 @@ def main(argv=None) -> int:
                                      f"{args.packet_sha or '(none named: --packet-sha256)'} — store the packet "
                                      "with scripts/security/isolation.py store, hand the verifier its path, and "
                                      "pass its sha256; --allow-unread records the entry without that proof")
+                args.report = _report_from_store(args.packet_sha, args.verdict, args.report)
             e = append(args.note, args.verifier, args.model, args.verdict,
                        args.scope, args.date, args.report, args.packet_sha,
                        args.flag_human_review, read)

@@ -934,6 +934,55 @@ class ScreeningProvenance(Base):
         md = (self.run_dir / "busqueda.md").read_text(encoding="utf-8")
         self.assertIn("de screeners aislados", md)
 
+    def stop(self, page, off, decisions=None):
+        """What Kairo's SubagentStop hook does when the screener of `page` finishes."""
+        d = decisions or {c["key"]: {"decision": "include", "relevance": "media",
+                                     "why": "Reports a toy decoder on a toy code."} for c in page["candidates"]}
+        return isolation.capture_reply({"agent_type": "kairo:screener", "agent_id": f"s-{off}",
+                                        "last_assistant_message": f"Done.\n```json\n{json.dumps(d)}\n```"})
+
+    def test_merge_from_the_store_takes_the_screeners_own_replies(self):
+        pages = self.ready()
+        offs = [0] + [p["next_offset"] for p in pages[:-1]]
+        for p, off in zip(pages, offs):
+            self.assertIsNotNone(self.stop(p, off))
+        out = self.tmp / "decisions.json"
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--from-store", "--out", str(out))
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["blocks"], res["replies_verified"]), (len(pages), len(pages)))
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out))
+        self.assertEqual(code, 0, res)
+        self.assertIn("comprobados contra la respuesta", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
+    def test_a_retyped_block_that_differs_from_the_screeners_reply_is_refused(self):
+        pages = self.ready()
+        offs = [0] + [p["next_offset"] for p in pages[:-1]]
+        for p, off in zip(pages, offs):
+            self.stop(p, off)
+        blocks = [self.block(p, f"b{i}.txt") for i, p in enumerate(pages)]
+        out = self.tmp / "decisions.json"
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks), "--out", str(out))
+        self.assertEqual(code, 0, res)                                       # saved unchanged: verified
+        self.assertEqual(res["replies_verified"], len(pages))
+        tampered = json.loads(blocks[0].read_text(encoding="utf-8").split("```json\n")[1].split("\n```")[0])
+        k = next(iter(tampered))
+        tampered[k] = {"decision": "exclude", "reason": "relevancia baja", "why": "changed by the orchestrator"}
+        blocks[0].write_text(json.dumps(tampered), encoding="utf-8")
+        shutil.rmtree(self.run_dir / "screening")
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks), "--out", str(out))
+        self.assertEqual(code, 2)
+        self.assertIn("differs from what the screener answered", res["refused"])
+
+    def test_without_stored_replies_a_block_is_recorded_unverified(self):
+        pages = self.ready()
+        blocks = [self.block(p, f"b{i}.txt") for i, p in enumerate(pages)]
+        out = self.tmp / "decisions.json"
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks), "--out", str(out))
+        self.assertEqual((code, res["replies_unverified"]), (0, len(pages)))
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--from-store", "--out", str(out))
+        self.assertEqual(code, 2)
+        self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out))
+
     def test_screen_refuses_decisions_changed_after_the_merge(self):
         pages = self.ready()
         blocks = [self.block(p, f"b{i}.txt") for i, p in enumerate(pages)]

@@ -496,6 +496,39 @@ class TestVerifications(unittest.TestCase):
         self.receipt(sha)
         self.assertEqual(self.cli_append(n, "--packet-sha256", sha), 0)
 
+    def stored_reply(self, sha, verdict):
+        import os
+        from unittest import mock
+        sys.path.insert(0, str(HERE.parent / "security"))
+        import isolation
+        body = json.dumps({"verdict": verdict, "findings": [] if verdict == "no_errors_found" else
+                           [{"severity": "crítico", "location": "Claim", "why": "invented finding"}]})
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.d / "state")}):
+            return isolation.capture_reply({"agent_type": "kairo:fresh-verifier", "agent_id": "v-1",
+                                            "last_assistant_message": f"Checked.\n```json\n{body}\n```"})
+
+    def test_cli_append_must_record_what_the_verifier_answered(self):
+        """With the verifier's answer stored by the SubagentStop hook, the orchestrator
+        cannot record another verdict, nor a report that differs from it."""
+        n = self.d / "n.md"
+        write(n, NOTE_NO_KEY)
+        sha = "b" * 64
+        self.receipt(sha)
+        self.stored_reply(sha, "errors_found")
+        self.assertEqual(self.cli_append(n, "--packet-sha256", sha), 2)            # it said errors_found
+        other = self.d / "r.txt"
+        other.write_text('```json\n{"verdict": "no_errors_found", "findings": []}\n```\n', encoding="utf-8")
+        self.assertEqual(self.cli_append(n, "--packet-sha256", sha, "--report", str(other)), 2)
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.d / "state")}), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            code = vf.main(["append", "--note", str(n), "--verifier", "kairo/fresh-verifier@1.0.0",
+                            "--model", "claude-opus-5-5", "--verdict", "errors_found", "--scope", "note",
+                            "--date", "2030-03-01", "--packet-sha256", sha])
+        self.assertEqual(code, 0)                                                    # the stored answer is the report
+        self.assertIn("invented finding", n.read_text(encoding="utf-8"))
+
     def test_cli_append_without_proof_says_so_in_the_record(self):
         n = self.d / "n.md"
         write(n, NOTE_NO_KEY)

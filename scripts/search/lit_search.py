@@ -10,7 +10,7 @@ paged, deduplicated and counted by this script, never by a model.
     lit_search.py screen     --run <run dir> --decisions decisions.json [--screened-by <model id>]
     lit_search.py agree      --decisions decisions.json --second sample.json
     lit_search.py show       --run <run dir> [--offset 0] [--limit 60] [--all] [--abstract-chars N]
-    lit_search.py merge      --run <run dir> --blocks page1.txt … [--extra mine.json] --out decisions.json
+    lit_search.py merge      --run <run dir> (--from-store | --blocks page1.txt …) [--extra mine.json] --out decisions.json
 
 The model's part is the judgement around it: it writes `plan.json` (the
 facets and their synonyms, the date window, the inclusion / exclusion /
@@ -1973,7 +1973,19 @@ def canonical(decisions: dict) -> str:
     return json.dumps(decisions, ensure_ascii=False, sort_keys=True)
 
 
-def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allow_unread: bool = False) -> dict:
+def _store_blocks(pages: dict) -> list[tuple[str, bytes]]:
+    """Each page's screener reply as the SubagentStop hook stored it (the first, when
+    a page was screened twice — the second is for `agree`)."""
+    out = []
+    for pid, page in pages.items():
+        got = isolation.replies(page.get("packet_sha256") or "", "screener") if page.get("packet_sha256") else []
+        if got:
+            out.append((f"almacén:{got[0]['reply_sha256'][:12]} ({pid})", got[0]["text"].encode("utf-8")))
+    return out
+
+
+def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allow_unread: bool = False,
+              from_store: bool = False) -> dict:
     """Assemble decisions.json from the screeners' replies, saved verbatim one file
     per page, instead of a model retyping them. Each block must decide exactly the
     keys of one page `show` handed out, no key twice; `--extra` holds the
@@ -1981,7 +1993,13 @@ def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allo
     purpose) and may not overrule a screener. Every candidate that passed the
     prefilter must be decided. Writes `out` and `screening.json` (each block's
     sha256, its page, and who decided each key); `screen` then refuses a
-    decisions file that differs from this union."""
+    decisions file that differs from this union.
+
+    `from_store` takes each page's reply from the store the SubagentStop hook
+    fills (the screener's own final answer, never touched by the orchestrator).
+    A block given by hand is checked against that store: one that differs from
+    every reply a screener gave for its page is refused; with no stored reply
+    (a session without Kairo's hooks) it is recorded as unverified."""
     pages_path = run / "pages.json"
     if not pages_path.is_file():
         raise Refused("no pages recorded: page the candidates with `show` before `merge`")
@@ -1993,12 +2011,18 @@ def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allo
     record = []
     errs = []
     (run / "screening").mkdir(exist_ok=True)
-    for b in blocks:
+    sources: list[tuple[str, bytes | Path]] = ([(n, raw) for n, raw in _store_blocks(pages)] if from_store
+                                               else [(b.name, b) for b in blocks])
+    if from_store and not sources:
+        raise Refused("no screener reply in the store: Kairo's SubagentStop hook did not run (a session without "
+                      "the plugin's hooks?) — save each reply in blocks/ and pass --blocks")
+    for name, src in sources:
+        b = Path(name)
         try:
-            raw = b.read_bytes()
+            raw = src if isinstance(src, bytes) else src.read_bytes()
             obj = _json_block(raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as e:
-            raise Refused(f"{b.name}: cannot read the block ({e})") from None
+            raise Refused(f"{name}: cannot read the block ({e})") from None
         pid = by_keys.get(frozenset(obj))
         if not pid:
             best = max(pages.items(), key=lambda kv: len(set(kv[1]["keys"]) & set(obj)), default=(None, {"keys": []}))
@@ -2018,12 +2042,17 @@ def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allo
                         "a `screener` with the packet path `show` printed (it reads the file itself); "
                         "--allow-unread records the page without that proof")
             continue
+        verified = True if from_store else (isolation.reply_matches(psha, "screener", obj) if psha else None)
+        if verified is False:
+            errs.append(f"{b.name}: differs from what the screener answered for page {pid} (its reply, stored by "
+                        "the SubagentStop hook) — save the reply unchanged, or run merge --from-store")
+            continue
         sha = hashlib.sha256(raw).hexdigest()
         (run / "screening" / f"{pid}.txt").write_bytes(raw)
         decisions.update(obj)
         provenance.update({k: f"screener:{pid}" for k in obj})
         record.append({"file": b.name, "page": pid, "sha256": sha, "keys": len(obj),
-                       "packet_sha256": psha, "packet_read": read})
+                       "packet_sha256": psha, "packet_read": read, "reply_verified": verified})
     extra_rec = None
     if extra:
         try:
@@ -2051,6 +2080,8 @@ def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allo
                                        canonical(decisions).encode()).hexdigest()})
     return {"tool": TOOL, "decisions": out.as_posix(), "blocks": len(record),
             "unread_pages": sum(1 for r in record if not r["packet_read"]),
+            "replies_verified": sum(1 for r in record if r.get("reply_verified")),
+            "replies_unverified": sum(1 for r in record if r.get("reply_verified") is None),
             "by_screeners": sum(1 for v in provenance.values() if v != "orquestador"),
             "by_orchestrator": sum(1 for v in provenance.values() if v == "orquestador")}
 
@@ -2068,6 +2099,13 @@ def provenance_line(run: Path) -> str:
             f"({len(s['blocks'])} bloques guardados tal cual en `screening/`, sha256 en `screening.json`)")
     if orch:
         line += f"; {len(orch)} del orquestador: " + ", ".join(f"`{k}`" for k in orch)
+    verified = sum(1 for b in s["blocks"] if b.get("reply_verified"))
+    unverified = [b["page"] for b in s["blocks"] if "reply_verified" in b and b["reply_verified"] is None]
+    line += (f"; {verified} de {len(s['blocks'])} bloques comprobados contra la respuesta que el hook "
+             "SubagentStop guardó del propio screener")
+    if unverified:
+        line += (f"; ⚠️ {len(unverified)} bloque(s) transcritos por el orquestador sin respuesta guardada con la "
+                 "que compararlos (sesión sin los hooks de Kairo): " + ", ".join(f"`{p}`" for p in unverified))
     unread = [b["page"] for b in s["blocks"] if not b.get("packet_read", True)]
     if unread:
         line += (f"; ⚠️ {len(unread)} página(s) sin constancia de lectura del paquete por un screener "
@@ -2119,8 +2157,12 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
                     help=f"cut each abstract to N characters (default: whole, up to {ABSTRACT_CAP})")
     mg = sub.add_parser("merge")
     mg.add_argument("--run", type=Path, required=True)
-    mg.add_argument("--blocks", type=Path, nargs="+", required=True,
-                    help="one file per screener reply, saved verbatim (its ```json fence may stay)")
+    src = mg.add_mutually_exclusive_group(required=True)
+    src.add_argument("--from-store", action="store_true",
+                     help="take each page's reply from the store Kairo's SubagentStop hook fills (preferred)")
+    src.add_argument("--blocks", type=Path, nargs="+",
+                     help="one file per screener reply, saved verbatim (its ```json fence may stay); checked "
+                          "against the stored reply when there is one")
     mg.add_argument("--extra", type=Path, help="the orchestrator's own decisions, e.g. a prefiltered-out include")
     mg.add_argument("--out", type=Path, required=True, help="the decisions.json to write")
     mg.add_argument("--allow-unread", action="store_true",
@@ -2137,7 +2179,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
         elif a.cmd == "agree":
             out = cmd_agree(a.decisions, a.second)
         elif a.cmd == "merge":
-            out = cmd_merge(a.run, a.blocks, a.extra, a.out, a.allow_unread)
+            out = cmd_merge(a.run, a.blocks or [], a.extra, a.out, a.allow_unread, from_store=a.from_store)
         elif a.cmd == "screen":
             out = cmd_screen(a.run, a.decisions, a.screened_by)
         else:

@@ -5,6 +5,7 @@
     kairo_hook.py post-write    PostToolUse Write | Edit
     kairo_hook.py post-shell    PostToolUse Bash | PowerShell
     kairo_hook.py session-end   SessionEnd
+    kairo_hook.py subagent-stop SubagentStop
 
 Reads the hook's JSON on stdin and routes it:
 
@@ -16,6 +17,10 @@ Reads the hook's JSON on stdin and routes it:
                  Projects/*/Claims/     _ledger.md
   post-shell   Bitácora: log a `git commit` the shell call just made.
   session-end  keep the transcript of a session that wrote research notes.
+  subagent-stop  keep an isolated agent's final answer (screener, fresh-verifier,
+               …) tied to the packet it read, so the script that records its
+               verdict can check the orchestrator saved it unchanged. Works in
+               any folder: the store is outside the vault.
 
 The vault is found, in order, from:
   - the written or read path (the nearest ancestor holding both Papers/ and
@@ -273,7 +278,21 @@ def session_end(payload: dict) -> int:
     return 0
 
 
-EVENTS = {"pre-tool": pre_tool, "post-write": post_write, "post-shell": post_shell, "session-end": session_end}
+def subagent_stop(payload: dict) -> int:
+    import isolation
+    if isolation.agent_name(payload) not in isolation.ISOLATED_AGENTS:
+        return 0
+    try:
+        rec = isolation.capture_reply(payload)
+        record("SubagentStop", "agent_reply", find_vault(payload), "ok" if rec else "empty",
+               f"{isolation.agent_name(payload)} {(rec or {}).get('reply_sha256', '')}")
+    except Exception as exc:
+        record("SubagentStop", "agent_reply", None, "error", repr(exc))
+    return 0
+
+
+EVENTS = {"pre-tool": pre_tool, "post-write": post_write, "post-shell": post_shell, "session-end": session_end,
+          "subagent-stop": subagent_stop}
 
 
 def main(argv: list[str] | None = None) -> int:

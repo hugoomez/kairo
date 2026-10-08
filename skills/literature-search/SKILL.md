@@ -276,14 +276,20 @@ the first):
    the researcher and offer a new plan (`min_facets: 1`, more synonyms) — never
    a silent re-run. A sampled include needs `retraction --keys` like any
    prefiltered-out one.
-4. Save each screener's reply **verbatim**, one file per page
-   (`<run dir>/blocks/<page id>.txt` — its ```json fence may stay), and let the
-   script assemble the decisions:
+4. Let the script assemble the decisions **from the screeners' own answers**:
+   Kairo's `SubagentStop` hook stores each isolated agent's final answer, tied
+   to the packet it read, so nobody retypes it:
    ```
    python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" merge --run <run dir> \
-     --blocks <run dir>/blocks/*.txt [--extra <run dir>/mine.json] --out <run dir>/decisions.json
+     --from-store [--extra <run dir>/mine.json] --out <run dir>/decisions.json
    ```
-   It refuses a block that is not exactly one page's keys (re-dispatch the
+   In a session without Kairo's hooks (`--from-store` says the store is
+   empty), save each reply **verbatim**, one file per page
+   (`<run dir>/blocks/<page id>.txt` — its ```json fence may stay), and pass
+   `--blocks <run dir>/blocks/*.txt` instead: a block is checked against the
+   stored answer whenever there is one (a block that differs is refused) and
+   is otherwise recorded as unverified in `busqueda.md`.
+   `merge` refuses a block that is not exactly one page's keys (re-dispatch the
    screener with that page — never fill a key in yourself), a key decided
    twice, any candidate that passed the prefilter left without a block, and a
    page whose packet no `screener` is recorded as having read (dispatch it
