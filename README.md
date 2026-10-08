@@ -219,7 +219,15 @@ content `Grep` over one, a shell reader naming `Papers/`, `cite_text.py` and
 `lit_search.py show --with-abstracts`; the `paper-reader` subagent (no shell,
 no network) reads them instead, and `scripts/papers/paper_meta.py` gives the
 frontmatter and reference line (`resolution_status`, authors, `code_repo`, …)
-without the text. `KAIRO_ALLOW_MAIN_PAPER_READ=1` turns this off.
+without the text. `KAIRO_ALLOW_MAIN_PAPER_READ=1` turns this off;
+**`KAIRO_ALLOW_MAIN_PAPER_READ=clean`** is the middle way for daily reading: the
+main session may `Read` a paper note when it is clean — written by
+`ingest_paper.py` with a converter that marks hidden text, nothing flagged at
+ingestion, no hidden-text mark, and nothing in it that reads like an
+instruction to a model under today's patterns (re-checked on every read) —
+while `Grep`, shell readers and any flagged note stay closed. The heuristic is
+what decides, so it trades some of the protection for convenience: choose it
+knowingly.
 **What this does not guarantee:** paper text still reaches the main session
 second-hand — `paper-reader` returns verbatim excerpts (≤ 1200 characters) to
 fix a locator, the map's subagents return sentences drawn from the papers, and

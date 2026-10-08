@@ -23,7 +23,8 @@ for the main thread, which must never read a paper's text.
    `Papers/P-*.md` note, a content-mode `Grep` whose scope holds one, and a
    shell reader (`cat`, `head`, `grep`, `Get-Content`, …) naming `Papers/`.
    Subagents without a shell (`paper-reader`, `facet-summarizer`, …) read them;
-   scripts read them. `KAIRO_ALLOW_MAIN_PAPER_READ=1` turns this off.
+   scripts read them. `KAIRO_ALLOW_MAIN_PAPER_READ=1` turns this off;
+   `=clean` lets the main thread `Read` a note `unclean_note` finds clean.
    A shell command can still reach a note without naming it: best effort, the
    instruction in every skill is the primary control.
 
@@ -260,6 +261,46 @@ def _holds_papers(scope: Path) -> bool:
     return False
 
 
+HIDDEN_MARK = "[texto oculto en la fuente"
+MIN_CONVERTER = (1, 5, 0)          # verbatim_fulltext marks hidden text in HTML and PDF from this version
+
+
+def unclean_note(p: Path) -> str | None:
+    """Why a paper note is not clean enough for the main thread to read, or None.
+
+    Clean: written by ingest_paper.py from kept bytes with a converter that marks
+    hidden text (≥ 1.5.0), no `texto_sospechoso` at ingestion, no hidden-text
+    mark in it, and nothing in its whole text that reads like an instruction to
+    a model today (the patterns are re-run on every read, so a newer list
+    applies to old notes)."""
+    from untrusted import suspicious
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"no se pudo leer ({e})"
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    fm = m.group(1) if m else ""
+    if re.search(r"(?m)^texto_sospechoso:\s*\S", fm):
+        return "la ingesta marcó texto sospechoso"
+    fuentes = re.search(r"(?m)^fuentes:\s*[\"']?([^\"'\n]+)", fm)
+    if not fuentes:
+        return "no la escribió ingest_paper.py desde bytes guardados"
+    vault = p.parent.parent
+    try:
+        conv = json.loads((vault / fuentes.group(1).strip()).read_text(encoding="utf-8")).get("converter") or ""
+    except (OSError, ValueError):
+        return "su manifiesto de fuentes no se puede leer"
+    vm = re.search(r"@(\d+)\.(\d+)\.(\d+)", conv)
+    if not vm or tuple(int(x) for x in vm.groups()) < MIN_CONVERTER:
+        return f"convertida con {conv or 'un convertidor desconocido'}, anterior a la detección de texto oculto"
+    if HIDDEN_MARK in text:
+        return "contiene texto oculto en la fuente"
+    flags = suspicious(text)
+    if flags:
+        return "texto que parece una instrucción: " + ", ".join(flags)
+    return None
+
+
 def main_paper_read(event: dict) -> str | None:
     """A block reason when the main thread would put paper text in its own context."""
     if event.get("agent_id") or os.environ.get("KAIRO_ALLOW_MAIN_PAPER_READ") == "1":
@@ -272,6 +313,12 @@ def main_paper_read(event: dict) -> str | None:
     if tool == "Read":
         fp = str(tin.get("file_path") or "")
         if fp and _is_paper_note(_resolve(fp, cwd)):
+            if os.environ.get("KAIRO_ALLOW_MAIN_PAPER_READ") == "clean":
+                dirty = unclean_note(_resolve(fp, cwd))
+                if dirty is None:
+                    return None
+                return (f"{Path(fp).name}: KAIRO_ALLOW_MAIN_PAPER_READ=clean solo abre notas limpias, y esta no "
+                        f"lo es ({dirty}): {why}.")
             return f"{Path(fp).name}: {why}."
         return None
     if tool == "Grep":
