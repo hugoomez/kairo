@@ -397,7 +397,10 @@ there and are not marked — the instruction-like-text heuristic still applies.
     for skills, `hook` for the vault's PreToolUse hook.
   - `untrusted.py` — flags third-party text (an abstract) that reads like an
     instruction to a model; `lit_search.py show` and `lit_watch.py delta` mark
-    such candidates `sospechoso`. A heuristic that labels, never a boundary.
+    such candidates `sospechoso`. English plus the commonest phrasings in
+    Spanish, French, German, Portuguese, Italian and Chinese, matched after
+    folding full-width forms and removing zero-width / bidi characters. A
+    heuristic that labels, never a boundary.
 - `skills/assemble-manuscript/scripts/ai_disclosure.py` — builds the
   manuscript's AI-use disclosure (Spanish + English) from recorded
   `generated_by`, `history`, `verifications:` and code-authorship fields, per
