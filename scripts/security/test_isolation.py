@@ -137,6 +137,9 @@ class TestMainThreadPaperText(Base):
         cmd = "python scripts/papers/cite_text.py --vault . --paper P-0981 --locator 3"
         self.assertTrue(isolation.main_paper_read(self.ev("Bash", {"command": cmd})))
         self.assertIsNone(isolation.main_paper_read(self.ev("Bash", {"command": cmd}, agent="x", agent_id="a")))
+        refs = "python scripts/papers/paper_refs.py list --vault . --id P-0981"
+        self.assertIsNone(isolation.main_paper_read(self.ev("Bash", {"command": refs})))        # ids only
+        self.assertTrue(isolation.main_paper_read(self.ev("Bash", {"command": refs + " --text"})))
 
     def test_opt_out_env(self):
         with mock.patch.dict(os.environ, {"KAIRO_ALLOW_MAIN_PAPER_READ": "1"}):

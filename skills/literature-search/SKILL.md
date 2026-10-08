@@ -202,6 +202,10 @@ paper** the caller gave (create-project's *Papers semilla*):
 python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" snowball --run <run dir> --keys <key> [<key> …]   --seeds arXiv:<id> DOI:<doi> … --vault <vault>
 ```
 
+For a project that already holds papers, `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_refs.py" corpus
+--vault <vault> --project <PROJ-XXX>` prints the works its papers' own
+bibliographies cite most that the vault lacks (`snowball_seeds`): good seeds,
+read from the references themselves rather than from a search engine.
 A seed does not have to be a candidate: the foundational papers of a field are
 usually older than the window, so the search never returns them, yet their
 citations inside the window are exactly the recent work that builds on them.

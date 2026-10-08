@@ -50,7 +50,7 @@ _READERS = re.compile(r"(?:^|[\s;|&(`])(?:cat|type|more|less|head|tail|sed|awk|g
                       r"get-content|gc|select-string|sls|bat|nl|strings|od|xxd)(?:\.exe)?\b", re.I)
 _PAPERS_PATH = re.compile(r"papers[/\\](?:p-\d|\*|[\"']?\s|[\"']?$)", re.I)
 # scripts whose output is a paper's own text (for an interface, never the main session)
-_TEXT_SCRIPTS = re.compile(r"\bcite_text\.py\b", re.I)
+_TEXT_SCRIPTS = re.compile(r"\bcite_text\.py\b|\bpaper_refs\.py\b.*\s--text\b", re.I | re.S)
 # a search listing that prints the candidates' abstracts (third-party text) into the caller's context
 _ABSTRACTS = re.compile(r"\blit_search\.py\b.*\bshow\b.*--with-abstracts", re.I | re.S)
 
@@ -290,7 +290,7 @@ def main_paper_read(event: dict) -> str | None:
         if _READERS.search(cmd) and _PAPERS_PATH.search(cmd + " "):
             return f"el comando lee notas de Papers/: {why}."
         if _TEXT_SCRIPTS.search(cmd):
-            return f"cite_text.py imprime texto de un paper: {why}."
+            return f"el script imprime texto de un paper (cite_text.py, paper_refs.py --text): {why}."
         if _ABSTRACTS.search(cmd):
             return ("lit_search.py show --with-abstracts imprime abstracts de terceros en el hilo principal: "
                     "pasa la ruta del paquete de la página a un `screener` (lo lee él), o quita --with-abstracts.")

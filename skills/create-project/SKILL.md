@@ -306,6 +306,13 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    — `ingest_paper.py rebuild --only <P-id>` regenerates it. The fresh
    verifier, `check_quotes.py`, `check_review.py` and `check_sota.py` run the
    same comparison and treat a mismatch as text that is not the paper's.
+   Then extract each paper's own bibliography from the same kept bytes (no
+   network; the note is not touched):
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_refs.py" extract --vault <vault> --only <P-ids>`.
+   `paper_refs.py corpus --project <PROJ-XXX>` then lists the works the
+   project's papers cite (with an identifier their references state) that the
+   vault lacks, most cited first — show the top ones to the researcher with the
+   `snowball_seeds` line it prints, for a later `lit_search.py snowball --seeds`.
 6. **No model-written text in the paper note at all.** A reading aid, if you
    write one, goes in `Papers/_notas/<P-id>.md` (see Paper note format), never
    in the paper note. No locator may point there; no skill or agent reads it
