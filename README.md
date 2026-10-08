@@ -93,19 +93,7 @@ order of a million or two tokens, most of it the full texts the map reads;
 
 **What it cannot do, stated:** the quality of the model's steps (screening,
 the map) is checked per run, never measured against a gold standard here —
-measure it on your own questions in four commands (all data stays in your
-vault):
-  1. `quality_report.py gold-init --out Projects/<slug>/_eval/gold.json --bib <survey refs.bib>`
-     — the papers any competent search must find (e.g. a trusted survey's
-     references, or `--ids arXiv:… DOI:…`);
-  2. every later `lit_search.py screen` on that project writes the gold set's
-     recall (identified / included, and which were missed) into `busqueda.md`;
-  3. `quality_report.py human-sheet --run <run> --out Projects/<slug>/_eval/cribado-humano.md`
-     — a blind sample of 30 screened candidates you decide yourself;
-  4. `quality_report.py human-agree --run <run> --sheet …` — agreement, Cohen's
-     kappa and the papers you would include that the screen excluded;
-  plus `quality_report.py sota` (locator and figure error rates of the map)
-  and `all --log` to keep a history;
+measure it on your own questions (below);
 figures are kept as images and linked under their caption — a value read off a
 plot is always marked `≈ … (leído de la Figura N, no literal)`, never passed
 off as printed, and `check_sota.py` reports how many there are
@@ -117,6 +105,21 @@ their DOI links; save the PDFs you get through your library and
 marked `[extracción dañada]` (arXiv HTML keeps their LaTeX); DBLP answers
 scripts with an anti-bot page and Google Scholar forbids scraping, so neither
 is queried.
+
+**Measuring quality on your own questions** (all data stays in your vault):
+
+1. `quality_report.py gold-init --out Projects/<slug>/_eval/gold.json --bib <survey refs.bib>`
+   — the papers any competent search must find (e.g. a trusted survey's
+   references, or `--ids arXiv:… DOI:…`);
+2. every later `lit_search.py screen` on that project writes the gold set's
+   recall (identified / included, and which were missed) into `busqueda.md`;
+3. `quality_report.py human-sheet --run <run> --out Projects/<slug>/_eval/cribado-humano.md`
+   — a blind sample of 30 screened candidates you decide yourself;
+4. `quality_report.py human-agree --run <run> --sheet …` — agreement, Cohen's
+   kappa and the papers you would include that the screen excluded.
+
+`quality_report.py sota` gives the map's locator and figure error rates, and
+`all --log` keeps a history so a regression shows.
 
 ---
 
