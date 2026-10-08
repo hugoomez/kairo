@@ -746,7 +746,10 @@ work on a small budget** (checked 2026-09-24): single-work lookups by DOI or id
 are free either way; list/search calls (the title-search fallback) cost $0.001
 each against a daily budget of **$0.10 keyless** vs **$1 with a free key**.
 A handful of papers resolve fine without a key; for a whole vault, a sweep, or
-a manuscript gate, set one up so a spent budget doesn't turn papers into
+a manuscript gate, set one up. Without a key, `lit_search.py run` reads only
+the top `per_query` of each OpenAlex query (with one, a query of up to
+`max_per_query` results is read whole), and prints `openalex_list_calls` —
+set one up so a spent budget doesn't turn papers into
 `unresolved` ("OpenAlex unreachable").
 
 **Setup:**

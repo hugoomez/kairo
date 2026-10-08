@@ -1052,6 +1052,37 @@ class ThirdAuditFixes(Base):
                  if q["facet"] == "A")
         self.assertEqual((a["fetched"], a["truncated"]), (100, True))
 
+    def test_keyless_openalex_is_never_extended_past_per_query(self):
+        """Each OpenAlex page costs a keyless list call: without a key a query reads its
+        top `per_query` and says why; with a key it is read whole as before."""
+        class OAPages(FakeWeb):
+            def __call__(self, url, headers):
+                if "api.openalex.org/works?search=" in url:
+                    self.urls.append(url)
+                    page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["page"][0])
+                    res = [{"id": f"https://openalex.org/W{page}{i:03d}", "title": f"Toy code paper {page}-{i}",
+                            "publication_date": "2030-06-01", "publication_year": 2030, "authorships": [],
+                            "abstract_inverted_index": {"toy": [0], "code": [1], "decoder": [2]}}
+                           for i in range(100)]
+                    return json.dumps({"meta": {"count": 250}, "results": res if page <= 3 else []}).encode()
+                return super().__call__(url, headers)
+        for key, fetched, extended in ((None, 100, False), ("k", 250, True)):
+            env = {"OPENALEX_API_KEY": key} if key else {}
+            with mock.patch.dict(os.environ, env, clear=False):
+                if not key:
+                    os.environ.pop("OPENALEX_API_KEY", None)
+                self.plan.write_text(json.dumps({**PLAN, "sources": ["openalex"], "per_query": 100, "cross": False}),
+                                     encoding="utf-8")
+                code, out = self.run_search(OAPages())
+            self.assertEqual(code, 0, out)
+            self.assertIn("openalex_list_calls", out)
+            a = next(q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+                     if q["facet"] == "A")
+            self.assertEqual(a["fetched"], fetched)
+            self.assertEqual("extended_to" in a, extended)
+            self.assertEqual("not_extended" in a, not extended)
+            shutil.rmtree(self.run_dir)
+
     def test_a_retitled_published_version_joins_its_preprint(self):
         base = {"facet": "A", "matched": "toy code", "date": None, "abstract": "", "citations": None, "url": None,
                 "anchor": False}

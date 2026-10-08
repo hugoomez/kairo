@@ -191,6 +191,7 @@ BOOLEAN_CROSS = ("arxiv", "openalex")  # cross queries that AND every facet (S2 
 # `per_query` and are recorded as "por relevancia", never as truncated.
 RANKED = ("s2", "crossref", "openreview", "dblp")
 MAX_PER_QUERY = 1000                 # an arXiv / OpenAlex query whose total fits is read whole
+OPENALEX_KEYLESS_CALLS = 100         # keyless list calls a day ($0.10 at $0.001 each, checked 2026-09-24)
 TITLE_CLOSE = 0.85                   # preprint ↔ retitled published version (same first author)
 MIN_WHY_WORDS_EXCLUDE = 3
 RELEVANCE = ("alta", "media", "baja")
@@ -550,8 +551,10 @@ def config_warnings(plan: dict) -> list[str]:
     srcs = set(plan.get("sources") or [])
     if "openalex" in srcs and not os.environ.get("OPENALEX_API_KEY"):
         out.append("OPENALEX_API_KEY: sin clave, el presupuesto diario de OpenAlex para búsquedas paginadas es "
-                   "pequeño y una ejecución grande puede agotarlo (consultas perdidas); clave gratuita en "
-                   "https://openalex.org/settings/api")
+                   f"de unas {OPENALEX_KEYLESS_CALLS} llamadas, compartidas con el completado de abstracts, la "
+                   "resolución de referencias y la vigilancia: cada consulta lee solo sus primeros `per_query` "
+                   "(nunca se amplía hasta su total) y una ejecución grande puede agotarlo igualmente (consultas "
+                   "perdidas); clave gratuita en https://openalex.org/settings/api")
     if "s2" in srcs and not os.environ.get("SEMANTIC_SCHOLAR_API_KEY"):
         out.append("SEMANTIC_SCHOLAR_API_KEY: sin clave, Semantic Scholar responde a menudo HTTP 429 (consultas "
                    "perdidas); clave gratuita en https://www.semanticscholar.org/product/api")
@@ -666,8 +669,14 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
         q["total"] = total
         if (q["source"] in BOOLEAN_CROSS and total and total > cap
                 and total <= plan.get("max_per_query", MAX_PER_QUERY)):
-            cap = total                         # the whole result fits: read it all, never truncate it
-            q["extended_to"] = total
+            if q["source"] == "openalex" and not os.environ.get("OPENALEX_API_KEY"):
+                # keyless, each page is a paid list call against a ~100-call daily budget that
+                # the enrichment, the citation checks and the watch share: read the top
+                # `per_query` and say why the rest was not read, never spend the day on one query
+                q["not_extended"] = f"sin OPENALEX_API_KEY: {total} resultados, leídos los primeros {cap}"
+            else:
+                cap = total                     # the whole result fits: read it all, never truncate it
+                q["extended_to"] = total
         full_page = len(got) >= size
         got = got[:cap] if q["source"] == "s2-anchor" else got[:want]
         recs.extend(got)
@@ -1067,6 +1076,7 @@ def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
             "candidates": len(cands), "in_vault": sum(1 for c in cands if c.get("in_vault")),
             "to_read": sum(1 for c in cands if passes_prefilter(c)),
             "prefiltered_out": sum(1 for c in cands if not passes_prefilter(c)),
+            "openalex_list_calls": sum(len(q.get("raw") or []) for q in queries if q["source"] == "openalex"),
             "lost": [f"{q['id']} {q['source']} faceta {q['facet']}: {q['error']}" for q in queries if q["error"]],
             "truncated": [f"{q['id']} {q['source']} faceta {q['facet']}: {q['fetched']} de {q['total']}"
                           for q in queries if q.get("truncated")]}
@@ -1593,8 +1603,10 @@ def degraded_lines(queries: list[dict]) -> list[str]:
                        f"{q['fetched']} (consulta {q['id']}).")
         elif q.get("truncated"):
             facet = "cruce de todas las facetas" if q["facet"] == "*" else f"Faceta {q['facet']}"
+            fix = ("Configura OPENALEX_API_KEY (gratuita) para leerla entera, o estrecha la faceta."
+                   if q.get("not_extended") else "Sube `per_query` o estrecha la faceta.")
             out.append(f"- {facet} — {what} en {q['source']} truncado: {q['fetched']} de "
-                       f"{q['total']} resultados (consulta {q['id']}). Sube `per_query` o estrecha la faceta.")
+                       f"{q['total']} resultados (consulta {q['id']}). {fix}")
     return out
 
 
