@@ -73,6 +73,23 @@ class SearchSources(unittest.TestCase):
         recs, total = page("openreview", "transformer")
         self.check(recs, total, ("title",))
 
+    def test_the_fields_filter_is_accepted_and_narrows(self):
+        """`fields` must be a filter each source understands (a wrong one is a 4xx, or is
+        ignored and narrows nothing)."""
+        fielded = ls.load_plan_dict({**PLAN, "fields": ["physics"]})
+        for source in ("openalex", "s2"):
+            url, headers = ls.page_urls(source, "decoder", fielded, 0, 5)
+            plain_url, _ = ls.page_urls(source, "decoder", PLAN, 0, 5)
+            try:
+                recs, total = ls.PARSERS[source](fetch(url, headers))
+                _, plain_total = ls.PARSERS[source](fetch(plain_url, headers))
+            except net.HttpError as e:
+                if source == "s2" and e.code == 429:
+                    continue
+                raise
+            self.assertTrue(recs, source)
+            self.assertLess(total, plain_total, f"{source}: the field filter did not narrow the search")
+
 
 @unittest.skipUnless(LIVE, "set KAIRO_LIVE_TESTS=1 to ask the real APIs")
 class PaperCard(unittest.TestCase):
