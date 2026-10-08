@@ -15,7 +15,8 @@ Reads the hook's JSON on stdin and routes it:
                  Papers/**              Smart Connections re-index + SOTA staleness check
                  Projects/*/Hipotesis/  _digest.md + _ledger.md
                  Projects/*/Claims/     _ledger.md
-  post-shell   Bitácora: log a `git commit` the shell call just made.
+  post-shell   Bitácora: log a `git commit` the shell call just made (not under
+               KAIRO_PROFILE=literatura: the notebook serves the programme).
   session-end  keep the transcript of a session that wrote research notes.
   subagent-stop  keep an isolated agent's final answer (screener, fresh-verifier,
                …) tied to the packet it read, so the script that records its
@@ -253,6 +254,8 @@ def post_shell(payload: dict) -> int:
     cmd = str((payload.get("tool_input") or {}).get("command") or "")
     if "commit" not in cmd:  # cheap prefilter; commit_hook decides for real
         return 0
+    if (os.environ.get("KAIRO_PROFILE") or "").strip().lower() == "literatura":
+        return 0             # the lab notebook serves the research programme, not the literature profile
     vault = find_vault(payload)
     if vault is None:
         return 0

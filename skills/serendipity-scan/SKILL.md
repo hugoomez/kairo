@@ -5,6 +5,8 @@ description: Use when a researcher explicitly asks for a serendipity scan on a K
 
 # Serendipity Scan
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check serendipity-scan`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 Two independent, opt-in mechanisms for finding candidates a normal literature

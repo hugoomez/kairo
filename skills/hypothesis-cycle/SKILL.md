@@ -5,6 +5,8 @@ description: Use when turning a research gap or a researcher's one-line claim in
 
 # Hypothesis Cycle
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check hypothesis-cycle`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 Take a candidate, run four cheap-first checks with a short refinement loop, and

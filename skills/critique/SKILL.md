@@ -5,6 +5,8 @@ description: Use when the researcher asks for a devil's-advocate critique of one
 
 # critique — devil's advocate on demand
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check critique`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 The researcher wants an artifact attacked before relying on it. This skill

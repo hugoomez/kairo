@@ -129,6 +129,14 @@ class TestKairoHook(unittest.TestCase):
         self.assertEqual(self.events()[-1]["action"], "bitacora_commit")
         self.assertTrue(list((self.proj / "Bitacora").glob("*")), "the notebook got the commit")
 
+    def test_the_literature_profile_leaves_the_notebook_alone(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"KAIRO_PROFILE": "literatura"}):
+            r = self.hook("post-shell", {"tool_name": "Bash", "tool_input": {"command": "git commit -m x"},
+                                         "cwd": str(self.vault)}, project_dir=self.vault)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("bitacora_commit", [e["action"] for e in self.events()])
+
     def packet(self, text: str) -> Path:
         import hashlib
         d = self.state / "packets"

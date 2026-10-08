@@ -65,6 +65,11 @@ literature search, step 4) and **type** + **autonomy_defaults** (gate steps 4–
 
 ## Prerequisites
 
+- **The profile.** Run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check-template <template>`
+  once the template is known (step 1). Exit 3 means `KAIRO_PROFILE=literatura`:
+  only `ligero`, `corpus` and `revision` exist in this profile — offer them
+  (say which fits the brief) instead of the one asked for, and never run step 8.
+
 - **The session's model.** This skill orchestrates on the session's own
   model; only the subagents have theirs fixed (`config/models.toml`). Compare
   your model id with the policy's tier for task `create_project`: on a model

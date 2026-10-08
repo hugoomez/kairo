@@ -75,6 +75,15 @@ never runs unless you ask for it:
 | An answer from your papers, only in their own words | `ask-corpus` |
 | A bibliography | `scripts/papers/export_bib.py --project PROJ-XXX` (BibTeX / CSL-JSON) |
 
+**The `literatura` profile.** Set `KAIRO_PROFILE=literatura` in the environment
+that starts Claude Code (or in the `env` block of your user settings) and
+Kairo is only this path: `create-project` offers only `ligero`, `corpus` and
+`revision`, the programme's skills (hypotheses, preregistration, experiments,
+theorems, manuscripts, evolve, paper-to-tool, repo-steward, ADRs, critique,
+serendipity) refuse with one line, and the lab notebook's commit hook stays
+quiet. The safety hooks still run. `scripts/models/kairo_profile.py show`
+says which profile is active.
+
 Before a heavy pass (screening, map, verification) the skill shows an
 estimate of subagents, tokens and minutes (`scripts/estimate/estimate_run.py`)
 and, with `paper_ingestion: manual`, waits for your go-ahead. Order of

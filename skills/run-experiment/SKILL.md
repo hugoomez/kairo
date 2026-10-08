@@ -5,6 +5,8 @@ description: Use when a frozen `preregistered` experiment note is ready to execu
 
 # Run Experiment
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check run-experiment`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 Executes one frozen preregistration and records its outcome. The analysis is

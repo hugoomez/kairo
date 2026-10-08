@@ -15,6 +15,8 @@ description: >-
 
 # Assemble Manuscript
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check assemble-manuscript`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 Turns a publication-track thread of **resolved** hypotheses into a manuscript

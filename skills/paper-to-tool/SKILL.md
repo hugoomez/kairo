@@ -18,6 +18,8 @@ description: >-
 
 # Paper to Tool
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check paper-to-tool`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 When an experiment has to reproduce a specific paper's method, Kairo's

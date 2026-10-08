@@ -5,6 +5,8 @@ description: Use when a hypothesis's status must change — a prereg was frozen,
 
 # Update Confidence
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check update-confidence`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 This skill owns every hypothesis `status` transition after a hypothesis is first

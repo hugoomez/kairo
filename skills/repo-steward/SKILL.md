@@ -5,6 +5,8 @@ description: Use when an applied Kairo project (template aplicado, `code_repo:` 
 
 # repo-steward — the applied project's code repository
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check repo-steward`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 An applied project's code lives in its own git repository (`code_repo:` in
