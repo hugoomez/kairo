@@ -28,8 +28,9 @@ literature (theses, technical reports, whitepapers), nothing against
 **publication bias**, no Google Scholar (no API, and its terms forbid
 scraping). Papers in paywalled venues with no preprint (common in HPC: SC,
 IPDPS, ISC, IEEE QCE) often come without an abstract from Crossref and are
-ingested abstract-only unless the researcher supplies the PDF
-(`ingest_paper.py add --doi … --pdf-text …`) — list them so they can. A targeted evidence sweep, not a systematic review — say
+ingested abstract-only until the researcher supplies the PDF
+(`ingest_paper.py gaps` lists them, `attach-pdf --pdf-dir` attaches the PDFs
+they saved) — list them so they can. A targeted evidence sweep, not a systematic review — say
 so when handing results on; for `linea_publicacion: true`, use the deep path
 (snowball to closure, larger `per_query`).
 

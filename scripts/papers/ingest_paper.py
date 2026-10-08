@@ -9,6 +9,14 @@
     ingest_paper.py verify  --vault <vault> [--only P-XXXX …]
     ingest_paper.py reconvert --vault <vault> [--only P-XXXX …] [--dry-run]
     ingest_paper.py zotero-key --vault <vault> --id P-XXXX --key <citekey>
+    ingest_paper.py gaps    --vault <vault> [--project PROJ-XXX]
+    ingest_paper.py attach-pdf --vault <vault> --pdf-dir <dir> [--project PROJ-XXX] [--only P-XXXX …] [--dry-run]
+
+`gaps` lists the abstract-only notes (a paywalled paper with no preprint) with
+the DOI link to open with your own access and the file names `attach-pdf`
+recognises; `attach-pdf` gives each the full text of the PDF you saved — named
+by its P-id or DOI, or any name when the PDF prints its DOI (never matched by
+title) — converted and kept like any PDF, so `verify` checks it.
 
 A paper note's source fields — the frontmatter metadata, `## Referencia`,
 `## Resumen`, `## Texto completo` — are never typed by a model. `add` fetches
@@ -951,6 +959,123 @@ def cmd_reconvert(a) -> dict:
     return {"tool": TOOL, "converter": vf.TOOL_ID, "notes": out}
 
 
+RESEARCHER_PDF = "publicada (PDF del investigador)"
+
+
+def _abstract_only(vault: Path, project: str | None) -> list[tuple[Path, list[str], str]]:
+    """(path, frontmatter, text) of every readable note with no full text (of `project`)."""
+    out = []
+    for path in paper_notes(vault):
+        if is_flagged(path):
+            continue
+        text = path.read_text(encoding="utf-8")
+        fm = (vn.split_frontmatter(text) or ([], ""))[0]
+        if (vn.fm_get(fm, "fulltext") or "") != "abstract-only":
+            continue
+        if project and not re.search(r"(?<![\w-])" + re.escape(project) + r"(?![\w-])", vn.fm_get(fm, "projects") or ""):
+            continue
+        out.append((path, fm, text))
+    return out
+
+
+def _doi_file(doi: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", doi) + ".pdf"
+
+
+def cmd_gaps(a) -> dict:
+    """The notes with no full text, and how to give each one its PDF."""
+    vault = a.vault.resolve()
+    rows = []
+    for path, fm, _ in _abstract_only(vault, a.project):
+        pid = path.name.split(" ")[0]
+        doi = retraction.normalize_doi(vn.fm_get(fm, "published_doi") or vn.fm_get(fm, "doi"))
+        rows.append({"id": pid, "title": vn.fm_get(fm, "title"), "venue": vn.fm_get(fm, "venue"),
+                     "doi": doi, "open": f"https://doi.org/{doi}" if doi else vn.fm_get(fm, "url"),
+                     "save_as": [f"{pid}.pdf"] + ([_doi_file(doi)] if doi else [])})
+    return {"tool": TOOL, "abstract_only": len(rows), "papers": rows,
+            "next": "descarga cada PDF con tu acceso (biblioteca, Zotero) a una carpeta, con uno de los nombres de "
+                    "`save_as` o cualquier nombre si el PDF lleva el DOI impreso, y ejecuta "
+                    "`ingest_paper.py attach-pdf --pdf-dir <carpeta>`"}
+
+
+def _pdf_for(pid: str, doi: str | None, pdfs: list[Path], texts: dict) -> tuple[Path | None, str]:
+    """The researcher's PDF for one note: named by its P-id or its DOI, else the one
+    PDF whose own text prints the DOI. Never a title match (it would be a guess)."""
+    for p in pdfs:
+        if p.name.lower().startswith(pid.lower()):
+            return p, "nombre (P-id)"
+    if doi:
+        for p in pdfs:
+            if p.name.lower() == _doi_file(doi).lower():
+                return p, "nombre (DOI)"
+        hits = [p for p in pdfs if doi.lower() in (texts.get(p) or "").lower()]
+        if len(hits) == 1:
+            return hits[0], "el DOI aparece en el texto del PDF"
+        if len(hits) > 1:
+            return None, "varios PDF imprimen este DOI: " + ", ".join(p.name for p in hits)
+    return None, "ningún PDF con su P-id o su DOI en el nombre ni con su DOI impreso"
+
+
+def cmd_attach_pdf(a, today: str | None = None) -> dict:
+    """Give abstract-only notes their full text from the researcher's own PDFs
+    (a paywalled SC / IPDPS / ISC / QCE paper): converted like any PDF (hidden text
+    marked, `[extracción dañada]` where extraction fails), the bytes kept in
+    `_fuentes/<P-id>/` with their sha256, so `verify` checks it like any note."""
+    vault = a.vault.resolve()
+    if not vf.pdftotext_available():
+        raise Refused("pdftotext no está instalado (poppler): no se puede convertir un PDF")
+    pdfs = sorted(p for p in a.pdf_dir.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
+    if not pdfs:
+        raise Refused(f"no hay PDF en {a.pdf_dir}")
+    texts: dict = {}
+    date = today or _dt.date.today().isoformat()
+    out = []
+    with vault_lock(vault):
+        for path, fm, text in _abstract_only(vault, a.project):
+            pid = path.name.split(" ")[0]
+            if a.only and pid not in a.only:
+                continue
+            doi = retraction.normalize_doi(vn.fm_get(fm, "published_doi") or vn.fm_get(fm, "doi"))
+            if doi and not texts:
+                texts.update({p: vf.pdf_bytes_to_text(p.read_bytes()) or "" for p in pdfs})
+            pdf, how = _pdf_for(pid, doi, pdfs, texts)
+            if pdf is None:
+                out.append({"id": pid, "status": "no_pdf", "reason": how})
+                continue
+            data = pdf.read_bytes()
+            if not data.startswith(b"%PDF"):
+                out.append({"id": pid, "status": "refused", "reason": f"{pdf.name} no es un PDF"})
+                continue
+            block = vf.build("pdf", f"local:{pdf.name}", RESEARCHER_PDF, data, date)
+            if not block:
+                out.append({"id": pid, "status": "refused", "reason": f"pdftotext no sacó texto de {pdf.name}"})
+                continue
+            row = {"id": pid, "status": "attached" if not a.dry_run else "dry_run", "pdf": pdf.name, "matched_by": how}
+            if not a.dry_run:
+                rel = vn.fm_get(fm, "fuentes")
+                mpath = vault / rel if rel else None
+                if mpath is None or not mpath.is_file():
+                    store = Store(vault, pid, date)
+                    manifest = {"tool": TOOL, "converter": vf.TOOL_ID, "files": []}
+                    mpath = store.dir / "fuentes.json"
+                else:
+                    manifest = json.loads(mpath.read_text(encoding="utf-8"))
+                mpath.parent.mkdir(parents=True, exist_ok=True)
+                (mpath.parent / "texto.pdf").write_bytes(data)
+                manifest["files"] = [f for f in manifest["files"] if f.get("role") != "fulltext"] + [
+                    {"file": "texto.pdf", "role": "fulltext", "url": f"local:{pdf.name}", "sha256": sha256(data),
+                     "bytes": len(data), "obtenido": date, "kind": "pdf", "version": RESEARCHER_PDF}]
+                manifest["converter"] = vf.TOOL_ID
+                mpath.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+                                 newline="\n")
+                new = set_suspicious(replace_section(text, "Texto completo", block.strip()), block)
+                new = vn.set_fields(new, {"fulltext": "full", "pdf": f"local: {pdf.name}",
+                                          "fuentes": mpath.relative_to(vault).as_posix()})
+                path.write_text(new, encoding="utf-8", newline="\n")
+            out.append(row)
+    return {"tool": TOOL, "attached": sum(1 for r in out if r["status"] == "attached"), "notes": out}
+
+
 def cmd_zotero_key(a) -> dict:
     vault = a.vault.resolve()
     path = find_note(vault, a.id)
@@ -998,6 +1123,15 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
     ve = sub.add_parser("verify")
     ve.add_argument("--vault", type=Path, required=True)
     ve.add_argument("--only", nargs="*")
+    gp = sub.add_parser("gaps", help="the notes with no full text, and how to give each its PDF")
+    gp.add_argument("--vault", type=Path, required=True)
+    gp.add_argument("--project")
+    at = sub.add_parser("attach-pdf", help="full text for abstract-only notes from the researcher's own PDFs")
+    at.add_argument("--vault", type=Path, required=True)
+    at.add_argument("--pdf-dir", type=Path, required=True)
+    at.add_argument("--project")
+    at.add_argument("--only", nargs="*")
+    at.add_argument("--dry-run", action="store_true")
     zk = sub.add_parser("zotero-key")
     zk.add_argument("--vault", type=Path, required=True)
     zk.add_argument("--id", required=True)
@@ -1018,6 +1152,10 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
             out = cmd_verify(a)
         elif a.cmd == "reconvert":
             out = cmd_reconvert(a)
+        elif a.cmd == "gaps":
+            out = cmd_gaps(a)
+        elif a.cmd == "attach-pdf":
+            out = cmd_attach_pdf(a, today)
         else:
             out = cmd_zotero_key(a)
     except Refused as e:

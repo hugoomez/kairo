@@ -344,6 +344,34 @@ class Beyond(Base):
         self.assertEqual((code, out["fulltext"]), (0, "abstract-only"))
         self.assertTrue(any("no se fuerza" in w for w in out["warnings"]), out["warnings"])
 
+    def test_a_paywalled_paper_gets_its_full_text_from_the_researchers_pdf(self):
+        work = {**OPENALEX, "best_oa_location": {"pdf_url": "https://example.invalid/paper.pdf"}}
+        self.add("--doi", "10.0000/toy.2031.7",
+                 fetch=self.fetch_with(work, pdf=b"<!doctype html><title>Paywall</title>"))
+        code, gaps = self.run_cli("gaps", "--vault", str(self.vault))
+        self.assertEqual((code, gaps["abstract_only"]), (0, 1), gaps)
+        self.assertEqual(gaps["papers"][0]["open"], "https://doi.org/10.0000/toy.2031.7")
+        self.assertIn("P-0001.pdf", gaps["papers"][0]["save_as"])
+        pdfs = Path(tempfile.mkdtemp(prefix="kairo-pdfs-"))
+        self.addCleanup(shutil.rmtree, pdfs, True)
+        (pdfs / "unrelated.pdf").write_bytes(b"%PDF-1.4 another")
+        orig = ip.vf.pdftotext_available
+        ip.vf.pdftotext_available = lambda: True
+        try:
+            code, out = self.run_cli("attach-pdf", "--vault", str(self.vault), "--pdf-dir", str(pdfs))
+            self.assertEqual(out["notes"][0]["status"], "no_pdf")           # never matched by title or by chance
+            (pdfs / "10.0000_toy.2031.7.pdf").write_bytes(b"%PDF-1.4 the paper")
+            code, out = self.run_cli("attach-pdf", "--vault", str(self.vault), "--pdf-dir", str(pdfs))
+        finally:
+            ip.vf.pdftotext_available = orig
+        self.assertEqual((code, out["attached"]), (0, 1), out)
+        self.assertEqual(out["notes"][0]["matched_by"], "nombre (DOI)")
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("fulltext: full", text)
+        self.assertIn("invented threshold of 1.7%", text)
+        self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
+        self.assertEqual(self.run_cli("gaps", "--vault", str(self.vault))[1]["abstract_only"], 0)
+
     def test_a_doi_with_an_arxiv_preprint_is_anchored_on_the_preprint(self):
         work = {**OPENALEX, "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.11111"}]}
         code, out = self.add("--doi", "10.0000/toy.2031.7", fetch=self.fetch_with(work))

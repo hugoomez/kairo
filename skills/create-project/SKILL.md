@@ -276,9 +276,15 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    the DOI is kept as `published_doi` — `--keep-doi-anchor` prevents it), and
    otherwise the open-access PDF OpenAlex names is fetched and converted when
    the server hands a script a real PDF (a landing page, a 403 or a bot check
-   is a no, never worked around). When neither works but the researcher has
-   the PDF, run `pdftotext -enc UTF-8 <pdf> <txt>` and ingest with
-   `--doi <doi> --pdf-text <txt> --source-url <pdf url>`. **A paper with no
+   is a no, never worked around). When neither works, the researcher's own
+   access is the way: `ingest_paper.py gaps --vault <vault> --project
+   <PROJ-XXX>` lists every abstract-only paper with its DOI link and the file
+   names to save its PDF as (`P-XXXX.pdf`, or the DOI); once they have saved
+   the PDFs in a folder, `ingest_paper.py attach-pdf --vault <vault> --pdf-dir
+   <folder>` gives each its full text (matched by P-id or DOI in the file name,
+   or the DOI printed in the PDF — never by title), converted and kept like any
+   PDF, so `verify` checks it. Offer this in the end-of-run message whenever
+   papers stayed abstract-only. **A paper with no
    DOI and no arXiv id** (many USENIX / workshop papers) is ingested from its
    OpenAlex work: `--openalex W…` (the candidate's `url` in `screened.json`
    holds it when OpenAlex found it). No open full text at all → the script

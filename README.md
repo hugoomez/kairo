@@ -91,7 +91,9 @@ plot is always marked `≈ … (leído de la Figura N, no literal)`, never passe
 off as printed, and `check_sota.py` reports how many there are
 (`plot_readings`): a scaling comparison resting on plots is approximate; a paper with no open text
 (a paywalled SC / IPDPS / ISC / IEEE QCE paper with no preprint) is ingested
-abstract-only unless you supply the PDF; equations in a PDF-only paper are
+abstract-only until you supply the PDF (`ingest_paper.py gaps` lists them with
+their DOI links; save the PDFs you get through your library and
+`ingest_paper.py attach-pdf --pdf-dir <folder>` gives each its full text); equations in a PDF-only paper are
 marked `[extracción dañada]` (arXiv HTML keeps their LaTeX); DBLP answers
 scripts with an anti-bot page and Google Scholar forbids scraping, so neither
 is queried.
