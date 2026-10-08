@@ -171,6 +171,12 @@ file = "agents/paper-reader.md"
 tier = "sonnet"
 label = "Lector de papers para la sesión principal (sin shell ni red)"
 
+[tasks.paper_carder]
+kind = "agent"
+file = "agents/paper-carder.md"
+tier = "sonnet"
+label = "Ficha de un paper (una vez por paper; citas comprobadas literales)"
+
 [tasks.screener]
 kind = "agent"
 file = "agents/screener.md"

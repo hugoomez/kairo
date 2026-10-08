@@ -62,6 +62,26 @@ class TestEstimate(unittest.TestCase):
         self.assertGreater(out["total"]["input_tokens"], st["map"]["input_tokens"])
         self.assertIn("estimación", out["note"])
 
+    def test_papers_with_a_current_card_are_not_read_again(self):
+        sys.path.insert(0, str(HERE.parent / "papers"))
+        import ficha
+        ids = [f"P-09{i:02d}" for i in range(12)]
+        for i in range(12):
+            note = self.vault / "Papers" / f"P-09{i:02d} x.md"
+            note.write_text(f"---\nid: P-09{i:02d}\nfulltext: full\n---\n\n## Texto completo\n\n" + "y" * 36000,
+                            encoding="utf-8")
+        _, before = self.cli("--vault", str(self.vault), "--papers", *ids)
+        self.assertEqual((before["stages"]["cards"]["subagents"], before["stages"]["cards"]["reused"]), (12, 0))
+        for i in range(12):
+            note = self.vault / "Papers" / f"P-09{i:02d} x.md"
+            card = ficha.card_path(self.vault, f"P-09{i:02d}")
+            card.parent.mkdir(parents=True, exist_ok=True)
+            card.write_text(f"---\nnota_sha256: {ficha.text_sha(note.read_text(encoding='utf-8'))}\n---\n" + "z" * 4000,
+                            encoding="utf-8")
+        _, after = self.cli("--vault", str(self.vault), "--papers", *ids)
+        self.assertEqual((after["stages"]["cards"]["subagents"], after["stages"]["cards"]["reused"]), (0, 12))
+        self.assertLess(after["total"]["input_tokens"], before["total"]["input_tokens"] / 2)
+
     def test_a_planned_count_without_notes_uses_a_typical_size(self):
         code, out = self.cli("--planned-papers", "20")
         self.assertEqual(code, 0, out)

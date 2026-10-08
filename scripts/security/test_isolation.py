@@ -165,6 +165,17 @@ class TestMainThreadPaperText(Base):
             self.paper.write_text(PAPER, encoding="utf-8")                  # not written by ingest_paper.py
             self.assertIn("ingest_paper", isolation.main_paper_read(read) or "")
 
+    def test_reading_cards_are_closed_to_the_main_thread_like_paper_notes(self):
+        card = self.vault / "Papers" / "_fichas" / "P-0981.md"
+        card.parent.mkdir(parents=True, exist_ok=True)
+        card.write_text("---\nficha_de: P-0981\n---\n\n> quoted paper text\n", encoding="utf-8")
+        self.assertTrue(isolation.main_paper_read(self.ev("Read", {"file_path": str(card)}, agent=None)))
+        self.assertTrue(isolation.main_paper_read(self.ev("Bash", {"command": "cat Papers/_fichas/P-0981.md"},
+                                                          agent=None)))
+        grep = {"pattern": "x", "path": str(card.parent), "output_mode": "content"}
+        self.assertTrue(isolation.main_paper_read(self.ev("Grep", grep, agent=None)))
+        self.assertIsNone(isolation.main_paper_read(self.ev("Read", {"file_path": str(card)}, agent="facet-summarizer")))
+
     def test_opt_out_env(self):
         with mock.patch.dict(os.environ, {"KAIRO_ALLOW_MAIN_PAPER_READ": "1"}):
             self.assertIsNone(isolation.main_paper_read(self.ev("Read", {"file_path": str(self.paper)})))

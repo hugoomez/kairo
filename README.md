@@ -88,8 +88,11 @@ Before a heavy pass (screening, map, verification) the skill shows an
 estimate of subagents, tokens and minutes (`scripts/estimate/estimate_run.py`)
 and, with `paper_ingestion: manual`, waits for your go-ahead. Order of
 magnitude: a `revision` project on ~40 papers is one to two hours and on the
-order of a million or two tokens, most of it the full texts the map reads;
-`ligero` is minutes, with no map.
+order of a million tokens the first time, most of it each paper read once for
+its reading card; a later map, or another project sharing those papers,
+reuses the cards and costs a third of that; `ligero` is minutes, with no map,
+and is what `create-project` picks for a literature question when no template
+is named.
 
 **What it cannot do, stated:** the quality of the model's steps (screening,
 the map) is checked per run, never measured against a gold standard here —
@@ -211,6 +214,7 @@ claude --plugin-dir /path/to/kairo
 | `corpus-reader` | `ask-corpus`'s reader: gets the question and the list of paper notes it may quote, reads them with Read / Grep / Smart Connections only — no shell, network or write tool, so text inside a paper can never make anything run or leave the machine — and returns a draft of verbatim quotes that `check_quotes.py` verifies. |
 | `screener` | `literature-search`'s screener: sees the frozen plan and one page of candidates, and returns a decision + reason for each; one per page, in parallel, isolated like `novelty-judge`. |
 | `novelty-judge` | `lit-watch`'s judge: sees one hypothesis's `## Claim` and one candidate's title + abstract, and answers whether the abstract takes the claim's novelty, with the exact sentence. |
+| `paper-carder` | Reads one paper once and returns its reading card: claims each with a verbatim quote and locator. `ficha.py write` keeps only the items whose quote is the paper's own text there (`Papers/_fichas/<P-id>.md`, `citable: false`); every later map and project reads the card instead of the full text, and a rebuilt note makes it stale. |
 | `paper-reader` | Reads paper notes for the main session (which may not): checks a locator against its sentence, finds where a claim is said, looks at a figure's image. No shell or network. |
 | `sota-synthesizer` | The Reduce pass of the state-of-the-art map: merges the facet contributions and drafts the cross-facet sections; `check_sota.py` then checks every locator and figure it wrote. |
 
@@ -237,7 +241,8 @@ does not know it.
 
 **The main session does not read papers itself.** It can run commands, and a
 paper is third-party text that may carry instructions aimed at a model. The
-hook refuses, in the main thread only, a `Read` of a `Papers/P-*.md` note, a
+hook refuses, in the main thread only, a `Read` of a `Papers/P-*.md` note (or
+its reading card in `Papers/_fichas/`), a
 content `Grep` over one, a shell reader naming `Papers/`, `cite_text.py` and
 `lit_search.py show --with-abstracts`; the `paper-reader` subagent (no shell,
 no network) reads them instead, and `scripts/papers/paper_meta.py` gives the

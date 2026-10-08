@@ -5,7 +5,9 @@
                     [--facets N] [--sections 8]
 
 The heavy passes of a Kairo project are subagents: one `screener` per page of
-candidates, one `facet-summarizer` per ≤ 6 papers, one `sota-synthesizer`, one
+candidates, one `paper-carder` per paper that has no current reading card yet
+(a card is reused by every later map and project), one `facet-summarizer` per
+≤ 6 papers (reading the cards, not the full texts), one `sota-synthesizer`, one
 `fresh-verifier` per section part — plus the network time of ingestion. This
 prints, per stage, how many subagents run, on which model (config/models.toml),
 roughly how many input / output tokens they read and write, and how long the
@@ -58,6 +60,11 @@ MAX_FIGURES = 40
 # `ligero` / --abstract-only: metadata, abstract and the reference check — no text, no figures
 ABSTRACT_ONLY_SECONDS = 12
 SUBAGENT_SECONDS = 150          # one subagent turn-set, running in parallel with its siblings
+# Reading cards (ficha.py): a paper-carder reads each paper once, the map reads the cards
+TYPICAL_CARD_CHARS = 9_000
+CARD_REREAD = 1.3               # a summarizer still opens a section now and then to place a sentence
+PROMPT_TOKENS["paper_carder"] = 2_000
+OUT_TOKENS["paper_carder"] = 3_000
 
 
 def policy_model(task: str) -> str | None:
@@ -99,9 +106,28 @@ def paper_sizes(vault: Path | None, ids: list[str], planned: int) -> list[int]:
     return sizes + [TYPICAL_NOTE_CHARS] * planned
 
 
-def downstream(sizes: list[int], already_ingested: int, sections: int) -> dict:
+def card_sizes(vault: Path | None, ids: list[str], planned: int) -> list[int | None]:
+    """Per paper (in --papers order, then the planned ones), the size of its current
+    reading card, or None when it has none yet (or a stale one)."""
+    if not vault:
+        return [None] * (len(ids) + planned)
+    sys.path.insert(0, str(ROOT / "scripts" / "papers"))
+    import ficha
+    out: list[int | None] = []
+    for pid in ids:
+        note = ficha.find_note(vault, pid)
+        card = ficha.card_path(vault, pid)
+        out.append(card.stat().st_size if note and ficha.card_state(vault, note) == "vigente" else None)
+    return out + [None] * planned
+
+
+def downstream(sizes: list[int], already_ingested: int, sections: int,
+               cards: list[int | None] | None = None) -> dict:
     n = len(sizes)
     total = sum(sizes)
+    cards = cards if cards is not None else [None] * n
+    missing = [s for s, c in zip(sizes, cards) if c is None]
+    map_chars = sum(c if c is not None else TYPICAL_CARD_CHARS for c in cards)
     summarizers = max(1, math.ceil(n / PAPERS_PER_SUMMARIZER)) if n else 0
     packet_chars = total * VERIFY_SHARE
     parts = max(sections, math.ceil(packet_chars / MAX_PACKET_CHARS)) if n else 0
@@ -114,8 +140,13 @@ def downstream(sizes: list[int], already_ingested: int, sections: int) -> dict:
                    # a figure-heavy corpus (MAX_FIGURES images a paper)
                    "wall_minutes_max": round(to_ingest * (INGEST_BASE_SECONDS + MAX_FIGURES * ARXIV_SPACING_SECONDS)
                                              / 60, 1)},
+        "cards": {"subagents": len(missing), "model": policy_model("paper_carder"),
+                  "input_tokens": tokens(sum(missing)) + len(missing) * PROMPT_TOKENS["paper_carder"],
+                  "output_tokens": len(missing) * OUT_TOKENS["paper_carder"],
+                  "reused": n - len(missing),
+                  "wall_minutes": round(math.ceil(len(missing) / 6) * SUBAGENT_SECONDS / 60, 1) if missing else 0},
         "map": {"subagents": summarizers, "model": policy_model("facet_summarizer"),
-                "input_tokens": tokens(total * REREAD) + summarizers * PROMPT_TOKENS["facet_summarizer"],
+                "input_tokens": tokens(map_chars * CARD_REREAD) + summarizers * PROMPT_TOKENS["facet_summarizer"],
                 "output_tokens": summarizers * OUT_TOKENS["facet_summarizer"],
                 "wall_minutes": round(math.ceil(summarizers / 6) * SUBAGENT_SECONDS * 2 / 60, 1)},
         "reduce": {"subagents": 1 if n else 0, "model": policy_model("sota_synthesizer"),
@@ -165,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
                             "wall_minutes": round(n * ABSTRACT_ONLY_SECONDS / 60, 1),
                             "wall_minutes_max": round(n * ABSTRACT_ONLY_SECONDS / 60, 1)}
     elif a.papers or a.planned_papers:
-        stages.update(downstream(paper_sizes(a.vault, a.papers, a.planned_papers), len(a.papers), a.sections))
+        stages.update(downstream(paper_sizes(a.vault, a.papers, a.planned_papers), len(a.papers), a.sections,
+                                 card_sizes(a.vault, a.papers, a.planned_papers)))
     total = {k: round(sum(s[k] for s in stages.values()), 1) for k in ("input_tokens", "output_tokens",
                                                                        "wall_minutes", "subagents")}
     print(json.dumps({"tool": "kairo/estimate_run@1.1.0", "stages": stages, "total": total,

@@ -106,7 +106,12 @@ Frontmatter: set `name`, `created` (today), `status: active`, `type`
 (`ciencia | producto | hibrido`), and `autonomy_defaults.*`. Leave
 `related_projects: []` — step 3 fills it. Leave `id` for step 2.
 
-**Creation template.** The brief may name a template. A template only fills
+**Creation template.** The brief may name a template. When it names none,
+pick by what the brief asks: a question about the literature ("state of the
+art on X", "compare A and B", "what exists on Y") → **`ligero`** (minutes; the
+researcher can deepen it to `corpus` / `revision` later); a goal to test or
+build → `ciencia` (or `producto` / `aplicado`). Say which you chose and why in
+one line, before step 4. A template only fills
 existing fields — never a new `type` value:
 
 | template | `type` | also set | scaffolded in step 2 |
@@ -114,7 +119,7 @@ existing fields — never a new `type` value:
 | `teorico` (paper) | `ciencia` | `paper_thread: <slug of the paper's working title>`, `default_linea_publicacion: true` | `Claims/`, `Manuscritos/` with the outline + manuscript skeleton |
 | `aplicado` (code) | `hibrido` | `code_repo`, `code_remote: none`, `code_visibility: private` | the repository link + its pre-push guard (see "Applied projects: the code repository") |
 | `producto` | `producto` | — | as today |
-| `ciencia` (default) | `ciencia` | — | as today |
+| `ciencia` (a goal to test) | `ciencia` | — | as today |
 | `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
 | `corpus` (search and ingest only) | `ciencia` | `seed_hypotheses: false`, `sota_map: false` | as today; steps 3, 7 and 8 are skipped |
 | `ligero` (search and abstract cards) | `ciencia` | `seed_hypotheses: false`, `sota_map: false`, `fulltext: false` | as today; steps 3, 7 and 8 are skipped |
@@ -410,6 +415,17 @@ records, **never typed or pasted by the model**. For each confirmed paper:
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
 
 *(Skipped for the `corpus` template: `sota_map: false`.)*
+
+**Cards first — each paper read once, ever.** `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ficha.py" status --vault <vault> --project <PROJ-XXX>`
+lists `to_card`: the papers with no reading card or a stale one (the note was
+rebuilt). Dispatch one `paper-carder` per such paper, all in the same turn (one
+at a time if the prompt says memory is low), each given its note path only.
+Save each reply unchanged to a file and run
+`ficha.py write --vault <vault> --id <P-id> --reply <file> --model <paper-carder's model, config/models.toml>`:
+it keeps only the items whose quote is the paper's own text under their
+locator (the rest are listed in the card as dropped). A card is reused by every
+later map and project that holds the paper — the estimate (`estimate_run.py`)
+shows how many are reused. Papers with `vigente` cards need nothing.
 
 **Map — `facet-summarizer` subagents, in parallel.** Read the work split from
 the notes: `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py"

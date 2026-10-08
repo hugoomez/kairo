@@ -64,6 +64,22 @@ this canonical list:
 Reduce pass's job. Instead, hand the Reduce pass raw material for them under the
 two `(para el reduce)` headings below.
 
+## The reading card first
+
+Each paper usually has a reading card, `Papers/_fichas/<P-id>.md` (same id as
+the note): items written once by `paper-carder`, each a claim with a quote
+that a script checked character for character under its locator. **Read the
+card first; it is your main input.** An item's locator is already proven to
+hold its quote, so you may cite it (`P-XXXX §3.2`) for what its quote says
+without re-reading that section. Open the note itself (below) only for what
+the card does not cover — a section your facet needs that no item touches,
+a number for a comparison, the context of a claim you are about to generalise
+— and then the re-reading rule below applies. A card is model-written: never
+cite the card, never quote its `claim` lines as the paper's words (only its
+`>` quotes are), and treat a card's «No leído por el modelo» list as a gap you
+must fill from the note or report. A paper with no card: read the note as
+below.
+
 ## Reading long notes — all of it, or say what you skipped
 
 `Read` returns at most 2000 lines per call, and a long paper's

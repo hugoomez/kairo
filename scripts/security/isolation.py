@@ -49,7 +49,7 @@ RECEIPTS = "packet-reads.jsonl"
 PAPER_NAME = re.compile(r"^P-\d{4,5}\b.*\.md$", re.I)
 _READERS = re.compile(r"(?:^|[\s;|&(`])(?:cat|type|more|less|head|tail|sed|awk|grep|egrep|fgrep|rg|findstr|"
                       r"get-content|gc|select-string|sls|bat|nl|strings|od|xxd)(?:\.exe)?\b", re.I)
-_PAPERS_PATH = re.compile(r"papers[/\\](?:p-\d|\*|[\"']?\s|[\"']?$)", re.I)
+_PAPERS_PATH = re.compile(r"papers[/\\](?:_fichas[/\\]?)?(?:p-\d|\*|[\"']?\s|[\"']?$)", re.I)
 # scripts whose output is a paper's own text (for an interface, never the main session)
 _TEXT_SCRIPTS = re.compile(r"\bcite_text\.py\b|\bpaper_refs\.py\b.*\s--text\b", re.I | re.S)
 # a search listing that prints the candidates' abstracts (third-party text) into the caller's context
@@ -249,14 +249,16 @@ def reply_matches(packet_sha: str, agent: str, obj) -> bool | None:
 
 
 def _is_paper_note(p: Path) -> bool:
-    return p.parent.name == "Papers" and bool(PAPER_NAME.match(p.name)) and p.suffix.lower() == ".md"
+    """A paper note, or a paper's reading card (`Papers/_fichas/P-*.md`: it quotes the paper)."""
+    in_papers = p.parent.name == "Papers" or (p.parent.name == "_fichas" and p.parent.parent.name == "Papers")
+    return in_papers and bool(PAPER_NAME.match(p.name)) and p.suffix.lower() == ".md"
 
 
 def _holds_papers(scope: Path) -> bool:
     if scope.is_file():
         return _is_paper_note(scope)
-    for d in (scope, scope / "Papers"):
-        if d.name == "Papers" and d.is_dir() and any(_is_paper_note(x) for x in d.glob("P-*.md")):
+    for d in (scope, scope / "Papers", scope / "_fichas", scope / "Papers" / "_fichas"):
+        if d.name in ("Papers", "_fichas") and d.is_dir() and any(_is_paper_note(x) for x in d.glob("P-*.md")):
             return True
     return False
 
