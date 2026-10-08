@@ -127,6 +127,20 @@ class CheckSota(unittest.TestCase):
     def write(self, text):
         (self.p / "Estado-del-arte.md").write_text(text, encoding="utf-8")
 
+    def test_the_reading_coverage_section_is_reported(self):
+        self.write("## X\n\n- The toy decoder reaches a threshold of 1.1% — P-0101 §3.2\n")
+        code, out = self.run_cli()
+        self.assertEqual(code, 0)                                   # a warning, never a failure
+        self.assertEqual(out["cobertura_lectura"], "ausente")
+        self.assertTrue(any("Cobertura de lectura" in w for w in out["warnings"]))
+        self.write("## X\n\n- The toy decoder reaches a threshold of 1.1% — P-0101 §3.2\n\n"
+                   "## Cobertura de lectura\n\n12 papers.\n\n- (para el reduce) no leído: P-0101 §9.9 "
+                   "(turnos, 40 de 50 páginas)\n")
+        code, out = self.run_cli()
+        self.assertEqual((code, out["problems"]), (0, []))             # its lines are not claims
+        self.assertEqual(out["cobertura_lectura"], "1 secciones no leídas declaradas")
+        self.assertNotIn("warnings", out)
+
     def test_tables_are_checked_row_by_row_and_column_by_paper(self):
         self.write("## Comparativa\n\n"
                    "| sistema | umbral | fuente |\n|---|---|---|\n"

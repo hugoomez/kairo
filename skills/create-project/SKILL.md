@@ -393,20 +393,22 @@ records, **never typed or pasted by the model**. For each confirmed paper:
 
 *(Skipped for the `corpus` template: `sota_map: false`.)*
 
-**Map — `facet-summarizer` subagents, in parallel.** Read the assignment from
+**Map — `facet-summarizer` subagents, in parallel.** Read the work split from
 the notes: `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py"
---vault <vault> --project <PROJ-XXX> --json` gives, per facet, the papers whose
-`facets:` entry (step 6) names it. **Do not re-derive facet membership.** A
+--vault <vault> --project <PROJ-XXX> --chunks` gives `chunks`: every paper
+**once** (a paper on several facets is placed on one of them — the least
+loaded — and carries the list of all its facets), at most 6 papers a chunk.
+**Do not re-derive facet membership and do not re-split.** A
 paper listed under `sin_facetas` (exit 1) has no record: do not guess one —
 leave it out of the map and list it in the end-of-run message as `importante`
 (`P-XXXX sin faceta registrada — no entra en el Estado del arte`), so the
 researcher can add the entry with `--add`. Then **dispatch one `facet-summarizer` subagent per
-facet, all launched together in the same turn** (exception: if the prompt says memory is low and subagents go **one at a time**, launch each and wait for its answer before the next), each given its facet + the
-explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
-`type` (+ the hub's `comparison_fields`, when set). **A facet with more than 6 papers is split:** one `facet-summarizer` per
-chunk of at most 6 of its papers (same facet, disjoint lists), so every paper
-is actually read within one subagent's turns; the Reduce pass merges chunks of
-a facet like any two contributions. **Never assign a `send: never` note** (check the candidate list with
+chunk, all launched together in the same turn** (exception: if the prompt says memory is low and subagents go **one at a time**, launch each and wait for its answer before the next), each given its chunk's facet, the
+facet terms of every facet its papers carry (`also_facets`), the explicit list
+of `Papers/P-XXXX ….md` note paths with each paper's facets, the project
+`type` (+ the hub's `comparison_fields`, when set). A paper is read by one
+summarizer only, which covers every facet it carries; the Reduce pass merges
+the chunks of a facet like any two contributions. **Never assign a `send: never` note** (check the candidate list with
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <paths…>`;
 exit 3 names the flagged ones): it stays in `Papers/` but contributes nothing to
 the map, and the end-of-run message lists it as `menor` (`P-XXXX omitida del
@@ -525,6 +527,14 @@ genuinely competing schools exist; include **§9 only if** `type` is
 7. Herramientas/benchmarks/datasets estándar
 8. Orden de lectura recomendado
 9. Panorama competitivo y de propiedad intelectual *(producto/hibrido only)*
+
+Then, always, **`## Cobertura de lectura`** (written by the Reduce pass): how
+many papers the map covers and every `no leído: P-XXXX §… (motivo)` line a
+summarizer returned, verbatim — or that every citable section was read.
+`check_sota.py` reports it as `cobertura_lectura` (a warning when the section
+is missing; its lines are never checked as citations). List each unread
+section in the end-of-run message as `importante`: a gap of the kind «no
+aparece en el corpus» is only as good as what was actually read.
 
 **Every claim cites a specific paper id + section/table/figure** where possible
 (e.g. `P-0007 §4.2`, `P-0012 Tabla 3`). A claim with no citable source does not

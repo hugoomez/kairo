@@ -82,6 +82,29 @@ class TestFacets(unittest.TestCase):
         self.assertEqual(rc, 1)                               # P-0904 has none
         self.assertEqual(json.loads(out)["facets"]["A"][0]["matched"], "elsewhere")
 
+    def test_chunks_read_every_paper_once_with_all_its_facets(self):
+        res = {"facets": {
+            "A": [{"id": f"P-09{i:02d}", "path": f"Papers/P-09{i:02d}.md", "matched": "a"} for i in range(10, 18)],
+            "B": [{"id": "P-0910", "path": "Papers/P-0910.md", "matched": "b"},
+                  {"id": "P-0911", "path": "Papers/P-0911.md", "matched": "b"},
+                  {"id": "P-0920", "path": "Papers/P-0920.md", "matched": "b"}]}}
+        cs = fa.chunks(res, size=3)
+        ids = [p["id"] for c in cs for p in c["papers"]]
+        self.assertEqual(sorted(ids), sorted(set(ids)))                     # each paper once
+        self.assertEqual(set(ids), {f"P-09{i:02d}" for i in range(10, 18)} | {"P-0920"})
+        self.assertTrue(all(len(c["papers"]) <= 3 for c in cs))
+        shared = next(p for c in cs for p in c["papers"] if p["id"] == "P-0910")
+        self.assertEqual(shared["facets"], ["A", "B"])                       # both facets go with it
+        # the shared papers balance the load: B (3 papers) takes some, A keeps the rest
+        homes = {p["id"]: c["facet"] for c in cs for p in c["papers"]}
+        self.assertEqual(homes["P-0910"], "A")      # tie on load 0 → letter
+        self.assertEqual(homes["P-0911"], "B")      # A already has one, B none
+        rc, out, _ = run("--vault", str(self.v), "--project", "PROJ-900", "--chunks")
+        self.assertEqual(rc, 1)
+        data = json.loads(out)
+        self.assertEqual(data["papers"], 2)                                  # P-0901 once, P-0902
+        self.assertEqual(sum(1 for c in data["chunks"] for p in c["papers"] if p["id"] == "P-0901"), 1)
+
     def test_add_entry(self):
         p = self.v / "Papers" / "P-0903 Three.md"
         self.assertEqual(run("--vault", str(self.v), "--add", "P-0903", "--project",

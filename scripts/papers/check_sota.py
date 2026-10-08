@@ -112,13 +112,23 @@ BAD_STATUS = {"mismatch": "referencia en conflicto (resolution_status: mismatch)
               "retracted": "paper retractado", "withdrawn": "paper retirado"}
 
 
+COVERAGE_HEADING = "Cobertura de lectura"
+
+
 def blocks(text: str) -> list[tuple[int, int, str]]:
     """(start, end, text) of each bullet or paragraph, frontmatter excluded."""
     m = re.match(r"^---\n.*?\n---\n", text, re.S)
     off = m.end() if m else 0
+    # `## Cobertura de lectura` names sections nobody read: its P-XXXX § lines are
+    # not claims, so they are never checked as citations
+    cov = re.search(r"(?m)^## " + re.escape(COVERAGE_HEADING) + r"\s*$", text)
+    cov_end = (cov.end() + (re.search(r"(?m)^## ", text[cov.end():]) or re.search(r"\Z", text[cov.end():])).start()
+               if cov else -1)
     out = []
     for mm in re.finditer(r"(?:^[ \t]*[-*] .*(?:\n(?![ \t]*[-*] |\s*\n|#).*)*|^(?![ \t]*[-*] |#|\|).+(?:\n(?![ \t]*[-*] |\s*\n|#).+)*)",
                           text[off:], re.M):
+        if cov and cov.start() <= off + mm.start() < cov_end:
+            continue
         out.append((off + mm.start(), off + mm.end(), mm.group(0)))
     return out
 
@@ -443,6 +453,18 @@ def check(vault: str, project: str | None, text: str) -> dict:
         check_attributed(block, per, end, report)
     check_tables(vault, project, text, report)
     report["without_locator"] = sorted(set(report["without_locator"]))
+    # what the map's summarizers said they did not read: the reader must see it
+    try:
+        cov = section_text(text, COVERAGE_HEADING)
+    except ValueError:
+        cov = ""
+    report["cobertura_lectura"] = ("ausente" if not cov.strip() else
+                                   f"{len(re.findall(r'(?m)^- .*no leído', cov))} secciones no leídas declaradas")
+    if not cov.strip():
+        # a warning, not a problem: maps written before the section existed stay valid
+        report.setdefault("warnings", []).append(
+            f"falta la sección `## {COVERAGE_HEADING}` (lo que el map no leyó): el sota-synthesizer la escribe "
+            "siempre; sin ella el lector no sabe qué secciones quedaron sin leer")
     return report
 
 
