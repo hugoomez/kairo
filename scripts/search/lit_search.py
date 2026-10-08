@@ -145,6 +145,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import functools
 import hashlib
 import json
 import math
@@ -1097,8 +1098,12 @@ def cmd_run(plan_path: Path, out: Path, vault: Path | None, fetch: Fetch, today:
     save(out / "plan.json", {**plan, "tool": TOOL, "date": today})
     save(out / "queries.json", queries)
     save(out / "candidates.json", cands)
+    hits = term_hits(cands, plan)
+    vocab = {"terminos_sin_coincidencias": [f"{fid}: {t}" for fid, ts in hits.items() for t, n in ts.items() if not n],
+             "sinonimos_sugeridos": suggest_synonyms(cands, plan)}
+    save(out / "vocabulario.json", {"term_hits": hits, **vocab})
     return {**summary(queries, cands, out), "config_warnings": config_warnings(plan), "abstracts_completados": filled,
-            "sin_abstract": sum(1 for c in cands if not ws(c.get("abstract")))}
+            "sin_abstract": sum(1 for c in cands if not ws(c.get("abstract"))), **vocab}
 
 
 def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
@@ -1145,17 +1150,117 @@ def term_in(t: str, hay_words: list[str]) -> bool:
     return f" {ts} " in f" {' '.join(hay_words)} " or _near(ts.split(), hay_words)
 
 
+@functools.lru_cache(maxsize=4096)
+def term_variants(t: str) -> tuple[str, ...]:
+    """The term as written, plus each way of writing one of its compounds as one word
+    or as two: "state vector simulation" ~ "statevector simulation", "statevector" ~
+    "state vector", "dataset" ~ "data set" (a hyphen already splits words). Both
+    parts of a split keep at least three letters."""
+    tw = norm_title(t).split()
+    out = [" ".join(tw)]
+    for i in range(len(tw) - 1):
+        out.append(" ".join(tw[:i] + [tw[i] + tw[i + 1]] + tw[i + 2:]))
+    for i, w in enumerate(tw):
+        if len(w) >= 6 and not any(ch.isdigit() for ch in w):
+            for k in range(3, len(w) - 2):
+                out.append(" ".join(tw[:i] + [w[:k], w[k:]] + tw[i + 1:]))
+    return tuple(dict.fromkeys(v for v in out if v))
+
+
+@functools.lru_cache(maxsize=16384)
+def _stems_cached(t: str) -> str:
+    return stems(t)
+
+
+def term_matches(t: str, hay_words: list[str]) -> bool:
+    """`term_in` for the term or any of its one-word / two-word variants."""
+    hay = f" {' '.join(hay_words)} "
+    for v in term_variants(t):
+        ts = _stems_cached(v)
+        if ts and (f" {ts} " in hay or _near(ts.split(), hay_words)):
+            return True
+    return False
+
+
 def facet_matches(c: dict, plan: dict, title_only: bool = False) -> dict[str, str]:
     """Per facet, the first of its terms found in the title (+ abstract): whole words,
-    as a phrase or with its words close together in any order."""
+    as a phrase, with its words close together in any order, or with a compound
+    written as one word instead of two (or the reverse)."""
     text = c.get("title", "") if title_only else c.get("title", "") + " " + (c.get("abstract") or "")
     hay = stems(text).split()
     out = {}
     for f in plan["facets"]:
         for t in terms(f):
-            if term_in(t, hay):
+            if term_matches(t, hay):
                 out[f["id"]] = t
                 break
+    return out
+
+
+# "long form (ACR)": an acronym defined in an abstract
+_DEFINED = re.compile(r"((?:[A-Za-z][\w-]*[\s-]+){0,5}[A-Za-z][\w-]*)\s*\(\s*([A-Za-z][A-Za-z0-9-]{1,11})\s*\)")
+
+
+def _initials_fit(acr: str, words: list[str]) -> list[str] | None:
+    """The shortest tail of `words` whose initials spell `acr` (case and a plural `s`
+    aside; glue words may be skipped), or None."""
+    a = re.sub(r"[^a-z]", "", acr.lower())
+    if a.endswith("s") and len(a) > 2:
+        a = a[:-1]
+    if len(a) < 2:
+        return None
+    for k in range(1, len(words) + 1):
+        tail = words[-k:]
+        if tail[0].lower() in _GLUE:
+            continue
+        parts = [p for w in tail for p in re.split(r"-", w.lower()) if p]
+        content = "".join(p[0] for p in parts if p not in _GLUE)
+        every = "".join(p[0] for p in parts)       # "Mixture of Experts" → MoE keeps the "o"
+        if a in (content, every):
+            return tail
+    return None
+
+
+def suggest_synonyms(cands: list[dict], plan: dict, limit: int = 10) -> list[dict]:
+    """Acronym ↔ expansion pairs the candidates' own abstracts define, where one side
+    is a facet term and the other is not among that facet's terms: the synonyms the
+    plan is missing, with how many abstracts define them. A suggestion for a new
+    plan — never applied to this run (the plan is frozen)."""
+    seen: dict[tuple[str, str], dict] = {}
+    for c in cands:
+        text = (c.get("title") or "") + ". " + (c.get("abstract") or "")
+        for m in _DEFINED.finditer(text):
+            words = m.group(1).split()
+            tail = _initials_fit(m.group(2), words)
+            if not tail:
+                continue
+            long_form, acr = " ".join(tail), m.group(2)
+            for f in plan["facets"]:
+                known = {norm_title(t) for t in terms(f)}
+                long_known = norm_title(long_form) in known or any(
+                    term_in(t, stems(long_form).split()) for t in terms(f))
+                acr_known = norm_title(acr) in known or norm_title(acr).rstrip("s") in known
+                if long_known == acr_known:
+                    continue                    # both listed, or neither is this facet's
+                missing = acr if long_known else long_form
+                k = (f["id"], norm_title(missing))
+                s = seen.setdefault(k, {"facet": f["id"], "suggest": missing,
+                                        "because": f"«{long_form} ({acr})»", "abstracts": 0})
+                s["abstracts"] += 1
+    return sorted(seen.values(), key=lambda s: (-s["abstracts"], s["facet"], s["suggest"]))[:limit]
+
+
+def term_hits(cands: list[dict], plan: dict) -> dict[str, dict[str, int]]:
+    """Per facet and term, how many candidates' title or abstract show it: a term
+    with no hit is a term the field does not use (or a typo)."""
+    out: dict[str, dict[str, int]] = {f["id"]: {t: 0 for t in terms(f)} for f in plan["facets"]}
+    for c in cands:
+        text = (c.get("title") or "") + " " + (c.get("abstract") or "")
+        hay = stems(text).split()
+        for f in plan["facets"]:
+            for t in terms(f):
+                if term_matches(t, hay):
+                    out[f["id"]][t] += 1
     return out
 
 

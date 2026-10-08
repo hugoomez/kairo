@@ -138,6 +138,9 @@ class Run(Base):
         web = FakeWeb()
         code, out = self.run_search(web)
         self.assertEqual(code, 0, out)
+        self.assertIn("sinonimos_sugeridos", out)
+        self.assertIn("terminos_sin_coincidencias", out)
+        self.assertTrue((self.run_dir / "vocabulario.json").is_file())
         qs = json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
         s2 = [q["query"] for q in qs if q["source"] == "s2" and q["pass"] == "relevance"]
         self.assertEqual(s2, ["toy code", "invented code", "toy decoder"])     # plain keywords, one per term

@@ -172,7 +172,16 @@ their inflections ("decoder" ↔ "decoders", "decoding"; "parallelism" ↔
 together in another order ("LLM training" ↔ "training of LLMs"), but not a
 synonym you did not list nor a paraphrase ("intra-layer model parallelism" is
 not "tensor parallelism"): put acronym ↔ expansion pairs, spelling variants
-and the field's other names for the same thing in the plan's `synonyms`. An arXiv or
+and the field's other names for the same thing in the plan's `synonyms`. A
+compound written as one word or two is the same term ("statevector" ↔ "state
+vector", "dataset" ↔ "data set"). **The run checks the vocabulary for you**
+(`vocabulario.json`, also in its output): `terminos_sin_coincidencias` lists the
+terms no candidate shows (a term the field does not use, or a typo), and
+`sinonimos_sugeridos` the acronym ↔ expansion pairs the candidates' own
+abstracts define where the plan lists only one side ("mixture of experts" for
+`MoE`), with how many abstracts define it. Show both to the researcher before
+screening; if a suggestion is a real synonym, the fix is a new plan and a new
+run (the plan is frozen), never an edit to this one. An arXiv or
 OpenAlex cross-pass hit is credited with every facet (its query required all
 of them). They are
 excluded by `screen` with reason `prefiltro`, counted on their own PRISMA
