@@ -46,6 +46,10 @@
     `truncated`: reported, and its window stays open. Semantic Scholar and
     Crossref rank keyword matches by relevance and count loose matches in
     their totals: their top results are read and they are never `truncated`.
+    Without OPENALEX_API_KEY an OpenAlex query is read the same way — its top
+    KEYLESS_OPENALEX_PER_QUERY by relevance, one call, never split (`sin_clave`
+    in the run, «por relevancia» on the page) — so a weekly watch never spends
+    the keyless daily budget on one busy query.
   - A candidate that came without an abstract gets one from OpenAlex by DOI
     (lit_search.enrich_abstracts; recorded under `abstract_lookups`).
     `SEMANTIC_SCHOLAR_API_KEY` / `OPENALEX_API_KEY` are used when set.
@@ -158,7 +162,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.10.0"
+TOOL = "kairo/lit_watch@1.11.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -178,6 +182,12 @@ OVERLAP_DAYS = 14
 OVERLAP_BY_SOURCE = {"arxiv": 14, "crossref": 14, "openalex": 60, "s2": 60, "citas": 60}
 CITES_CHUNK = 50           # roots per OpenAlex `cites:` query (its OR filter takes up to 100)
 MAX_SPLIT_DEPTH = 3        # a capped window is halved up to 3 times (at most 8 parts)
+# Without OPENALEX_API_KEY every OpenAlex list page is paid from a ~100-call daily
+# budget (lit_search.OPENALEX_KEYLESS_CALLS) that the abstract lookups and the
+# citation pass share: paging a busy query to MAX_RESULTS and splitting its window
+# spent ~70 calls on one query. Keyless, a query reads its top page by relevance in
+# one call and is reported «por relevancia», like Semantic Scholar and Crossref.
+KEYLESS_OPENALEX_PER_QUERY = PAGE
 NOVELTY_MIN_SCORE = 0.25
 NOVELTY_MIN_SHARED = 3
 # Claims are written in Spanish and abstracts in English, so the share of a
@@ -592,14 +602,19 @@ def digest_md(run: dict) -> str:
         L += [f"- Perdida (su ventana sigue abierta): {x}" for x in run.get("lost") or []]
         L += [f"- Truncada (su ventana sigue abierta): {x}" for x in run.get("truncated") or []]
         L.append("")
-    ranked = [q for q in run.get("queries") or [] if q.get("source") in ("s2", "crossref") and not q.get("error")
-              and (q.get("total") or 0) > (q.get("hits") or 0)]
+    ranked = [q for q in run.get("queries") or [] if (q.get("source") in ("s2", "crossref") or q.get("sin_clave"))
+              and not q.get("error") and (q.get("total") or 0) > (q.get("hits") or 0)]
     if ranked:
         L += ["## Cobertura por relevancia", "",
               "Semantic Scholar y Crossref ordenan por relevancia y su total cuenta coincidencias sueltas: de estas "
               "consultas se leyeron los primeros resultados de la ventana, no la ventana entera.", ""]
-        L += [f"- {q.get('id')} {q.get('source')} «{q.get('query')}»: {q.get('hits')} leídos de {q.get('total')}"
-              for q in ranked]
+        if any(q.get("sin_clave") for q in ranked):
+            L += ["OpenAlex sin `OPENALEX_API_KEY`: cada consulta lee solo sus "
+                  f"{KEYLESS_OPENALEX_PER_QUERY} resultados más relevantes de la ventana (una llamada), para no "
+                  "agotar el presupuesto diario sin clave; con la clave gratuita "
+                  "(https://openalex.org/settings/api) se lee la ventana entera.", ""]
+        L += [f"- {q.get('id')} {q.get('source')}{' (sin clave)' if q.get('sin_clave') else ''} "
+              f"«{q.get('query')}»: {q.get('hits')} leídos de {q.get('total')}" for q in ranked]
         L.append("")
     if run.get("sources_left_out"):
         L += ["## Fuentes fuera de la vigilancia", ""] + [f"- {x}" for x in run["sources_left_out"]] + [""]
@@ -751,11 +766,17 @@ def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: dat
         each half read again, so a busy week is read whole instead of by relevance."""
         p = _watch_plan(plan, start, end)
         q = next(x for x in lit_search.build_queries(p, end.isoformat()) if query_signature(x) == sig)
+        keyless = q["source"] == "openalex" and not os.environ.get("OPENALEX_API_KEY")
+        if keyless:
+            p = {**p, "per_query": KEYLESS_OPENALEX_PER_QUERY, "max_per_query": KEYLESS_OPENALEX_PER_QUERY}
         base = q["id"]
         q["id"] = base + tag                           # each part keeps its own raw files
         recs = lit_search.run_query(q, p, raw, fetch)
         part = {"id": base, "q": q, "recs": recs if not q["error"] else [], "error": q["error"],
                 "total": q["total"], "truncated": bool(q.get("truncated")), "splits": 0}
+        if keyless:
+            # its top results by relevance, never split: read like a ranked source, not truncated
+            part.update(truncated=False, keyless=True)
         if part["truncated"] and not q["error"] and depth < MAX_SPLIT_DEPTH and (end - start).days >= 1:
             mid = start + (end - start) // 2
             halves = [window(sig, start, mid, depth + 1, tag + "a"), window(sig, mid + timedelta(days=1), end,
@@ -772,7 +793,8 @@ def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: dat
         log.append({"id": part["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
                     "query": q["query"], "signature": sig, "from": starts[sig].isoformat(),
                     "hits": len(recs) if not part["error"] else None, "total": part["total"],
-                    "truncated": part["truncated"], "splits": part["splits"], "error": part["error"]})
+                    "truncated": part["truncated"], "splits": part["splits"], "error": part["error"],
+                    **({"sin_clave": True} if part.get("keyless") else {})})
         if not part["error"]:
             for r in recs:                             # a cross hit carries its own facet (or none)
                 results.append(({"facet": r.get("facet"), "source": q["source"].replace("-anchor", "")}, [{

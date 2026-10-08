@@ -19,7 +19,9 @@ offered again. It also asks OpenAlex who newly **cites** the project's own
 papers and its seed papers — the signal a researcher trusts most. An arXiv or
 OpenAlex query with more than 500 matches has its window split until each part
 is read whole; one still capped is reported `truncated` and keeps its window
-open. A lost query keeps its own window open until it answers, without holding
+open. Without `OPENALEX_API_KEY` an OpenAlex query reads only its top 100 by
+relevance (one call, never split), reported «por relevancia» on the page, so
+the keyless daily budget is not spent on one busy query. A lost query keeps its own window open until it answers, without holding
 the others back. It surfaces strong candidates (two facets, or a citation of
 the project's papers plus a facet) with one line of why, and flags papers that
 may say what a hypothesis says.

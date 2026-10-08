@@ -588,6 +588,51 @@ class TestSeniorAuditCoverage(TestLitWatch):
         data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         self.assertTrue(all(x["splits"] >= 1 for x in data["queries"]))
 
+    class DenseOpenAlex(FakeNet):
+        """An OpenAlex search with 50 matches a day in whatever window it is asked for."""
+        def __call__(self, url, headers):
+            if "api.openalex.org/works?search=" not in url:
+                return super().__call__(url, headers)
+            self.urls.append(url)
+            flt = urllib.parse.unquote(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["filter"][0])
+            a = date.fromisoformat(re.search(r"from_publication_date:([\d-]+)", flt).group(1))
+            b = date.fromisoformat(re.search(r"to_publication_date:([\d-]+)", flt).group(1))
+            page = int(re.search(r"&page=(\d+)", url).group(1))
+            total = 50 * ((b - a).days + 1)
+            n = max(0, min(100, total - (page - 1) * 100))
+            return json.dumps({"meta": {"count": total}, "results": [
+                {"id": f"https://openalex.org/W{a.toordinal()}{page:03d}{i:03d}", "title": f"Widget work {a} {page} {i}",
+                 "publication_date": a.isoformat(), "publication_year": a.year, "authorships": [], "locations": [],
+                 "abstract_inverted_index": {"Fictional": [0], "widgets.": [1]}} for i in range(n)]}).encode()
+
+    def openalex_searches(self, net) -> list[str]:
+        return [u for u in net.urls if "api.openalex.org/works?search=" in u]
+
+    def test_keyless_openalex_reads_one_page_per_query_and_says_so(self):
+        self.plan(sources=("openalex",))
+        os.environ.pop("OPENALEX_API_KEY", None)
+        net = self.DenseOpenAlex()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(len(self.openalex_searches(net)), 2)        # one call per facet query, no split
+        self.assertEqual(res["truncated"], [])
+        self.assertEqual(res["open_windows"], [])                     # read by relevance, not held open
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertTrue(all(q.get("sin_clave") and q["splits"] == 0 for q in data["queries"]))
+        page = (self.run_file(res).with_suffix(".md")).read_text(encoding="utf-8")
+        self.assertIn("OpenAlex sin `OPENALEX_API_KEY`", page)
+        self.assertIn("(sin clave)", page)
+
+    def test_with_a_key_openalex_windows_are_still_read_whole(self):
+        self.plan(sources=("openalex",))
+        os.environ["OPENALEX_API_KEY"] = "invented-key"
+        net = self.DenseOpenAlex()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertGreater(len(self.openalex_searches(net)), 2)
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertTrue(all(q["splits"] >= 1 and not q.get("sin_clave") for q in data["queries"]))
+
     def test_only_unwindowable_sources_is_refused_not_an_outage(self):
         self.plan(sources=("openreview",))
         code, res = self.delta()
