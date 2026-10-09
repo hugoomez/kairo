@@ -14,6 +14,7 @@ for the main thread, which must never read a paper's text.
 
        isolation.py store <file>                       # → {"path", "sha256"}
        isolation.py received --sha256 H [--agent X]    # exit 0 read · 3 not read
+       isolation.py prune [--older-than DAYS]          # delete packets/replies older than DAYS (90)
 
 2. The main thread never reads a paper's text.
    The session that can run commands and write files must not have third-party
@@ -55,7 +56,10 @@ for the main thread, which must never read a paper's text.
    control.
 
 The store is `$KAIRO_PACKETS_DIR`, else `<state dir>/packets` (state dir:
-`$KAIRO_STATE_DIR`, else `~/.kairo`) — outside the vault. Standard library only.
+`$KAIRO_STATE_DIR`, else `~/.kairo`) — outside the vault. Packets hold paper
+text and replies hold agents' answers, so `prune` deletes those not modified
+for 90 days (`--older-than`); the SessionEnd hook runs it at most once a day.
+Standard library only.
 """
 
 from __future__ import annotations
@@ -612,6 +616,36 @@ def main_paper_read(event: dict, vault: Path | None = None) -> str | None:
     return None
 
 
+PRUNE_DAYS = 90
+_REPLY_NAME = re.compile(r"^[0-9a-f]{64}\.txt$")
+
+
+def prune(older_than_days: float = PRUNE_DAYS) -> dict:
+    """Delete packets (`<sha>.md`) and stored replies (`<sha>.txt`) not modified for
+    `older_than_days` days. They hold paper text and agents' answers; nothing
+    younger than the threshold is ever deleted, and no other file is touched.
+    The receipt and reply logs (ids and hashes only) are kept."""
+    if not older_than_days or older_than_days <= 0:
+        raise ValueError("older_than_days must be > 0")
+    cutoff = time.time() - older_than_days * 86400
+    deleted, kept = 0, 0
+    for d, name in ((packets_dir(), PACKET_NAME), (replies_dir(), _REPLY_NAME)):
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            if not name.match(f.name) or not f.is_file():
+                continue
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    deleted += 1
+                else:
+                    kept += 1
+            except OSError:
+                kept += 1
+    return {"older_than_days": older_than_days, "deleted": deleted, "kept": kept}
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -625,7 +659,16 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("received", help="did an isolated agent read this packet?")
     r.add_argument("--sha256", required=True)
     r.add_argument("--agent")
+    pr = sub.add_parser("prune", help="delete packets and stored replies older than --older-than days")
+    pr.add_argument("--older-than", type=float, default=PRUNE_DAYS, metavar="DAYS")
     a = ap.parse_args(argv)
+    if a.cmd == "prune":
+        try:
+            print(json.dumps(prune(a.older_than), ensure_ascii=False))
+        except ValueError as e:
+            print(json.dumps({"error": str(e)}, ensure_ascii=False))
+            return 1
+        return 0
     if a.cmd == "store":
         try:
             print(json.dumps(store(a.file.read_bytes()), ensure_ascii=False))

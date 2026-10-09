@@ -22,7 +22,9 @@ Reads the hook's JSON on stdin and routes it:
                  Projects/*/Claims/     _ledger.md
   post-shell   Bitácora: log a `git commit` the shell call just made (not under
                KAIRO_PROFILE=literatura: the notebook serves the programme).
-  session-end  keep the transcript of a session that wrote research notes.
+  session-end  keep the transcript of a session that wrote research notes
+               (KAIRO_CAPTURE_TRANSCRIPTS=off: never), and once a day prune
+               packets and stored replies older than 90 days (isolation.py prune).
   subagent-stop  keep an isolated agent's final answer (screener, fresh-verifier,
                …) tied to the packet it read, so the script that records its
                verdict can check the orchestrator saved it unchanged. Works in
@@ -66,7 +68,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS / "security"))
 
-TOOL = "kairo/kairo_hook@1.3.0"
+TOOL = "kairo/kairo_hook@1.4.0"
 
 
 # --------------------------------------------------------------------------
@@ -327,7 +329,30 @@ def post_shell(payload: dict) -> int:
     return 0
 
 
+PRUNE_EVERY_S = 86400
+
+
+def prune_state() -> None:
+    """Best effort, at most once a day: delete packets and stored replies older
+    than isolation.PRUNE_DAYS. Never raises; nothing when Kairo never stored any."""
+    try:
+        import isolation
+        d = state_dir()
+        if not (isolation.packets_dir().is_dir() or isolation.replies_dir().is_dir()):
+            return
+        mark = d / "prune.last"
+        if mark.exists() and time.time() - mark.stat().st_mtime < PRUNE_EVERY_S:
+            return
+        mark.touch()
+        got = isolation.prune(isolation.PRUNE_DAYS)
+        if got["deleted"]:
+            record("SessionEnd", "prune", None, "ok", f"{got['deleted']} borrados")
+    except Exception as exc:
+        record("SessionEnd", "prune", None, "error", repr(exc))
+
+
 def session_end(payload: dict) -> int:
+    prune_state()
     vault = find_vault(payload)
     if vault is None:
         return 0
