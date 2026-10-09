@@ -26,7 +26,7 @@ OPENALEX = {"id": "https://openalex.org/W444", "doi": "https://doi.org/10.0000/s
             "primary_location": {"source": {"type": "conference", "display_name": "Invented SC 2030"}},
             "locations": [], "authorships": [{"author": {"display_name": "Jane Doe"}}]}
 
-CROSSREF = {"message": {"DOI": "10.0000/sc.444", "type": "proceedings-article", "title": ["Distributed Toy..."],
+CROSSREF = {"message": {"DOI": "10.0000/sc.444", "type": "proceedings-article", "title": ["Distributed Toy State-Vector Simulation"],
                         "container-title": ["Proceedings of the Invented SC Conference"],
                         "issued": {"date-parts": [[2030, 11]]}, "page": "1-12",
                         "relation": {"has-preprint": [{"id": "10.48550/arXiv.0000.44444", "id-type": "doi"}]}}}
@@ -164,6 +164,16 @@ class PaperCard(unittest.TestCase):
         self.assertIn("year = {2031}", bib)
         self.assertIn("doi = {10.0000/conf.9}", bib)
         self.assertIn("booktitle = {Proceedings of the Invented Systems Conf}", bib)
+
+    def test_the_published_version_is_cited_with_the_publishers_title_and_authors(self):
+        cr = {"message": {**CROSSREF["message"], "title": ["Toy <i>State-Vector</i> Simulation at Invented Scale"],
+                          "author": [{"given": "Jane", "family": "Doe"}, {"given": "Rui", "family": "Roe"}]}}
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with(crossref=cr))
+        self.assertEqual(code, 0, out)
+        bib = json.loads(out)["bibtex"]
+        self.assertIn("title = {Toy State-Vector Simulation at Invented Scale}", bib)
+        self.assertIn("author = {Doe, Jane and Roe, Rui}", bib)
+        self.assertIn("@inproceedings{doe2030distributed,", bib)        # the key from the paper's own title
 
     def test_a_venue_without_a_known_year_is_never_paired_with_the_preprint_year(self):
         work = {**OPENALEX, "doi": "https://doi.org/10.48550/arxiv.0000.44444",
