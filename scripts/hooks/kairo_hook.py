@@ -41,8 +41,14 @@ Every routed action appends one line to `~/.kairo/hook-events.jsonl`
 outcome. That is how you can see that a hook actually fired. Nothing from a
 note is written there, only paths relative to the vault.
 
-A failing action never breaks the session: everything but a send_guard
-refusal exits 0 and logs the error. Standard library only.
+A failing action never breaks the session: everything but a guard's refusal
+exits 0 and logs the error. The PreToolUse guards fail closed inside a vault:
+when send_guard or the main-thread paper check raises, or the hook input cannot
+be parsed, the tool call is refused (exit 2) with a one-line reason and the
+error goes to hook-events; outside a vault they stay a no-op. send_guard's scan
+for `send: never` notes is cached in `<state dir>/send-guard-cache/` (by each
+note's mtime and size), so a shell call in a large vault stays well inside the
+hook's 30 s. Standard library only.
 """
 
 from __future__ import annotations
@@ -58,7 +64,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS / "security"))
 
-TOOL = "kairo/kairo_hook@1.1.0"
+TOOL = "kairo/kairo_hook@1.2.0"
 
 
 # --------------------------------------------------------------------------
@@ -187,21 +193,29 @@ def pre_tool(payload: dict) -> int:
     # shell check scans the vault for flagged notes and needs one.
     if vault is None and tool in ("Bash", "PowerShell"):
         return 0
+    send_guard.CACHE_DIR = state_dir() / "send-guard-cache"
     try:
         reason = send_guard.decide(payload, vault)
-    except Exception as exc:  # fail open, loudly
+    except Exception as exc:  # inside a vault a guard that cannot decide refuses
+        if vault is None:
+            return 0
         record("PreToolUse", "send_guard", vault, "error", repr(exc))
-        print(f"send_guard: internal error ({exc!r}); allowing", file=sys.stderr)
-        return 0
+        print(f"Kairo: send_guard falló ({type(exc).__name__}); bloqueado por precaución — "
+              f"detalle en {state_dir() / 'hook-events.jsonl'}", file=sys.stderr)
+        return 2
     if reason:
         record("PreToolUse", "send_guard", vault, "blocked", tool)
         print(f"send_guard (Kairo): {reason}", file=sys.stderr)
         return 2
     try:
         reason = isolation.main_paper_read(payload, vault)
-    except Exception as exc:  # fail open, loudly (as send_guard)
-        reason = None
+    except Exception as exc:  # inside a vault: fail closed, as send_guard
+        if vault is None:
+            return 0
         record("PreToolUse", "main_paper_read", vault, "error", repr(exc))
+        print(f"Kairo: la comprobación de lectura de papers falló ({type(exc).__name__}); bloqueado por "
+              f"precaución — detalle en {state_dir() / 'hook-events.jsonl'}", file=sys.stderr)
+        return 2
     if reason:
         record("PreToolUse", "main_paper_read", vault, "blocked", tool)
         print(f"Kairo: {reason}", file=sys.stderr)
@@ -313,8 +327,18 @@ def main(argv: list[str] | None = None) -> int:
             pass
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError):
-        return 0
+        if not isinstance(payload, dict):
+            raise ValueError(f"hook input is a {type(payload).__name__}, not an object")
+    except (ValueError, UnicodeDecodeError) as exc:
+        # The guards cannot tell who asks for what: inside a vault a PreToolUse
+        # call is refused (an isolated agent's included), elsewhere nothing happens.
+        vault = find_vault({"cwd": os.getcwd()}) if argv[0] == "pre-tool" else None
+        if vault is None:
+            return 0
+        record("PreToolUse", "hook_input", vault, "error", repr(exc))
+        print("Kairo: la entrada del hook no se pudo leer; bloqueado por precaución dentro del vault.",
+              file=sys.stderr)
+        return 2
     return EVENTS[argv[0]](payload)
 
 
