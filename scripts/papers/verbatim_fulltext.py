@@ -15,7 +15,12 @@ Nothing is paraphrased or reconstructed:
     `[nota al pie: …]`; text a reader never sees (white, display:none, zero
     size or opacity — the usual carrier of a prompt injection) is kept inside
     `[texto oculto en la fuente: …]`; a cell spanning columns or rows is repeated in each
-    position it covers, so every column stays aligned with its header. Math with
+    position it covers, so every column stays aligned with its header; text
+    outside a paragraph is kept too; an algorithm, pseudo-code or code listing
+    (`ltx_listing`, `ltx_algorithm`, `ltx_algorithmic`) stays verbatim as a
+    fenced block under its caption (`[extracción dañada: algoritmo]` when it holds
+    no text); a figure drawn as inline SVG (pgfplots) gets `[figura SVG no
+    extraída]` under its caption — never read off as text. Math with
     no LaTeX, and LaTeXML error nodes, become
     `[extracción dañada]`. The abstract (already in `## Resumen`), front
     matter, navigation and bibliography are left out. A figure's image is
@@ -30,8 +35,11 @@ Nothing is paraphrased or reconstructed:
     inside `[texto oculto en la fuente: …]`; a scan's OCR layer (most of its
     text invisible) is the paper and is not marked. Headings
     numbered "3.2", "3.2.", Roman "II." with lettered "A." subsections, and
-    appendices; the text starts at the introduction and stops at
-    References / REFERENCES. A table's rows stay under its caption, verbatim
+    appendices — a number only when it follows the paper's numbering and reads
+    as a title (a "64 GPUs" table cell is not a heading), a bare appendix letter
+    only after the references; the text starts at the introduction and stops at
+    References / REFERENCES, resuming at an appendix or at supplementary
+    material whose numbering restarts («Material suplementario», S1, S1.2 …). A table's rows stay under its caption, verbatim
     in pdftotext's reading order (columns not verified). A prose line with
     garbled inline math keeps its words and gets
     `[extracción dañada: fórmulas en línea]`; a run of other symbol lines
@@ -72,10 +80,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
 import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
 
-__version__ = "1.6.0"   # 1.6.0: PDF headings follow the paper's numbering (no table cell / wrapped line as a heading), supplement after the references as «Material suplementario»; 1.5.0: PDF text no reader sees (invisible, < 1 pt, white) marked hidden; 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
+__version__ = "1.7.0"   # 1.7.0: HTML text outside paragraphs kept, algorithms / listings as fenced blocks, SVG figures marked; 1.6.0: PDF headings follow the paper's numbering (no table cell / wrapped line as a heading), supplement after the references as «Material suplementario»; 1.5.0: PDF text no reader sees (invisible, < 1 pt, white) marked hidden; 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
 VERSION = tuple(int(x) for x in __version__.split("."))
 PDF_HEADINGS_SINCE = (1, 6, 0)          # before this, legacy PDF heading rules (_pdf_heading_v15)
+HTML_BLOCKS_SINCE = (1, 7, 0)           # before this, HTML without loose text, algorithms, SVG marks
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
 UNSECTIONED_HEADING = "Texto (sin secciones numeradas en la fuente)"
@@ -283,6 +292,37 @@ def figure_images(html_text: str, page_url: str) -> list[tuple[str, str]]:
 
 
 _FIG_PREFIX = ""                       # set by html_to_body for one conversion
+_LEGACY_HTML = False                   # set by html_to_body: the rules of converter 1.6.0 and earlier
+SVG_MARK = "[figura SVG no extraída]"
+ALGO_DAMAGED = "[extracción dañada: algoritmo]"
+_LISTING = ("ltx_listing", "ltx_algorithm", "ltx_algorithmic")
+
+
+def _is_listing(n) -> bool:
+    return isinstance(n, Node) and any(n.has(k) for k in _LISTING)
+
+
+def _listing(n, out: list[str]) -> None:
+    """An algorithm / pseudo-code / code listing as a fenced block, verbatim, one
+    source line per line (its line number first); `[extracción dañada: algoritmo]`
+    when it holds no text."""
+    lines: list[str] = []
+    rows = list(_iter(n, lambda x: x.has("ltx_listingline")))
+    for r in rows:
+        tag = next((k for k in r.children if not isinstance(k, str) and k.has("ltx_tag")), None)
+        rest = "".join(text_of(k) for k in r.children if k is not tag)
+        line = norm((text_of(tag) + " " if tag is not None else "") + rest)
+        if line:
+            lines.append(line)
+    if not rows:
+        sub: list[str] = []
+        _walk(n, sub)
+        lines = [ln for b in sub for ln in b.split("\n") if ln.strip()]
+    if not lines:
+        out.append(ALGO_DAMAGED)
+        return
+    fence = "~~~~" if any("```" in ln for ln in lines) else "```"
+    out.append(fence + "\n" + "\n".join(lines) + "\n" + fence)
 
 
 def _figure(f, out: list[str]) -> None:
@@ -308,6 +348,12 @@ def _figure(f, out: list[str]) -> None:
             if fig_name(src) not in names:
                 names.append(fig_name(src))
         out += [f"![{label or 'Figure'}]({_FIG_PREFIX}{n})" for n in names]
+    if not _LEGACY_HTML:
+        # an inline SVG plot (pgfplots) is never read as text: said, under its caption
+        if not is_table and _owner_figure(f) is None and next(_iter(f, lambda x: x.tag == "svg"), None):
+            out.append(SVG_MARK)
+        for lst in _iter(f, lambda x: _is_listing(x) and not _is_listing(x.parent)):
+            _listing(lst, out)
     if is_table:
         for t in _iter(f, lambda x: x.tag == "table" and x.has("ltx_tabular")
                        and _owner_figure(x) is f):
@@ -331,15 +377,46 @@ def _equation(t, out: list[str]) -> None:
 _HEAD = {"ltx_title_section": "###", "ltx_title_appendix": "###",
          "ltx_title_subsection": "####", "ltx_title_subsubsection": "#####"}
 _SKIP = ("ltx_bibliography", "ltx_page_navbar", "ltx_abstract", "ltx_authors", "ltx_dates",
-         "ltx_page_footer", "ltx_page_header")
+         "ltx_page_footer", "ltx_page_header", "ltx_listing_data")
+_INLINE = {"span", "a", "em", "strong", "b", "i", "u", "s", "sup", "sub", "small", "code", "tt", "cite",
+           "math", "abbr", "q", "mark", "br", "img", "kbd", "var", "samp", "time"}
+_BLOCK = {"div", "p", "table", "figure", "ul", "ol", "li", "section", "h1", "h2", "h3", "h4", "h5", "h6",
+          "blockquote", "svg", "dl", "pre", "article"}
+_NOT_TEXT = ("nav", "header", "footer", "script", "style", "button", "form", "noscript", "template", "svg")
+
+
+def _inline(c) -> bool:
+    """A run of text inside a block: an inline element holding no block."""
+    return c.tag in _INLINE and not _is_listing(c) and next(
+        _iter(c, lambda x: x.tag in _BLOCK or _is_listing(x)), None) is None
 
 
 def _walk(n, out: list[str]) -> None:
+    buf: list[str] = []                     # text outside any <p>: bare strings and inline elements
+
+    def flush():
+        if norm("".join(buf)):
+            out.append(norm("".join(buf)))
+        buf.clear()
     for c in n.children:
         if isinstance(c, str):
+            if not _LEGACY_HTML:
+                buf.append(c)
             continue
         if any(c.has(k) for k in _SKIP) or c.tag in ("nav", "header", "footer", "script", "style"):
             continue
+        if c.has("ltx_tag") and c.parent is not None and c.parent.has("ltx_item"):
+            continue
+        if not _LEGACY_HTML:
+            if c.tag in _NOT_TEXT:
+                continue
+            if _inline(c):
+                buf.append(text_of(c))
+                continue
+            flush()
+            if _is_listing(c):
+                _listing(c, out)
+                continue
         if hidden(c):
             if norm(text_of(c)):
                 out.append(norm(text_of(c)))
@@ -379,32 +456,33 @@ def _walk(n, out: list[str]) -> None:
                 out.extend(body[1:])
             continue
         if c.tag == "p" or c.has("ltx_p"):
-            buf: list[str] = []
+            pbuf: list[str] = []
             for k in c.children:
                 if not isinstance(k, str) and k.tag in ("table", "figure", "ul", "ol"):
-                    if norm("".join(buf)):
-                        out.append(norm("".join(buf)))
-                    buf = []
+                    if norm("".join(pbuf)):
+                        out.append(norm("".join(pbuf)))
+                    pbuf = []
                     wrapper = Node("div", [], None)
                     wrapper.children = [k]
                     _walk(wrapper, out)
                 else:
-                    buf.append(text_of(k))
-            if norm("".join(buf)):
-                out.append(norm("".join(buf)))
-            continue
-        if c.has("ltx_tag") and c.parent is not None and c.parent.has("ltx_item"):
+                    pbuf.append(text_of(k))
+            if norm("".join(pbuf)):
+                out.append(norm("".join(pbuf)))
             continue
         _walk(c, out)
+    flush()
 
 
-def html_to_body(html_text: str, fig_prefix: str = "") -> str:
-    global _FIG_PREFIX
-    _FIG_PREFIX = fig_prefix
+def html_to_body(html_text: str, fig_prefix: str = "", legacy: bool = False) -> str:
+    """LaTeXML HTML → verbatim body. `legacy`: the rules of converter 1.6.0 and
+    earlier (text outside paragraphs, algorithms and SVG figures not kept)."""
+    global _FIG_PREFIX, _LEGACY_HTML
+    _FIG_PREFIX, _LEGACY_HTML = fig_prefix, legacy
     try:
         return _html_to_body(html_text)
     finally:
-        _FIG_PREFIX = ""
+        _FIG_PREFIX, _LEGACY_HTML = "", False
 
 
 def _html_to_body(html_text: str) -> str:
@@ -995,7 +1073,8 @@ def fuente_line(url: str, version: str, kind: str, sha: str, date: str, figures:
            }.get(kind, kind)
     rules = ("ecuaciones como su LaTeX fuente ($…$); tablas como filas «| … |» (una celda que abarca varias "
              "columnas o filas se repite en cada una); notas al pie "
-             "en línea; se omiten el abstract (en ## Resumen) y la bibliografía"
+             "en línea; algoritmos y listados de código como bloque «```» bajo su pie; "
+             f"una figura SVG se marca «{SVG_MARK}»; se omiten el abstract (en ## Resumen) y la bibliografía"
              + ("; figuras enlazadas como imagen bajo su pie (nunca convertidas a texto: lo que se lea de "
                 "una gráfica no es literal)" if figures else "")
              if kind != "pdf" else
@@ -1034,7 +1113,7 @@ def build(kind: str, url: str, version: str, data: bytes, date: str, fig_prefix:
             return None
         body = pdftext_to_body(mark_hidden(txt, pdf_hidden_runs(data)["runs"]), legacy=rules < PDF_HEADINGS_SINCE)
     else:
-        body = html_to_body(data.decode("utf-8", errors="replace"), fig_prefix)
+        body = html_to_body(data.decode("utf-8", errors="replace"), fig_prefix, legacy=rules < HTML_BLOCKS_SINCE)
     return _assemble(kind, url, version, data, body, date, figures=bool(fig_prefix) and kind != "pdf")
 
 

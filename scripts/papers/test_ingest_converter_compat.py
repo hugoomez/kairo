@@ -59,6 +59,30 @@ class OlderConverterNote(tip.Base):
         self.assertIn("### Material suplementario", text)
         self.assertEqual(self.verify()[1]["counts"], {"ok": 1})
 
+    def test_an_html_note_from_before_algorithms_were_kept_still_verifies(self):
+        import test_verbatim_html_blocks as thb
+
+        def algo_arxiv(aid, version="", pause=0):
+            return {**tip.fake_fetch_arxiv(aid, version), "bytes": thb.ALGO.encode("utf-8")}
+        tip.shutil.rmtree(self.vault / "Papers")
+        (self.vault / "Papers").mkdir()
+        code, out = self.add("--arxiv", "0000.11111", fetch_arxiv=algo_arxiv)
+        self.assertEqual(code, 0, out)
+        self.assertIn("toy job", self.note().read_text(encoding="utf-8"))
+        man = json.loads(self.manifest.read_text(encoding="utf-8"))
+        old = "kairo/verbatim_fulltext@1.6.0"
+        man["converter"] = old
+        self.manifest.write_text(json.dumps(man), encoding="utf-8")
+        f = next(x for x in man["files"] if x["role"] == "fulltext")
+        raw = (self.manifest.parent / f["file"]).read_bytes()
+        old_block = ip.convert(f, raw, "", ip.vf.rules_of(old)).replace(ip.vf.TOOL_ID, old)
+        self.assertNotIn("toy job", old_block)
+        p = self.note()
+        p.write_text(ip.replace_section(p.read_text(encoding="utf-8"), "Texto completo", old_block),
+                     encoding="utf-8", newline="\n")
+        code, out = self.verify()
+        self.assertEqual((code, out["counts"]), (0, {"ok": 1}), out)
+
     def test_rules_never_newer_than_this_converter(self):
         self.assertEqual(ip.vf.rules_of("kairo/verbatim_fulltext@1.4.2"), (1, 4, 2))
         self.assertEqual(ip.vf.rules_of("kairo/verbatim_fulltext@99.0.0"), ip.vf.VERSION)
