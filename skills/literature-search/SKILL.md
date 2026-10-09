@@ -267,7 +267,10 @@ the first):
    `next_offset` is null. Each page has an id (`page`), recorded in the run's
    `pages.json`, and a **packet**: `show` writes the page — the plan's
    description, facets and criteria verbatim, and the page's candidates with
-   whole abstracts — to Kairo's packet store and prints its `packet.path`.
+   whole abstracts, one Markdown block each (ids, venue, OpenReview decision,
+   facets, `sospechoso`; title and abstract quoted and wrapped to lines of at
+   most 200 characters, so no reader cuts one) — to Kairo's packet store and
+   prints its `packet.path`.
    Never pass `--abstract-chars` to a screening page.
 2. Dispatch one `screener` per page, **all in the same turn** (one at a time if
    the prompt says memory is low). Its prompt is the page's `packet.path` and
