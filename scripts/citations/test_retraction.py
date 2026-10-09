@@ -214,10 +214,13 @@ class TestCheckOneAndCli(unittest.TestCase):
         by = {r["id"]: r for r in out["results"]}
         self.assertTrue(by["a"]["retracted"])
         self.assertTrue(by["b"]["withdrawn"])
-        self.assertEqual(by["c"]["status"], "clear")
+        # a DOI Crossref does not know (a DataCite DOI) was not checked: never clear
+        self.assertEqual(by["c"]["status"], "unverifiable")
+        self.assertEqual(by["c"]["checks"]["crossref"]["state"], "unverifiable")
+        self.assertIn("no comprobable en Crossref", " ".join(by["c"]["evidence"]))
         self.assertEqual(by["d"]["checks"]["crossref"]["state"], "lost")
-        self.assertEqual(out["counts"]["crossref"], {"checked": 2, "removed": 1, "lost": 1})
-        self.assertEqual(out["counts"]["arxiv"], {"checked": 2, "removed": 1, "lost": 0})
+        self.assertEqual(out["counts"]["crossref"], {"checked": 1, "removed": 1, "lost": 1, "unverifiable": 1})
+        self.assertEqual(out["counts"]["arxiv"], {"checked": 2, "removed": 1, "lost": 0, "unverifiable": 0})
         self.assertNotIn("SECRET TITLE", json.dumps(out))   # extra keys never echoed
 
     def test_cli_invalid_input(self):
