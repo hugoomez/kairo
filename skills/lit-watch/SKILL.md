@@ -16,13 +16,16 @@ registration date re-read 14 days before the date the query last answered;
 OpenAlex and Semantic Scholar, which can only filter by publication date and
 index papers weeks late, re-read 60 days. Papers already offered are never
 offered again. It also asks OpenAlex who newly **cites** the project's own
-papers and its seed papers — the signal a researcher trusts most. An arXiv or
-OpenAlex query with more than 500 matches has its window split until each part
-is read whole; one still capped is reported `truncated` and keeps its window
-open. Without `OPENALEX_API_KEY` an OpenAlex query reads only its top 100 by
-relevance (one call, never split), reported «por relevancia» on the page, so
-the keyless daily budget is not spent on one busy query. A lost query keeps its own window open until it answers, without holding
-the others back. It surfaces strong candidates (two facets, or a citation of
+papers and its seed papers — the signal a researcher trusts most. Queries are
+read newest first (arXiv by submission date, OpenAlex by publication date). An
+arXiv or OpenAlex query with more than 500 matches has its window split until
+each part is read whole; one still capped is reported `truncated`: it read its
+newest papers, so the new weeks are covered, and the older part it could not
+read stays open as a gap that every later watch re-reads from its newest end.
+Without `OPENALEX_API_KEY` an OpenAlex query reads only its newest 100 (one
+call, never split), so the keyless daily budget is not spent on one busy query.
+A lost query keeps its own window open until it answers, without holding the
+others back. It surfaces strong candidates (two facets, or a citation of
 the project's papers plus a facet) with one line of why, and flags papers that
 may say what a hypothesis says.
 
@@ -58,7 +61,11 @@ may already report the hypothesis's claim.
   python <plugin>/scripts/watch/lit_watch.py init --vault <vault> --slug <slug> --plan <plan.json>
   ```
   It creates `Projects/<slug>/` with only `_hub.md` (`tipo: vigilancia`) and
-  the plan — no search, ingestion or map — and every later watch runs steps
+  the plan — no search, ingestion or map. The watch starts 30 days before
+  today (`last_watch`), or at `--since YYYY-MM-DD` if the researcher asks for a
+  longer look back: the plan's `from` is the history a search covers, not where
+  a weekly watch starts (it stays the publication-date floor). Every later
+  watch runs steps
   1–4 on it. Commit both files. `create-project` can grow it into a full
   project later.
 - **watch** (default): steps 1–4.
@@ -113,10 +120,13 @@ lost or truncated, and the counts.
   window is a new candidate only with the plan's `arxiv_revisions: true`.
 - Some queries `truncated`: an arXiv or OpenAlex query with more than 500
   matches has its window split in halves (up to three times) until each part is
-  read whole; one still capped after that is `truncated`, is **not** counted as
-  covered and keeps its window open (`open_windows`). Name them; a truncated
-  query is too broad for a weekly watch — suggest narrowing that facet in a new
-  literature-search plan. (Semantic Scholar and Crossref rank by relevance and
+  read whole; one still capped after that is `truncated`. It was read newest
+  first, so it read the newest 500 of its window: the new weeks are covered,
+  and the older part it did not read («quedan sin leer los anteriores a
+  <fecha>» on the page) stays open as a gap (`open_windows`, «Tramos aún sin
+  leer»), re-read by each later watch from its newest end. Never call that
+  older part covered. Name them; a truncated query is too broad for a weekly
+  watch — suggest narrowing that facet in a new literature-search plan. (Semantic Scholar and Crossref rank by relevance and
   are never `truncated`: their totals count loose matches.)
 - Windows differ by source, on purpose: arXiv by submission date and Crossref
   by DOI registration date re-read 14 days; OpenAlex, Semantic Scholar and the

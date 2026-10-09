@@ -49,16 +49,24 @@
     after their publication date are still caught); OpenAlex, Semantic Scholar
     and citations 60 days, because they can only filter by publication date
     and index late (OVERLAP_BY_SOURCE). `--since` sets every window exactly.
-  - Every query is paged up to MAX_RESULTS. An arXiv or OpenAlex query with
-    more matches has its window split in halves (up to MAX_SPLIT_DEPTH times,
-    plan queries only) until each part is read whole; a part still capped is
-    `truncated`: reported, and its window stays open. Semantic Scholar and
-    Crossref rank keyword matches by relevance and count loose matches in
-    their totals: their top results are read and they are never `truncated`.
-    Without OPENALEX_API_KEY an OpenAlex query is read the same way — its top
-    KEYLESS_OPENALEX_PER_QUERY by relevance, one call, never split (`sin_clave`
-    in the run, «por relevancia» on the page) — so a weekly watch never spends
-    the keyless daily budget on one busy query.
+  - Every query is paged up to MAX_RESULTS, newest first (`order: date`:
+    arXiv by submission date, OpenAlex by publication date), so a capped window
+    always holds the newest papers. An arXiv or OpenAlex query with more
+    matches has its window split in halves (up to MAX_SPLIT_DEPTH times, plan
+    queries only) until each part is read whole; a part still capped is
+    `truncated`: it read its newest papers, so the query is covered up to
+    today (new weeks are never missed), and the older part it did not read is
+    its gap (`huecos` in `cursores.json`, `gap` in the run) — said on the page
+    («leídos los N más recientes; quedan sin leer los anteriores a <fecha>»),
+    kept in `open_windows`, and re-read newest first by every later watch until
+    it is read whole. Semantic Scholar (it cannot sort by date) and Crossref
+    (its keyword search matches any word, so it keeps its relevance order) rank
+    by relevance and count loose matches in their totals: their top results are
+    read and they are never `truncated`. Without OPENALEX_API_KEY an OpenAlex
+    query reads its newest KEYLESS_OPENALEX_PER_QUERY in one call, never split
+    and never held open (`sin_clave` in the run, listed with the
+    relevance-ranked ones on the page), so a weekly watch never spends the
+    keyless daily budget on one busy query.
   - A candidate that came without an abstract gets one from OpenAlex by DOI
     (lit_search.enrich_abstracts; recorded under `abstract_lookups`).
     `SEMANTIC_SCHOLAR_API_KEY` / `OPENALEX_API_KEY` are used when set.
@@ -101,10 +109,11 @@
   - Title and abstract are third-party text: a candidate whose text reads like
     an instruction to a model carries `sospechoso` (the patterns found).
   - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json`, moves the cursor
-    of every query read whole and the hub's `last_watch:`. A lost query, or one
-    still truncated after splitting, keeps its cursor: its own window stays open
-    (`open_windows`) — never counted as covered — without holding the other
-    queries back; papers already offered are dropped,
+    of every query that answered and the hub's `last_watch:`. A lost query (or
+    a capped citation query, which cannot be read newest first) keeps its
+    cursor: its own window stays open (`open_windows`) — never counted as
+    covered — without holding the other queries back; papers already offered
+    are dropped,
     never repeated. The page is written before the run file, so a candidate is
     never in a run without being on a page. If every query failed, no run is
     written and nothing moves: the run exits 4 and leaves a short page,
@@ -787,10 +796,14 @@ def digest_md(run: dict) -> str:
               f"`_vigilancia/{PLAN_FOLLOWED}`), no `{run['plan_newer']}`, que es posterior — quizá una búsqueda "
               "puntual. Para vigilar con ese plan, adóptalo explícitamente: `lit_watch.py delta … --adopt-plan "
               f"{Path(run['plan_newer']).parent.as_posix()}`.", ""]
-    if run.get("lost") or run.get("truncated"):
+    if run.get("lost") or run.get("truncated") or run.get("huecos"):
         L += ["## ⚠️ Cobertura degradada", ""]
         L += [f"- Perdida (su ventana sigue abierta): {x}" for x in run.get("lost") or []]
-        L += [f"- Truncada (su ventana sigue abierta): {x}" for x in run.get("truncated") or []]
+        L += [f"- Truncada: {x}" for x in run.get("truncated") or []]
+        if run.get("huecos"):
+            L += ["- Tramos aún sin leer (cada vigilancia relee lo más reciente de cada uno; las semanas nuevas "
+                  "sí quedan cubiertas):"]
+            L += [f"  - {x}" for x in run["huecos"]]
         L.append("")
     ranked = [q for q in run.get("queries") or [] if (q.get("source") in ("s2", "crossref") or q.get("sin_clave"))
               and not q.get("error") and (q.get("total") or 0) > (q.get("hits") or 0)]
@@ -798,9 +811,10 @@ def digest_md(run: dict) -> str:
         L += ["## Cobertura por relevancia", "",
               "Semantic Scholar y Crossref ordenan por relevancia y su total cuenta coincidencias sueltas: de estas "
               "consultas se leyeron los primeros resultados de la ventana, no la ventana entera.", ""]
+        # (OpenAlex sin clave lee sus resultados más recientes: va aquí porque tampoco se lee entera)
         if any(q.get("sin_clave") for q in ranked):
             L += ["OpenAlex sin `OPENALEX_API_KEY`: cada consulta lee solo sus "
-                  f"{KEYLESS_OPENALEX_PER_QUERY} resultados más relevantes de la ventana (una llamada), para no "
+                  f"{KEYLESS_OPENALEX_PER_QUERY} resultados más recientes de la ventana (una llamada), para no "
                   "agotar el presupuesto diario sin clave; con la clave gratuita "
                   "(https://openalex.org/settings/api) se lee la ventana entera.", ""]
         L += [f"- {q.get('id')} {q.get('source')}{' (sin clave)' if q.get('sin_clave') else ''} "
@@ -986,11 +1000,50 @@ def load_cursors(pdir: Path) -> dict[str, str]:
     return dict(data.get("queries") or {})
 
 
-def save_cursors(pdir: Path, cursors: dict[str, str]) -> None:
+def load_gaps(pdir: Path) -> dict[str, list[str]]:
+    """Per query: the older part of a capped window it has not read yet
+    (`huecos` in `_vigilancia/cursores.json`, [from, to] inclusive)."""
+    f = pdir / "_vigilancia" / CURSORS
+    if not f.is_file():
+        return {}
+    data = load_state(f)
+    gaps = data.get("huecos") or {} if isinstance(data, dict) else None
+    if not isinstance(gaps, dict) or not all(isinstance(v, list) and len(v) == 2 for v in gaps.values()):
+        raise Refused(f"_vigilancia/{CURSORS}: `huecos` no tiene la forma esperada ({{firma: [desde, hasta]}}) — "
+                      "restáuralo (git) o arréglalo a mano")
+    return {k: list(v) for k, v in gaps.items()}
+
+
+def save_cursors(pdir: Path, cursors: dict[str, str], gaps: dict[str, list[str]] | None = None) -> None:
     f = pdir / "_vigilancia" / CURSORS
     f.parent.mkdir(exist_ok=True)
-    atomic_write(f, json.dumps({"tool": TOOL, "queries": dict(sorted(cursors.items()))}, ensure_ascii=False,
-                               indent=2) + "\n")
+    data = {"tool": TOOL, "queries": dict(sorted(cursors.items()))}
+    if gaps:
+        data["huecos"] = dict(sorted(gaps.items()))
+    atomic_write(f, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def oldest_date(recs: list[dict]) -> str | None:
+    """The oldest full date (YYYY-MM-DD) among records read newest first."""
+    ds = [(r.get("date") or "")[:10] for r in recs]
+    ds = [d for d in ds if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
+    return min(ds) if ds else None
+
+
+def leaf_gap(start: date, end: date, recs: list[dict]) -> list[str]:
+    """What a capped window read newest first left unread: from its start to the
+    oldest date it read (that day included — it may have been read in part)."""
+    old = oldest_date(recs)
+    hi = min(max(date.fromisoformat(old), start), end) if old else end
+    return [start.isoformat(), hi.isoformat()]
+
+
+def merge_gap(a: list[str] | None, b: list[str] | None) -> list[str] | None:
+    """One envelope for two unread spans of a query: re-reading a little more is
+    harmless (papers already offered are dropped), leaving a day out is not."""
+    if not a or not b:
+        return a or b
+    return [min(a[0], b[0]), max(a[1], b[1])]
 
 
 def query_signature(q: dict) -> str:
@@ -1017,10 +1070,20 @@ NOT_WINDOWABLE = {"openreview": "su búsqueda no filtra ni ordena por fecha: una
 
 
 def _watch_plan(plan: dict, start: date, today: date) -> dict:
+    """The plan as a watch runs it: its window, no anchors, and pages newest first
+    (`order: date`) so a capped window always holds the newest papers. The plan's
+    own `from` is the search's history, not the watch's: it stays the
+    publication-date floor (`pub_floor`)."""
     srcs = [x for x in plan.get("sources") or [] if x not in NOT_WINDOWABLE]
     return {**plan, "sources": srcs, "from": start.isoformat(), "to": today.isoformat(), "anchors": 0,
             "per_query": MAX_RESULTS, "max_per_query": MAX_RESULTS, "window_by": "indexed",
-            "pub_floor": plan.get("from")}
+            "pub_floor": plan.get("from"), "order": "date"}
+
+
+# Crossref's keyword search matches any word of the query: sorted by date its
+# first pages would be this week's loose matches. It keeps its relevance order (a
+# ranked source, its top results read; never `truncated`).
+RELEVANCE_IN_A_WATCH = {"crossref"}
 
 
 def structured_signatures(plan: dict, today: date) -> list[str]:
@@ -1029,9 +1092,13 @@ def structured_signatures(plan: dict, today: date) -> list[str]:
 
 
 def structured_delta(plan: dict, raw: Path, starts: dict[str, date], today: date,
-                     fetch: Fetch) -> tuple[list, list[dict], set[str]]:
+                     fetch: Fetch, gaps: dict[str, list[str]] | None = None) -> tuple[list, list[dict], set[str]]:
     """Re-run a lit_search plan with lit_search's own query builders and pager
-    (raw responses kept next to the run), each query over its own window."""
+    (raw responses kept next to the run), each query over its own window, newest
+    first. A window still capped after splitting has read its newest papers: the
+    older part it did not read is its `gap`, re-read (unsplit, newest first) by
+    every later watch until it is read whole (`gaps`: sig → [from, to])."""
+    gaps = gaps or {}
     import lit_search
     raw.mkdir(parents=True, exist_ok=True)
     results, log = [], []
@@ -1044,13 +1111,16 @@ def structured_delta(plan: dict, raw: Path, starts: dict[str, date], today: date
         keyless = q["source"] == "openalex" and not os.environ.get("OPENALEX_API_KEY")
         if keyless:
             p = {**p, "per_query": KEYLESS_OPENALEX_PER_QUERY, "max_per_query": KEYLESS_OPENALEX_PER_QUERY}
+        if q["source"] in RELEVANCE_IN_A_WATCH:
+            p = {**p, "order": "relevance"}
         base = q["id"]
         q["id"] = base + tag                           # each part keeps its own raw files
         recs = lit_search.run_query(q, p, raw, fetch)
         part = {"id": base, "q": q, "recs": recs if not q["error"] else [], "error": q["error"],
-                "total": q["total"], "truncated": bool(q.get("truncated")), "splits": 0}
+                "total": q["total"], "truncated": bool(q.get("truncated")), "splits": 0, "gap": None}
         if keyless:
-            # its top results by relevance, never split: read like a ranked source, not truncated
+            # its newest KEYLESS_OPENALEX_PER_QUERY, never split and never held open: the
+            # keyless daily budget is not spent re-reading one busy query (said on the page)
             part.update(truncated=False, keyless=True)
         if part["truncated"] and not q["error"] and depth < MAX_SPLIT_DEPTH and (end - start).days >= 1:
             mid = start + (end - start) // 2
@@ -1060,17 +1130,33 @@ def structured_delta(plan: dict, raw: Path, starts: dict[str, date], today: date
             part["error"] = next((h["error"] for h in halves if h["error"]), None)
             part["truncated"] = any(h["truncated"] for h in halves)
             part["splits"] = 1 + sum(h["splits"] for h in halves)
+            part["gap"] = merge_gap(halves[0]["gap"], halves[1]["gap"])
+        elif part["truncated"] and not q["error"]:
+            part["gap"] = leaf_gap(start, end, part["recs"])
         return part
+
+    def entry(part: dict, sig: str, start: date, **extra) -> dict:
+        q = part["q"]
+        return {"id": part["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
+                "query": q["query"], "signature": sig, "from": start.isoformat(),
+                "hits": len({r.get("arxiv") or r.get("doi") or r.get("title") for r in part["recs"]})
+                if not part["error"] else None, "total": part["total"],
+                "truncated": part["truncated"], "splits": part["splits"], "error": part["error"],
+                "gap": part["gap"], **({"sin_clave": True} if part.get("keyless") else {}), **extra}
 
     for sig in structured_signatures(plan, today):
         part = window(sig, starts[sig], today, 0, "")
-        q, recs = part["q"], part["recs"]
-        log.append({"id": part["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
-                    "query": q["query"], "signature": sig, "from": starts[sig].isoformat(),
-                    "hits": len(recs) if not part["error"] else None, "total": part["total"],
-                    "truncated": part["truncated"], "splits": part["splits"], "error": part["error"],
-                    **({"sin_clave": True} if part.get("keyless") else {})})
-        if not part["error"]:
+        log.append(entry(part, sig, starts[sig]))
+        parts = [part]
+        if sig in gaps:
+            lo, hi = (date.fromisoformat(x) for x in gaps[sig])
+            gpart = window(sig, lo, hi, MAX_SPLIT_DEPTH, "-h")        # its newest first, never split
+            log.append(entry(gpart, sig, lo, relectura_hueco=gaps[sig]))
+            parts.append(gpart)
+        for part in parts:
+            q, recs = part["q"], part["recs"]
+            if part["error"]:
+                continue
             for r in recs:                             # a cross hit carries its own facet (or none)
                 results.append(({"facet": r.get("facet"), "source": q["source"].replace("-anchor", "")}, [{
                     "arxiv": r.get("arxiv"), "doi": r.get("doi"), "s2": r.get("s2"), "title": r["title"],
@@ -1388,6 +1474,57 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     return {**res, "stale_lock_removed": stale}
 
 
+def advance(log: list[dict], cursors: dict[str, str], gaps: dict[str, list[str]], since: date, today: date,
+            explicit: bool) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Each query's cursor and unread gap after this run.
+
+    A query that answered is covered up to today — also one still capped after
+    splitting, when it was read newest first: it read the newest papers of its
+    window, so every new week is covered, and the older part it could not read
+    becomes its gap (merged with any earlier one), re-read by each later watch
+    from its newest end until it is read whole. A gap re-read that answered in
+    full closes the gap; still capped, the gap shrinks to what is left; lost, it
+    stays. A lost query keeps its own start, so its window stays open without
+    holding the others back; a capped one with no date order (the citation pass)
+    likewise. With --since, a cursor moves only when the run reached back to it."""
+    cursors, gaps = dict(cursors), {k: list(v) for k, v in gaps.items()}
+    for x in log:                                      # the gap re-reads first, then this run's windows
+        if not x.get("relectura_hueco") or x.get("error"):
+            continue
+        if x.get("gap"):
+            gaps[x["signature"]] = x["gap"]
+        else:
+            gaps.pop(x["signature"], None)
+    for x in log:
+        if x.get("relectura_hueco"):
+            continue
+        for sig in x.get("signatures") or [x["signature"]]:
+            start = date.fromisoformat(x["from"])
+            prev = cursors.get(sig)
+            if x.get("error") or (x.get("truncated") and not x.get("gap")):
+                if not prev:
+                    cursors[sig] = since.isoformat()
+                continue
+            if x.get("gap"):
+                gaps[sig] = merge_gap(gaps.get(sig), x["gap"])
+            if not explicit or not prev or start <= date.fromisoformat(prev):
+                cursors[sig] = today.isoformat()
+    return cursors, gaps
+
+
+def truncated_line(x: dict) -> str:
+    who = f"{x.get('id', x['facet'])} {x['source']}"
+    if x.get("gap"):
+        return (f"{who}: leídos los {x.get('hits')} más recientes; quedan sin leer los anteriores a {x['gap'][1]} "
+                f"(desde {x['gap'][0]}; {x.get('total')} en la ventana), que se releen en las próximas vigilancias")
+    return f"{who}: {x.get('hits')} de {x.get('total')} (su ventana sigue abierta)"
+
+
+def _sig_label(sig: str, log: list[dict]) -> str:
+    x = next((x for x in log if x.get("signature") == sig), None)
+    return f"{x.get('id', x.get('facet'))} {x['source']} (faceta {x.get('facet')})" if x else sig
+
+
 def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
            citations: bool, own: bool, adopt: str | None = None) -> dict:
     out = run_path(pdir, today)                        # this run's name, and its own raw folder
@@ -1402,6 +1539,7 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
         lw = (hub_field(pdir, "last_watch") or "").strip()
         since = date.fromisoformat(lw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lw) else today - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     cursors = load_cursors(pdir)
+    gaps = load_gaps(pdir)
     seen_before, backlog = earlier_keys(pdir)          # a corrupt run stops the watch before any request
     sigs = structured_signatures(plan, today) if plan else [query_signature(q) for q in queries]
     if not sigs:
@@ -1417,22 +1555,30 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
     by_title: dict[str, str] = {}
     log = []
     if plan:
-        results, log, facets_all = structured_delta(plan, raw_dir, starts, today, fetch)
+        results, log, facets_all = structured_delta(plan, raw_dir, starts, today, fetch, gaps)
     else:
         facets_all = {q["facet"] for q in queries}
         results = []
         for q in queries:
             sig = query_signature(q)
-            entry = {**q, "signature": sig, "from": starts[sig].isoformat(),
-                     "hits": None, "error": None, "total": None, "truncated": False}
-            try:
-                got = arxiv_delta(q["query"], starts[sig], today, fetch, entry) if q["source"] == "arxiv" \
-                    else s2_delta(q["query"], starts[sig], fetch, entry)
-                entry["hits"] = len(got)
-                results.append((q, got))
-            except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
-                entry["error"] = net.redact(str(exc))[:200]
-            log.append(entry)
+            windows = [(starts[sig], today, {})]
+            if q["source"] == "arxiv" and sig in gaps:   # the older part a capped window left unread
+                windows.append((date.fromisoformat(gaps[sig][0]), date.fromisoformat(gaps[sig][1]),
+                                {"relectura_hueco": gaps[sig]}))
+            for lo, hi, extra in windows:
+                entry = {**q, "signature": sig, "from": lo.isoformat(), "hits": None, "error": None,
+                         "total": None, "truncated": False, "gap": None, **extra}
+                try:
+                    # arXiv is read newest first (submittedDate, descending)
+                    got = arxiv_delta(q["query"], lo, hi, fetch, entry) if q["source"] == "arxiv" \
+                        else s2_delta(q["query"], lo, fetch, entry)
+                    entry["hits"] = len(got)
+                    if entry["truncated"]:
+                        entry["gap"] = leaf_gap(lo, hi, got)
+                    results.append((q, got))
+                except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
+                    entry["error"] = net.redact(str(exc))[:200]
+                log.append(entry)
     if roots:
         cit_results, cit_log = citation_delta(roots, starts, today, raw_dir, fetch)
         results += cit_results
@@ -1564,8 +1710,10 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
         except Exception as exc:  # noqa: BLE001 — an extra check never costs the watch itself
             own_news = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [],
                         "perdidas": [f"comprobación de tus papers: {net.redact(str(exc))[:160]}"]}
-    truncated = [x for x in log if x.get("truncated")]
+    # a gap re-read still capped is not news: what is left of it is in `huecos`
+    truncated = [x for x in log if x.get("truncated") and not x.get("relectura_hueco")]
     lost = [x for x in log if x.get("error")]
+    new_cursors, new_gaps = advance(log, cursors, gaps, since, today, explicit)
     # citations always go through OpenAlex
     warnings = lit_search.config_warnings(
         {"sources": sorted(set((plan or {}).get("sources") or [q["source"] for q in queries])
@@ -1573,9 +1721,9 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
     run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(),
            "queried_from": query_from.isoformat(), "until": today.isoformat(),
            "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)", "plan_newer": newer_plan,
-           "degraded": bool(lost) or bool(truncated), "lost_all": lost_all,
-           "truncated": [f"{x.get('id', x['facet'])} {x['source']}: {x.get('hits')} de {x.get('total')}"
-                         for x in truncated],
+           "degraded": bool(lost) or bool(truncated) or bool(new_gaps), "lost_all": lost_all,
+           "truncated": [truncated_line(x) for x in truncated],
+           "huecos": [f"{_sig_label(sig, log)}: {lo} – {hi}" for sig, (lo, hi) in sorted(new_gaps.items())],
            "lost": [f"{x.get('id', x['facet'])} {x['source']}: {x['error']}" for x in lost],
            "sources_left_out": [f"{x}: {NOT_WINDOWABLE[x]}" for x in (plan or {}).get("sources") or []
                                 if x in NOT_WINDOWABLE],
@@ -1594,23 +1742,7 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
         digest = write_digest(out, run)
         save_run(out, run)
         written = out
-        # Coverage is kept per query. One that answered — in full, or capped at
-        # MAX_RESULTS by relevance (reported as truncated, never hidden) — is covered
-        # up to today; a lost one keeps its own start, so its window stays open
-        # without holding every other query back. With --since, a cursor moves only
-        # when the run reached back to it (no gap is skipped).
-        for x in log:
-            for sig in x.get("signatures") or [x["signature"]]:
-                start = date.fromisoformat(x["from"])
-                prev = cursors.get(sig)
-                if x.get("error") or x.get("truncated"):
-                    # lost, or still capped after splitting: not covered — its window stays open
-                    if not prev:
-                        cursors[sig] = since.isoformat()
-                    continue
-                if not explicit or not prev or start <= date.fromisoformat(prev):
-                    cursors[sig] = today.isoformat()
-        save_cursors(pdir, cursors)
+        save_cursors(pdir, new_cursors, new_gaps)
         if asked is not None:
             atomic_write(pdir / "_vigilancia" / "openreview.json",
                          json.dumps(asked, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
@@ -1622,7 +1754,8 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
            "queried_from": run["queried_from"], "until": run["until"],
            "queries": len(log), "lost": len(lost), "lost_all": lost_all,
            "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
-           "open_windows": sorted({x["from"] for x in lost + truncated}),
+           "open_windows": sorted({x["from"] for x in lost + truncated if not x.get("gap")}
+                                  | {g[0] for g in new_gaps.values()}),
            "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
            "to_triage": sum(c["triage"] for c in cands),
            "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),
@@ -1797,10 +1930,15 @@ def cmd_check(a) -> dict:
 
 # --------------------------------------------------------------------------
 
-def cmd_init(vault: Path, slug: str, plan_path: Path, today: date) -> dict:
+def cmd_init(vault: Path, slug: str, plan_path: Path, today: date, since: date | None = None) -> dict:
     """A watch-only project: `_hub.md` (tipo: vigilancia) and the plan as its first
     `_busquedas/<date>/plan.json` — no search, ingestion or map. `delta` then runs
-    on it like on any project; create-project can grow it into a full one."""
+    on it like on any project; create-project can grow it into a full one.
+
+    The watch starts DEFAULT_LOOKBACK_DAYS before today, or at `since` when the
+    researcher gives one: the plan's `from` is the search's history (it stays the
+    publication-date floor), not where a weekly watch starts — a first window from
+    years back is capped and would miss this week's papers."""
     import lit_search
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
         raise Refused("--slug: lowercase letters, digits and hyphens")
@@ -1814,7 +1952,7 @@ def cmd_init(vault: Path, slug: str, plan_path: Path, today: date) -> dict:
     nums = [int(m.group(1)) for h in vault.glob("Projects/*/_hub.md")
             if (m := re.search(r"(?m)^id:\s*PROJ-(\d+)", h.read_text(encoding="utf-8", errors="replace")))]
     pid = f"PROJ-{(max(nums) + 1 if nums else 1):03d}"
-    start = plan.get("from") or (today - timedelta(days=DEFAULT_LOOKBACK_DAYS)).isoformat()
+    start = (since or today - timedelta(days=DEFAULT_LOOKBACK_DAYS)).isoformat()
     run = pdir / "_busquedas" / today.isoformat()
     run.mkdir(parents=True)
     (run / "plan.json").write_text(json.dumps({**plan, "tool": lit_search.TOOL, "date": today.isoformat()},
@@ -1836,6 +1974,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--vault", required=True, type=Path)
     p.add_argument("--slug", required=True)
     p.add_argument("--plan", required=True, type=Path)
+    p.add_argument("--since", default=None, help="where the watch starts (default: 30 days before today)")
     p = sub.add_parser("delta")
     p.add_argument("--vault", required=True, type=Path)
     p.add_argument("--project-dir", required=True, type=Path)
@@ -1883,7 +2022,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
         sys.stdout.reconfigure(encoding="utf-8")
     try:
         if a.cmd == "init":
-            out = cmd_init(a.vault.resolve(), a.slug, a.plan, today or date.today())
+            out = cmd_init(a.vault.resolve(), a.slug, a.plan, today or date.today(),
+                           date.fromisoformat(a.since) if a.since else None)
         elif a.cmd == "delta":
             since = date.fromisoformat(a.since) if a.since else None
             out = delta(a.vault.resolve(), a.project_dir.resolve(), since, a.top, fetch, today or date.today(),

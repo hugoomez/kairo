@@ -476,12 +476,14 @@ class TestQueriesAndCoverage(TestLitWatch):
         self.assertEqual(code, 0, res)
         self.assertEqual(sum(1 for u in net.urls if "arxiv" in u and "search_query" in u), 5)  # 5 pages = MAX_RESULTS
         self.assertTrue(res["truncated"])
-        # capped at MAX_RESULTS: reported as truncated and never counted as covered —
-        # the arXiv query keeps its window open; the query read whole moves on
+        # capped at MAX_RESULTS, read newest first: the new weeks are covered (the cursor
+        # moves to today) and the older part it did not read stays open as its gap
         self.assertTrue(res["last_watch_moved"])
         cursors = lit_watch.load_cursors(self.p)
-        self.assertEqual(next(v for k, v in cursors.items() if k.startswith("arxiv|")), "2031-02-01")
-        self.assertIn("2031-03-01", cursors.values())
+        sig = next(k for k in cursors if k.startswith("arxiv|"))
+        self.assertEqual(cursors[sig], "2031-03-01")
+        self.assertEqual(lit_watch.load_gaps(self.p)[sig], ["2031-01-18", "2031-02-10"])
+        self.assertIn("2031-01-18", res["open_windows"])
 
     def test_a_structured_plan_is_preferred_and_run_over_the_window(self):
         run = self.p / "_busquedas" / "2031-01-15"
@@ -570,7 +572,8 @@ class TestSeniorAuditCoverage(TestLitWatch):
         self.assertTrue(res["truncated"])
         cursors = lit_watch.load_cursors(self.p)
         arxiv_sig = next(s for s in cursors if s.startswith("arxiv|"))
-        self.assertEqual(cursors[arxiv_sig], "2031-02-01")         # where it was: not covered up to today
+        self.assertEqual(cursors[arxiv_sig], "2031-03-01")         # its newest papers read: new weeks covered
+        self.assertIn(arxiv_sig, lit_watch.load_gaps(self.p))      # the older part it left is kept open
         self.assertTrue(res["open_windows"])
 
     def test_a_capped_window_is_split_until_each_part_is_read_whole(self):
@@ -700,7 +703,8 @@ class TestTopicWatch(unittest.TestCase):
         pdir = self.vault / "Projects" / "widgets-watch"
         hub = (pdir / "_hub.md").read_text(encoding="utf-8")
         self.assertIn("tipo: vigilancia", hub)
-        self.assertIn("last_watch: 2031-02-01", hub)
+        # the watch starts a lookback before today, not at the plan's `from` (its history)
+        self.assertIn("last_watch: 2031-01-30", hub)
         self.assertIn("id: PROJ-001", hub)
         self.assertTrue((pdir / "_busquedas" / "2031-03-01" / "plan.json").is_file())
         code, res = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(pdir))
