@@ -43,15 +43,14 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "citations"))
 sys.path.insert(0, str(HERE.parent / "security"))
 import check_quotes as cq  # noqa: E402
+import check_sota  # noqa: E402
 import vaultnotes as vn  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 
-TOOL = "kairo/ficha@1.0.0"
+TOOL = "kairo/ficha@1.1.0"
 DIR = "_fichas"
 KINDS = ("problema", "método", "setup", "resultado", "limitación", "definición", "benchmark")
 MIN_QUOTE_WORDS = 6
-_NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?")
-_PLOT = re.compile(r"≈[^()]*\(leído de la Figura")
 
 
 def paper_notes(vault: Path) -> list[Path]:
@@ -131,11 +130,18 @@ def check_item(vault: Path, pid: str, it: dict) -> str | None:
     got = cq.check_quote(str(vault), {"paper": pid, "locator": loc, "quote": quote, "error": None}, None)
     if not got["ok"]:
         return got["reason"]
-    if not _PLOT.search(claim):
-        missing = [n for n in _NUM.findall(claim) if n.replace(",", ".") not in quote.replace(",", ".")]
-        if missing:
-            return "cifras de la afirmación que no están en la cita: " + ", ".join(missing)
+    missing = missing_figures(claim, quote)
+    if missing:
+        return "cifras de la afirmación que no están en la cita: " + ", ".join(missing)
     return None
+
+
+def missing_figures(claim: str, quote: str) -> list[str]:
+    """The claim's figures its quote does not hold — check_sota's own matching (a
+    whole number, never a digit run inside another; a power of ten as one value).
+    Every figure counts here, small ones and years too; only a value marked as read
+    off a plot (`≈… (leído de la Figura N, no literal)`) is exempt, and only it."""
+    return [n for n in check_sota.numbers(claim, every=True) if not check_sota.number_in(n, [quote])]
 
 
 def render(pid: str, note_name: str, sha: str, model: str, kept: list[dict], dropped: list[dict],

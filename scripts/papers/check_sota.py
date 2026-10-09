@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanically check a project's Estado-del-arte.md (or any synthesis note)
+r"""Mechanically check a project's Estado-del-arte.md (or any synthesis note)
 before it is committed: every citation and every number in a cited sentence.
 
     check_sota.py --vault <vault> --project-dir Projects/<slug> [--file Estado-del-arte.md] [--write]
@@ -58,6 +58,16 @@ A figure with a unit glued to it (`530B`, `80GB`, `1.2k`) is checked whatever
 its size, against the same figure and unit (or its spelled-out word) in the
 cited text; a Spanish decimal comma (`1,1%`) is the same number as `1.1%`.
 
+A power of ten is one value whatever its notation (`$10^{-6}$`, `2.5\times
+10^{-3}`, `2.5×10⁻³`, `1e-6`, `\num{2.5e-3}`) and is compared as a value — the
+exponent counts, the mantissa is never checked alone. Code parameters
+(`[[144,12,12]]`, `\llbracket n,k,d \rrbracket`) are one tuple that must
+appear as a tuple. A bare figure in a table column whose header says `(%)` is a
+percentage (in the map and in the cited text). A count with a unit (`2048
+GPUs`) is a figure, never a year. `2.5(3)` is 2.5; `0.7\,\%` is 0.7%. A small
+integer bound to a parameter (`TP=8`, `d = 7`, `distance 9`) must appear bound
+to the same parameter.
+
 With `--write`, each failing citation / number is marked in place with a
 visible «⚠ …» after it; nothing is removed. Prints a JSON report.
 Exit codes: 0 clean · 3 problems found · 1 error · 2 bad input.
@@ -90,15 +100,17 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.5.0"
+TOOL = "kairo/check_sota@1.6.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
 # A unit glued to a figure ("530B", "80GB", "7B", "1.2k", "312 TFLOPS") is a result
 # whatever its size: model sizes, memory and throughput live in these.
 UNIT = r"(?:[kKMBT]|[KMGTP]i?B|[KMGTPE]FLOP[sS]?)"
+# LaTeX spacing between a figure and its percent sign: "0.7\,\%", "0.7~\%"
+_TEX_SP = r"(?:\s|\\[,;:! ]|~)*"
 NUMBER = re.compile(r"(?<![\w.§-])[-−]?\d[\d,.]*"
-                    r"(?:\s*%|\s*×\s*10\^?[-−]?\d+|e[-−]?\d+|\s*[×x](?![\w\d])|\s?" + UNIT + r"(?![\w]))?(?![\w])")
+                    r"(?:" + _TEX_SP + r"\\?%|e[-−]?\d+|\s*[×x](?![\w\d])|\s?" + UNIT + r"(?![\w]))?(?![\w])")
 MULT = re.compile(r"\s*[×x]$")
 SUFFIX = re.compile(r"\s?(" + UNIT + r")$")
 UNIT_WORDS = {"k": "thousand|mil", "m": "million|millones", "b": "billion|mil millones", "t": "trillion|billones"}
@@ -107,6 +119,31 @@ HEADER_PAPER = re.compile(r"^\[{0,2}(P-\d{4,5})\]{0,2}$")
 PLOT = re.compile(r"≈\s*[-−]?\d[^()\n]{0,40}?\(\s*le[ií]do de la Figura\s*(\d+)[^)]*\)", re.I)
 COUNT_UNITS = r"(?:GPU|TPU|node|qubit|layer|stage|expert|core|device|bit|head|round|replica|accelerator|socket)"
 COUNT = re.compile(r"(?<![\w.,])([1-9])\s+((?:[A-Za-z-]+\s+)?" + COUNT_UNITS + r"s?)\b", re.I)
+# a count token of any size ("8 GPUs", "2048 GPUs"): the figure with its unit
+COUNT_TOK = re.compile(r"(\d[\d,]*)\s+((?:[A-Za-z-]+\s+)?" + COUNT_UNITS + r"s?)", re.I)
+_UNIT_AFTER = re.compile(r"^\s+((?:[A-Za-z-]+\s+)?" + COUNT_UNITS + r"s?)\b", re.I)
+# A power of ten, however it is written: $10^{-6}$, 2.5\times 10^{-3}, 2.5 \cdot 10^{-3},
+# 2.5×10⁻³, 1e-6 (and \num{2.5e-3} once its wrapper is dropped). One value; the exponent counts.
+POW = re.compile(
+    r"(?<![\w.,])(?:(\d+(?:[.,]\d+)?)" + _TEX_SP + r"(?:\\times|\\cdot|×|·|\*|x)" + _TEX_SP + r")?"
+    r"(?<![\d.])10(?:\s*\^\s*\{?\s*([-−–+]?)\s*(\d+)\s*\}?|([⁻⁺]?)([⁰¹²³⁴⁵⁶⁷⁸⁹]+))"
+    r"|(?<![\w.,])(\d+(?:[.,]\d+)?)[eE]([-−+]?\d+)(?![\w])")
+_SUPERSCRIPT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+_TEX_NUM = re.compile(r"\\(?:num|SI)\{([^{}]*)\}")
+# Code parameters [[n,k,d]] / [n,k,d] (any spacing, LaTeX \llbracket … \rrbracket): one tuple
+CODE = re.compile(r"(?:\[\[|\\llbracket|⟦)\s*(\d+(?:\s*,\s*\d+){1,3})\s*(?:\]\]|\\rrbracket|⟧)"
+                  r"|(?<!\[)\[\s*(\d+(?:\s*,\s*\d+){2})\s*\](?!\])")
+CODE_TOK = re.compile(r"(\[\[?)(\d+(?:,\d+)+)\]\]?")
+# A small integer bound to a parameter ("TP=8", "d = 7", "distance 9") is a figure
+PARAM_WORDS = r"(?:distance|distancia|depth|profundidad|degree|grado|rank|rango)"
+PARAM = re.compile(r"(?<![\w\\])([A-Za-z][A-Za-z_]{0,11})\s*=\s*\$?\s*([0-9])(?![\d]|[.,]\d)"
+                   r"|\b(" + PARAM_WORDS + r")\s+(?:of\s+|de\s+)?\$?([0-9])(?![\d]|[.,]\d)", re.I)
+PARAM_TOK = re.compile(r"([A-Za-z][A-Za-z_]{0,11}) = ([0-9])|(" + PARAM_WORDS + r") ([0-9])", re.I)
+PARAM_ALIAS = {"d": ["distance", "distancia"], "distance": ["d", "distancia"], "distancia": ["d", "distance"],
+               "depth": ["profundidad"], "profundidad": ["depth"], "degree": ["grado"], "grado": ["degree"],
+               "rank": ["rango"], "rango": ["rank"]}
+# "2.5(3)": the uncertainty in parentheses is not a second figure
+_UNCERTAINTY = re.compile(r"(?<=\d[.,]\d)(\d*)(\(\d{1,3}\))")
 FIG_CITE = re.compile(r"\b(?:Figura|Figure|Fig\.?)\s*(\d+)", re.I)
 BAD_STATUS = {"mismatch": "referencia en conflicto (resolution_status: mismatch)",
               "retracted": "paper retractado", "withdrawn": "paper retirado"}
@@ -143,72 +180,158 @@ def cited_figures(sentence: str) -> set[str]:
     return {f for m in CITE.finditer(sentence) for f in FIG_CITE.findall(m.group(2))}
 
 
-def numbers(sentence: str) -> list[str]:
-    """Numbers worth checking in a sentence, with citations, ids and dates removed."""
-    s = PLOT.sub(" ", sentence)
-    s = CITE.sub(" ", s)
-    s = re.sub(r"\b(?:H|E|C|PROJ|ADR|F)-\d+\b", " ", s)
-    s = re.sub(r"\d{4}-\d{2}-\d{2}", " ", s)
-    s = re.sub(r"§\s*[\w.]+", " ", s)
-    # a label is not a figure: "Figura 12", "Table 3", "Eq. (4)" (e.g. «en figura: Figura 12»)
-    s = re.sub(r"\b(?:Tablas?|Tables?|Figuras?|Figures?|Figs?\.?|Ec\.?|Eqs?\.?|Ecuaci[oó]n|Equation|"
-               r"Ap[eé]ndice|Appendix|Secci[oó]n|Section|Sec\.)\s*\(?[A-Z]?\d+(?:\.\d+)*\)?", " ", s)
-    out = []
+def _blank(rx: re.Pattern, s: str) -> str:
+    """`s` with every match of `rx` blanked out, offsets unchanged."""
+    return rx.sub(lambda m: " " * len(m.group(0)), s)
+
+
+def _unwrap_num(s: str) -> str:
+    r"""`\num{2.5e-3}` → `     2.5e-3 `: the wrapper blanked, offsets unchanged."""
+    return _TEX_NUM.sub(lambda m: " " * (m.start(1) - m.start()) + m.group(1) + " " * (m.end() - m.end(1)), s)
+
+
+def _pow_parts(m: re.Match) -> tuple[str, int] | None:
+    """(mantissa as written, exponent) of a POW match."""
+    if m.group(6):
+        mant, sign, digits = m.group(6), "", m.group(7)
+    elif m.group(3):
+        mant, sign, digits = m.group(1) or "1", m.group(2), m.group(3)
+    else:
+        mant, sign, digits = m.group(1) or "1", m.group(4), m.group(5).translate(_SUPERSCRIPT)
+    digits = digits.replace("−", "-").replace("+", "")
+    sign = "-" if sign in ("-", "−", "–", "⁻") or digits.startswith("-") else ""
+    try:
+        return mant.replace(",", "."), int(sign + digits.lstrip("-"))
+    except ValueError:
+        return None
+
+
+_LABEL_NUM = re.compile(r"\b(?:Tablas?|Tables?|Figuras?|Figures?|Figs?\.?|Ec\.?|Eqs?\.?|Ecuaci[oó]n|Equation|"
+                        r"Ap[eé]ndice|Appendix|Secci[oó]n|Section|Sec\.)\s*\(?[A-Z]?\d+(?:\.\d+)*\)?")
+
+
+def numbers_at(sentence: str, every: bool = False) -> list[tuple[str, int]]:
+    """Each figure worth checking in a sentence with its offset, citations, ids,
+    dates and labels removed. `every`: small integers and years are figures too
+    (a reading card's claim against its own quote)."""
+    s = PLOT.sub(lambda m: " " * len(m.group(0)), _unwrap_num(sentence))
+    for rx in (CITE, re.compile(r"\b(?:H|E|C|PROJ|ADR|F)-\d+\b"), re.compile(r"\d{4}-\d{2}-\d{2}"),
+               re.compile(r"§\s*[\w.]+"), _LABEL_NUM):
+        s = _blank(rx, s)          # a label is not a figure: "Figura 12", "Table 3", "Eq. (4)"
+    out: list[tuple[str, int]] = []
+    for m in POW.finditer(s):
+        parts = _pow_parts(m)
+        if parts:
+            out.append((f"{parts[0]}e{parts[1]}", m.start()))
+    s = _blank(POW, s)
+    for m in CODE.finditer(s):
+        body = re.sub(r"\s+", "", m.group(1) or m.group(2))
+        out.append((f"[[{body}]]" if m.group(1) else f"[{body}]", m.start()))
+    s = _blank(CODE, s)
+    if not every:
+        for m in PARAM.finditer(s):
+            out.append((f"{m.group(1)} = {m.group(2)}" if m.group(1) else f"{m.group(3)} {m.group(4)}", m.start()))
+        s = _blank(PARAM, s)
     for m in COUNT.finditer(s):
-        out.append(f"{m.group(1)} {m.group(2)}")      # "8 GPUs": a small count with its unit is a result
-    s = COUNT.sub(" ", s)
+        out.append((f"{m.group(1)} {m.group(2)}", m.start()))  # "8 GPUs": a small count with its unit is a result
+    s = _blank(COUNT, s)
+    s = _UNCERTAINTY.sub(lambda m: m.group(1) + " " * len(m.group(2)), s)
     for m in NUMBER.finditer(s):
         tok = m.group(0).strip().rstrip(".,")
         digits = re.sub(r"[^\d.]", "", re.split(r"[×x]", tok)[0]).strip(".")
         if not digits:
             continue
         if MULT.search(tok) or SUFFIX.search(tok):
-            out.append(tok)                   # a multiplier or a sized figure is a result whatever its size
+            out.append((tok, m.start()))      # a multiplier or a sized figure is a result whatever its size
             continue
         is_int = "." not in digits and "%" not in tok and "×" not in tok and "e" not in tok.lower()
-        if is_int and (int(digits.replace(".", "") or 0) < 10 or re.fullmatch(r"(?:19|20)\d{2}", digits)):
+        if is_int and re.fullmatch(r"\d+", tok) and (u := _UNIT_AFTER.match(s[m.end():])):
+            out.append((f"{tok} {u.group(1)}", m.start()))   # "2048 GPUs": a count, never a year
+            continue
+        if not every and is_int and (int(digits.replace(".", "") or 0) < 10
+                                     or re.fullmatch(r"(?:19|20)\d{2}", digits)):
             continue                      # small counts and years are not results
-        out.append(tok)
-    return out
+        out.append((tok, m.start()))
+    return sorted(out, key=lambda x: x[1])
+
+
+def numbers(sentence: str, every: bool = False) -> list[str]:
+    """Numbers worth checking in a sentence, with citations, ids and dates removed."""
+    return [t for t, _ in numbers_at(sentence, every)]
 
 
 def _canon(tok: str) -> str:
-    t = tok.replace("−", "-").replace(" ", "")
+    t = tok.replace("−", "-").replace("\\%", "%").replace("~", "")
+    t = re.sub(r"\\[,;:! ]", "", t).replace(" ", "")
     t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)     # thousands separators
     t = re.sub(r"(?<=\d),(?=\d)", ".", t)          # a Spanish decimal comma: 1,1 = 1.1
     return t.rstrip("%")
 
 
 _SCI_TOK = re.compile(r"^(\d+(?:\.\d+)?)(?:e|×10\^?)([-−]?\d+)$", re.IGNORECASE)
-# how a paper writes 1e-7 or 2.5e-3: $10^{-7}$, 2.5\times 10^{-3}, 2.5 × 10^-3, 2.5e-3
-_SCI_TEXT = re.compile(r"(?:(\d+(?:\.\d+)?)\s*(?:\\times|\\cdot|×|·)\s*)?10\s*\^\s*\{?\s*([-−–]?\d+)\s*\}?"
-                       r"|(\d+(?:\.\d+)?)[eE]([-−]?\d+)")
 
 
 def _sci_values(text: str) -> list[float]:
+    """Every power of ten in `text` as a value, however the paper writes it."""
     out = []
-    for m in _SCI_TEXT.finditer(text):
-        mant, exp = (m.group(1), m.group(2)) if m.group(2) else (m.group(3), m.group(4))
+    for m in POW.finditer(_unwrap_num(text)):
+        parts = _pow_parts(m)
+        if not parts:
+            continue
         try:
-            out.append(float(mant or 1) * 10 ** int(exp.replace("−", "-").replace("–", "-")))
-        except (TypeError, ValueError, OverflowError):
+            out.append(float(parts[0]) * 10 ** parts[1])
+        except (ValueError, OverflowError):
             continue
     return out
 
 
+def _plain_values(text: str) -> list[float]:
+    t = re.sub(r"(?<=\d)[,  ](?=\d{3}(?!\d))", "", text)
+    out = []
+    for m in re.finditer(r"(?<![\w.])\d+(?:\.\d+)?(?![\w]|\.\d)", t):
+        try:
+            out.append(float(m.group(0)))
+        except ValueError:
+            continue
+    return out
+
+
+def _tuple_in(tok: str, texts: list[str]) -> bool:
+    want = CODE_TOK.fullmatch(tok).group(2).split(",")
+    for t in texts:
+        for m in CODE.finditer(t):
+            if re.sub(r"\s+", "", m.group(1) or m.group(2)).split(",") == want:
+                return True
+    return False
+
+
+def _param_in(pm: re.Match, texts: list[str]) -> bool:
+    name, val = (pm.group(1), pm.group(2)) if pm.group(1) else (pm.group(3), pm.group(4))
+    names = [name] + PARAM_ALIAS.get(name.lower(), [])
+    alts = "|".join(re.escape(n) if len(n) == 1 else f"(?i:{re.escape(n)})" for n in names)
+    rx = re.compile(rf"(?<![\w\\])(?:{alts})\s*(?:=|:|of\b|de\b)?\s*\$?\s*{val}(?![\d]|[.,]\d)")
+    return any(rx.search(t) for t in texts)
+
+
 def number_in(tok: str, texts: list[str]) -> bool:
-    cm = COUNT.fullmatch(tok)
+    cm = COUNT_TOK.fullmatch(tok)
     if cm:
         words = cm.group(2).split()
         unit = re.sub(r"s$", "", words[-1], flags=re.I)
-        rx = re.compile(rf"(?<![\w.,]){cm.group(1)}\s*-?\s*(?:[A-Za-z-]+\s+)?{re.escape(unit)}s?\b", re.I)
-        return any(rx.search(t) for t in texts)
+        n = cm.group(1).replace(",", "")
+        rx = re.compile(rf"(?<![\w.,]){n}\s*-?\s*(?:[A-Za-z-]+\s+)?{re.escape(unit)}s?\b", re.I)
+        return any(rx.search(re.sub(r"(?<=\d)[,  ](?=\d{3}(?!\d))", "", t)) for t in texts)
+    if CODE_TOK.fullmatch(tok):
+        return _tuple_in(tok, texts)       # [[144,12,12]]: the tuple, never its parts
+    pm = PARAM_TOK.fullmatch(tok)
+    if pm:
+        return _param_in(pm, texts)        # "d = 7": the value bound to the same parameter
     sci = _SCI_TOK.match(_canon(tok))
     if sci:
-        # one value, however it is written: the sentence's 1e-7 is the paper's $10^{-7}$
+        # one value, however it is written: the sentence's 1e-7 is the paper's $10^{-7}$;
+        # never its mantissa or its 10 alone
         v = float(sci.group(1)) * 10 ** int(sci.group(2).replace("−", "-"))
-        if any(abs(x - v) <= 1e-9 * abs(v) for t in texts for x in _sci_values(t)):
-            return True
+        return any(abs(x - v) <= 1e-9 * abs(v) for t in texts for x in _sci_values(t) + _plain_values(t))
     want = _canon(tok)
     unit = SUFFIX.search(tok) if not MULT.search(tok) else None
     if unit:
@@ -236,7 +359,25 @@ _LABEL_BEFORE = re.compile(
     r"steps?|lines?|refs?)\.?|§)\s*\(?\s*$", re.IGNORECASE)
 _REF_BEFORE = re.compile(r"\[[\d,\s–-]*$")         # "[12]", "[3, 12, 15]": reference numbers
 _REF_AFTER = re.compile(r"^[\d,\s–-]*\]")
-_PCT_AFTER = re.compile(r"^\s*(?:\\?%|per\s?cent\b|por\s+ciento\b)", re.IGNORECASE)
+_PCT_AFTER = re.compile(r"^(?:\(\d{1,3}\))?" + _TEX_SP + r"(?:\\?%|per\s?cent\b|por\s+ciento\b)", re.IGNORECASE)
+
+
+def _pct_column(t: str, pos: int) -> bool:
+    """Whether `pos` sits in a Markdown table cell whose column header says `%`
+    ("accuracy (%)", "[%]"): that cell's 52.1 is 52.1%."""
+    ls = t.rfind("\n", 0, pos) + 1
+    le = t.find("\n", pos)
+    line = t[ls:le if le >= 0 else len(t)]
+    if not line.lstrip().startswith("|"):
+        return False
+    col = line[:pos - ls].count("|")
+    header = line
+    for prev in reversed(t[:ls].split("\n")[:-1]):
+        if not prev.lstrip().startswith("|"):
+            break
+        header = prev
+    cells = header.split("|")
+    return header is not line and col < len(cells) and "%" in cells[col]
 
 
 def _figure_in(core: str, pct: bool, text: str) -> bool:
@@ -248,7 +389,7 @@ def _figure_in(core: str, pct: bool, text: str) -> bool:
         before, after = t[max(0, m.start() - 30):m.start()], t[m.end():m.end() + 20]
         if _LABEL_BEFORE.search(before) or (_REF_BEFORE.search(before) and _REF_AFTER.match(after)):
             continue
-        if pct and not _PCT_AFTER.match(after):
+        if pct and not _PCT_AFTER.match(after) and not _pct_column(t, m.start()):
             continue
         return True
     return False
@@ -356,7 +497,8 @@ def check_attributed(block: str, per: list, offset: int, report: dict) -> None:
         if not sm.group(0).strip():
             continue
         mine = [x for x in per if sm.start() <= x[0].start() < sm.end()]
-        for tok, pos in _numbers_at(masked[sm.start():sm.end()], sm.start()):
+        for tok, rel in numbers_at(masked[sm.start():sm.end()]):
+            pos = sm.start() + rel
             # its sentence's next citation, else that sentence's last one, else the
             # paragraph's next citation (one that closes the bullet), else the last before
             owner = next((x for x in mine if x[0].start() >= pos), None) \
@@ -373,21 +515,21 @@ def check_attributed(block: str, per: list, offset: int, report: dict) -> None:
                                        "number": tok, "reason": why})
 
 
-def _numbers_at(text: str, base: int) -> list[tuple[str, int]]:
-    """`numbers(text)` with each figure's offset (base + its position in `text`)."""
-    wanted = numbers(text)
-    out, used = [], 0
-    for tok in wanted:
-        i = text.find(tok, used)
-        if i < 0:
-            i = text.find(tok)
-        out.append((tok, base + max(i, 0)))
-        used = max(i, 0) + len(tok)
+def row_numbers(t: dict) -> list[str]:
+    """A table row's figures, cell by cell: a bare figure under a header that says
+    `%` ("acc. (%)", "[%]") is a percentage, as the reader reads it."""
+    out = []
+    for i, cell in enumerate(t["cells"]):
+        head = t["header"][i] if i < len(t["header"]) else ""
+        for tok in numbers(cell):
+            plain = re.fullmatch(r"[-−]?\d[\d,.]*", tok) is not None
+            out.append(tok + "%" if "%" in head and plain else tok)
     return out
 
 
-def check_numbers(block: str, units: list[str], citation: str, offset: int, report: dict) -> None:
-    for tok in numbers(block):
+def check_numbers(block: str, units: list[str], citation: str, offset: int, report: dict,
+                  tokens: list[str] | None = None) -> None:
+    for tok in (numbers(block) if tokens is None else tokens):
         report["numbers_checked"] += 1
         if not number_in(tok, units):
             report["problems"].append({"citation": citation, "offset": offset, "severity": "importante",
@@ -399,7 +541,8 @@ def check_tables(vault: str, project: str | None, text: str, report: dict) -> No
         cols = {i: m.group(1) for i, h in enumerate(t["header"]) if (m := HEADER_PAPER.match(h))}
         if CITE.search(t["row"]):
             cites, units = cited_units(vault, project, t["row"], t["start"], report)
-            check_numbers(t["row"], units, ", ".join(c.group(0).strip() for c in cites), t["end"], report)
+            check_numbers(t["row"], units, ", ".join(c.group(0).strip() for c in cites), t["end"], report,
+                          row_numbers(t))
             report["table_rows_checked"] += 1
             continue
         if not cols:
