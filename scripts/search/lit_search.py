@@ -525,6 +525,24 @@ OR_UNPUBLISHED = re.compile(r"submitted to|withdrawn|reject|desk|blind submissio
 OR_IMPORTED = ("dblp.org/", "OpenReview.net/Public_Article")     # records with a year, not a date
 
 
+def openreview_status(c: dict) -> str | None:
+    """The OpenReview decision of a paper that was NOT published there (Rejected,
+    Withdrawn, Submitted to …, under review), to show beside it; None for an
+    accepted paper (its venue says it) or a record imported from DBLP / CoRR."""
+    v = ws(c.get("openreview_venue"))
+    return v if v and OR_UNPUBLISHED.search(v) and not re.match(r"corr\b", v, re.I) else None
+
+
+# Venues that are preprint servers, never a publication (Semantic Scholar's
+# "arXiv.org" / "ArXiv", an SSRN or Research Square record…)
+PREPRINT_VENUE = re.compile(r"^\s*(arxiv|biorxiv|medrxiv|chemrxiv|techrxiv|psyarxiv|engrxiv|socarxiv|ssrn|"
+                            r"research square|preprints(\.org)?\b|osf preprints|authorea|zenodo)", re.I)
+
+
+def is_preprint_venue(v: str | None) -> bool:
+    return bool(v and PREPRINT_VENUE.match(v))
+
+
 def _iso_day(ms: int) -> str:
     return _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc).date().isoformat()
 
@@ -964,6 +982,9 @@ def dedup(records: list[dict]) -> list[dict]:
              "sources": sorted({r["source"] for r in rs}, key=lambda s: order.get(s, 9)),
              "queries": sorted({r["query"] for r in rs}), "anchor": any(r.get("anchor") for r in rs),
              "best_rank": min(r["rank"] for r in rs)}
+        orv = next((r["openreview_venue"] for r in rs if r.get("openreview_venue")), None)
+        if orv:
+            c["openreview_venue"] = orv          # its OpenReview decision (a rejected paper has no venue)
         if len(dois) > 1 or len(arx) > 1:
             c["other_ids"] = {"doi": dois[1:], "arxiv": arx[1:]}
         if len(dois) > 1:
@@ -1017,6 +1038,8 @@ def join_retitled(cands: list[dict]) -> list[dict]:
         a["citations"] = max([x for x in (a.get("citations"), best.get("citations")) if x is not None], default=None)
         a["anchor"] = bool(a.get("anchor") or best.get("anchor"))
         a["best_rank"] = min(a["best_rank"], best["best_rank"])
+        if best.get("openreview_venue") and not a.get("openreview_venue"):
+            a["openreview_venue"] = best["openreview_venue"]
         a["merged_by"] = (f"título aproximado ({score:.2f}) + primer autor: «{best.get('title')}» "
                           f"({best['doi']}) es la versión publicada de este preprint")
     return [c for c in cands if id(c) not in gone]
@@ -1528,7 +1551,7 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                         "doi": c["doi"], "arxiv": c["arxiv"], "venue": (c["venues"] or [None])[0],
                         "abstract": c["abstract"], "citations": c["citations"], "url": c["url"],
                         "query": c["queries"][0], "facet": fid, "source": c["sources"][0], "anchor": c["anchor"],
-                        "rank": c["best_rank"], "matched": t})
+                        "rank": c["best_rank"], "matched": t, "openreview_venue": c.get("openreview_venue")})
     merged = dedup(old + new_records)
     prev = {c["key"]: c for c in cands}
     owner = _prev_owner(cands)
@@ -1640,6 +1663,9 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
             "not_checked_prefiltered_out": sum(1 for c in cands if "retraction" not in c)}
 
 
+CONCERN_WORDS = re.compile(r"preocupaci[oó]n|concern", re.I)
+
+
 def validate(cands: list[dict], decisions: dict, plan: dict) -> list[str]:
     errs = []
     keys = {c["key"] for c in cands}
@@ -1667,6 +1693,9 @@ def validate(cands: list[dict], decisions: dict, plan: dict) -> list[str]:
             elif c["retraction"].get("lost"):
                 errs.append(f"{k}: its retraction check was lost ({', '.join(c['retraction']['lost'])} did not "
                             f"answer) — run `retraction --keys {k}` again before including it")
+            elif c["retraction"].get("status") == "concern" and not CONCERN_WORDS.search(d.get("why") or ""):
+                errs.append(f"{k}: it carries an expression of concern — the include sentence must say so "
+                            "(«expresión de preocupación»)")
         elif d.get("decision") == "exclude":
             if d.get("reason") not in REASONS:
                 errs.append(f"{k}: exclude reason must be one of {REASONS}")
@@ -1973,14 +2002,22 @@ def _line(c: dict, today: str) -> str:
     if c.get("citations") is not None:
         recent = c.get("date") and c["date"] >= (_dt.date.fromisoformat(today) - _dt.timedelta(days=548)).isoformat()
         cit = f" · {c['citations']} citas" + (" (reciente: señal poco fiable)" if recent else "")
-    venue = f" · publicado en {', '.join(c['venues'])}" if c.get("venues") and c.get("arxiv") else \
-        (f" · {', '.join(c['venues'])}" if c.get("venues") else "")
+    pub = [v for v in c.get("venues") or [] if not is_preprint_venue(v)]
+    pre = [v for v in c.get("venues") or [] if is_preprint_venue(v)]
+    # a preprint server is never «publicado en»
+    venue = (f" · publicado en {', '.join(pub)}" if pub and c.get("arxiv") else
+             f" · {', '.join(pub)}" if pub else "") + (f" · preprint ({', '.join(pre)})" if pre else "")
+    if openreview_status(c):
+        venue += f" · OpenReview: {openreview_status(c)}"
+    retr = c.get("retraction") or {}
+    concern = (" · ⚠️ **expresión de preocupación**: " + "; ".join(retr.get("evidence") or [])
+               if retr.get("status") == "concern" else "")
     anchor = " · *candidato ancla por citas, no por relevancia directa*" if c.get("anchor") else ""
     vault = " · **ya en el vault**" if c.get("in_vault") else ""
     ys = c.get("years") or []
     when = f"{ys[0]}; otra versión {', '.join(map(str, ys[1:]))}" if len(ys) > 1 else (c.get("year") or "s. f.")
     return (f"- **{c['title']}** ({when}) — {', '.join(ids) or c.get('url') or ''}"
-            f"{venue}{cit}{anchor}{vault}\n  Facetas: {fac}. `{c['key']}`\n  {c['screen'].get('why', '')}")
+            f"{venue}{cit}{anchor}{vault}{concern}\n  Facetas: {fac}. `{c['key']}`\n  {c['screen'].get('why', '')}")
 
 
 def ranked_md(cands: list[dict], plan: dict) -> str:

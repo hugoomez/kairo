@@ -247,8 +247,9 @@ DOI-less. Only the candidates that pass the prefilter are checked (the others
 cannot be included without a decision); to include a prefiltered-out one, check
 it first with `retraction --run <run dir> --keys <key>` — `screen` refuses to
 include an unchecked candidate. Retracted / withdrawn candidates are excluded by the script itself;
-an expression of concern is kept and must be mentioned in the candidate's
-sentence. A check a source did not answer is **lost**, never
+an expression of concern is kept, shown in its `ranked.md` line, and must be
+mentioned in the candidate's sentence («expresión de preocupación»: `screen`
+refuses an include that does not). A check a source did not answer is **lost**, never
 "clear": `screen` refuses to include that candidate until
 `retraction --run <run dir> --keys <key>` re-checks it. A snowball after this step invalidates it (the script deletes
 `retraction.json`): run it again.
@@ -366,7 +367,10 @@ check), excludes without a few words of why (`duplicado` aside), or excludes
   baja` never summed; the prefilter on its own line). Exact integers computed
   by the script.
 - **`ranked.md`** — the included candidates (relevance, then facets matched,
-  then recency), each with ids, venue / published version, citation count
+  then recency), each with ids, venue / published version (a preprint server —
+  arXiv.org, bioRxiv, SSRN, Research Square… — is shown as «preprint (…)»,
+  never «publicado en»), the OpenReview decision of a paper not accepted there
+  («OpenReview: Rejected / Submitted to …»), an expression of concern, citation count
   flagged «reciente: señal poco fiable» under ~18 months, the anchor
   annotation, `ya en el vault`, its facets and your sentence; then
   `### Relevante pero fuera de alcance` with the clause each one hit.
