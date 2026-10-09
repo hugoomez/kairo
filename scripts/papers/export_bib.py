@@ -233,6 +233,8 @@ def bibtex_entry(m: dict, key: str, read_field: bool = True) -> str:
         fields.append(("doi", "{" + doi + "}"))
     if m.get("arxiv"):
         fields += [("eprint", "{" + m["arxiv"] + "}"), ("archiveprefix", "{arXiv}")]
+        if m.get("primary_class"):
+            fields.append(("primaryclass", "{" + m["primary_class"] + "}"))
         if kind == "misc":
             fields.append(("howpublished", "{arXiv preprint arXiv:" + m["arxiv"] + (m.get("arxiv_version") or "") + "}"))
     if m.get("url") and not doi:
