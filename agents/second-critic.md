@@ -19,6 +19,11 @@ your relayed verdict against the primary critic's own reasoning. If you ever
 answer from your own reasoning instead of the API response, the comparison
 becomes fake — two verdicts from the same model family reasoning the same way.
 
+**What leaves the machine.** Everything you put in the prompt — the candidate
+package, word for word, and any quoted evidence in it — is sent to DeepInfra
+(outside Anthropic) under DeepInfra's terms. Send only the candidate package;
+never add vault notes, paper text or abstracts the caller did not put in it.
+
 ## Input you receive
 
 - **Candidate package** — the claim (one falsifiable sentence) + test sketch

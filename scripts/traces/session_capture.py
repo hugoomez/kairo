@@ -2,8 +2,8 @@
 """SessionEnd hook: keep the transcript of a Claude Code session that changed
 research notes, inside the vault, next to the project it touched.
 
-Registered in the vault's ``.claude/settings.json`` as a ``SessionEnd`` hook.
-It reads the hook's stdin JSON (``session_id``, ``transcript_path``), scans the
+Run by the plugin's ``SessionEnd`` hook (``hooks/hooks.json`` →
+``scripts/hooks/kairo_hook.py session-end``). It reads the hook's stdin JSON (``session_id``, ``transcript_path``), scans the
 transcript for Write / Edit / MultiEdit / NotebookEdit calls on files under
 ``Projects/<slug>/{Hipotesis,Experimentos,Claims,Producto,Manuscritos,Evolucion}/``
 — and, for the literature path, on ``Estado-del-arte.md``, ``_busquedas/``,
@@ -13,17 +13,32 @@ literature script on a project (``lit_search.py``, ``ingest_paper.py``,
 ``import_library.py``, named by its ``Projects/<slug>`` folder or its
 ``--project PROJ-XXX`` id), and for every project touched:
 
-* copies the transcript to
+* copies the transcript ONCE, into the first touched project (by folder name):
   ``Projects/<slug>/_trazas-agente/cli/<YYYY-MM-DD>__<session>.jsonl``
   (a resumed session overwrites its own copy — it is the same conversation),
   and the session's subagent transcripts, when Claude Code keeps them beside
   it (``<session>/subagents/*.jsonl``), to ``…__<session>/subagents/`` — so a
   state-of-the-art map can be followed back to each facet summary and the
   prompts that produced it;
-* appends one ``cli_session`` entry to the project's action log, with the note
-  ids touched as ``refs`` and the copy as ``trace`` (once per session and file);
+* appends one ``cli_session`` entry to each touched project's action log, with
+  that project's note ids as ``refs`` and the one copy as ``trace`` (once per
+  session and file);
 * re-renders today's notebook page and commits the copy and ``Bitacora/``
   alone (``git commit --only``).
+
+Privacy. A transcript holds everything the session saw. Before it is copied,
+secrets are replaced by ``«redactado»``: the values of environment variables
+whose names contain KEY, TOKEN, SECRET, PASSWORD, PASS, AUTH or CREDENTIAL
+(values longer than 8 characters), and common secret shapes — ``sk-…`` /
+``sk-ant-…`` keys, GitHub tokens (``ghp_``, ``gho_``, ``ghu_``, ``ghs_``,
+``ghr_``, ``github_pat_``), AWS key ids (``AKIA…``), Slack tokens
+(``xoxb-``/``xoxa-``/``xoxp-``…), ``Bearer …``, ``api_key=`` / ``apikey=`` /
+``token=`` / ``access_token=`` values and PEM private-key blocks. Each JSONL
+line is redacted string by string, so the copy stays valid JSONL. A
+heuristic: a secret of another shape is copied as is. The copy also keeps
+third-party paper text that subagents read (the main thread's hook refuses
+to read `_trazas-agente/`). ``KAIRO_CAPTURE_TRANSCRIPTS=off`` turns capture
+off entirely (no copy, no log entry, no commit).
 
 So work done in a plain session is as traceable as work launched from the
 interface. Sessions that only read are not kept.
@@ -35,8 +50,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import date
@@ -56,6 +71,17 @@ LITERATURE_SCRIPTS = ("lit_search.py", "ingest_paper.py", "check_sota.py", "lit_
 _REF = re.compile(r"\b(?:H|E|C|EVO|ADR|F|P)-\d{3,4}\b")
 _PROJ_DIR = re.compile(r"Projects[/\\]+([A-Za-z0-9][A-Za-z0-9._-]*)")
 _PROJ_ID = re.compile(r"--project[= ]+[\"']?(PROJ-\d{3,})")
+REDACTED = "«redactado»"
+_SECRET_ENV_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASS|AUTH|CREDENTIAL", re.I)
+_SECRET_SHAPES = (
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S),
+    re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}"),
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{12,}\b"),
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{8,}"),
+    re.compile(r"(?<=\bBearer )[A-Za-z0-9._~+/=-]{8,}", re.I),
+)
+_QUERY_SECRET = re.compile(r"(\b(?:api[_-]?key|apikey|token|access_token|auth_token|secret)=)([^&\s\"'<>]+)", re.I)
 
 
 def research_file(parts: tuple[str, ...]) -> bool:
@@ -137,6 +163,49 @@ def subagent_transcripts(transcript: Path) -> list[Path]:
     return sorted(d.glob("*.jsonl")) if d.is_dir() else []
 
 
+def _env_secrets() -> list[str]:
+    vals = {v for k, v in os.environ.items() if _SECRET_ENV_NAME.search(k) and len(v or "") > 8}
+    return sorted(vals, key=len, reverse=True)
+
+
+def redact_text(text: str, env_secrets: list[str] | None = None) -> str:
+    """`text` with secrets replaced by «redactado» (see the module docstring)."""
+    for v in env_secrets if env_secrets is not None else _env_secrets():
+        text = text.replace(v, REDACTED)
+    for pat in _SECRET_SHAPES:
+        text = pat.sub(REDACTED, text)
+    return _QUERY_SECRET.sub(lambda m: m.group(1) + REDACTED, text)
+
+
+def _redact_obj(obj, env_secrets: list[str]):
+    if isinstance(obj, str):
+        return redact_text(obj, env_secrets)
+    if isinstance(obj, list):
+        return [_redact_obj(x, env_secrets) for x in obj]
+    if isinstance(obj, dict):
+        return {redact_text(k, env_secrets): _redact_obj(v, env_secrets) for k, v in obj.items()}
+    return obj
+
+
+def copy_redacted(src: Path, dest: Path) -> None:
+    """Copy a JSONL transcript with its secrets redacted, line by line: a JSON line
+    is redacted string by string and written back as JSON (still valid JSONL);
+    any other line is redacted as text."""
+    env_secrets = _env_secrets()
+    out = []
+    with src.open(encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            line = raw.rstrip("\r\n")
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                out.append(redact_text(line, env_secrets))
+                continue
+            red = _redact_obj(obj, env_secrets)
+            out.append(line if red == obj else json.dumps(red, ensure_ascii=False))
+    dest.write_text("".join(x + "\n" for x in out), encoding="utf-8", newline="\n")
+
+
 def already_logged(log: Path, trace: str) -> bool:
     if not log.exists():
         return False
@@ -146,24 +215,29 @@ def already_logged(log: Path, trace: str) -> bool:
 def run(vault: Path, payload: dict, today: str | None = None) -> list[str]:
     transcript = Path(str(payload.get("transcript_path") or ""))
     session = re.sub(r"[^A-Za-z0-9-]", "", str(payload.get("session_id") or ""))[:36] or "sesion"
+    if (os.environ.get("KAIRO_CAPTURE_TRANSCRIPTS") or "").strip().lower() in ("off", "0", "no", "false"):
+        return []
     if not transcript.is_file():
         return []
     vault = vault.resolve()
     day = today or date.today().isoformat()
     logged = []
+    rel = None                  # the one copy, in the first touched project
+    subs = subagent_transcripts(transcript)
     for slug, files in sorted(touched(transcript, vault).items()):
-        rel = f"Projects/{slug}/_trazas-agente/cli/{day}__{session}.jsonl"
-        dest = vault / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(transcript, dest)
-        paths = [rel, f"Projects/{slug}/Bitacora"]
-        subs = subagent_transcripts(transcript)
-        if subs:
-            sub_rel = f"Projects/{slug}/_trazas-agente/cli/{day}__{session}/subagents"
-            (vault / sub_rel).mkdir(parents=True, exist_ok=True)
-            for s in subs:
-                shutil.copyfile(s, vault / sub_rel / s.name)
-            paths.append(sub_rel)
+        paths = [f"Projects/{slug}/Bitacora"]
+        if rel is None:
+            rel = f"Projects/{slug}/_trazas-agente/cli/{day}__{session}.jsonl"
+            dest = vault / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            copy_redacted(transcript, dest)
+            paths.append(rel)
+            if subs:
+                sub_rel = f"Projects/{slug}/_trazas-agente/cli/{day}__{session}/subagents"
+                (vault / sub_rel).mkdir(parents=True, exist_ok=True)
+                for s in subs:
+                    copy_redacted(s, vault / sub_rel / s.name)
+                paths.append(sub_rel)
         log = vault / "Projects" / slug / "Bitacora" / "acciones.jsonl"
         if not already_logged(log, rel):
             refs = sorted(set(_REF.findall(" ".join(files))))
