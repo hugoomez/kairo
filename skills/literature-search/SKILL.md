@@ -240,7 +240,8 @@ It pages Semantic Scholar references and citations of each key (up to 2000
 per direction; more is reported as truncated); when Semantic Scholar does not
 answer (keyless `429`), the same direction comes from OpenAlex (`cites:` /
 `cited_by:`, in the window) as its own query with `fallback_for` naming the
-lost one and keeps neighbours whose
+lost one (which is then marked `recovered_by` and is not degraded coverage —
+`busqueda.md` reads «perdida, recuperada por S0nn») and keeps neighbours whose
 title/abstract match **≥ 2 facets** (any facet for a one-facet plan) and fall
 in the window; a neighbour with **no abstract** (common for publisher records)
 is kept when one facet term is in its title, since a title alone rarely
@@ -259,7 +260,9 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" retraction --run <ru
 
 Crossref `updated-by` / Retraction Watch for DOI-bearing candidates, arXiv
 withdrawal notices for arXiv ids — both, since a preprint-heavy pool is mostly
-DOI-less. Only the candidates that pass the prefilter are checked (the others
+DOI-less — for every identifier a candidate holds (its `other_ids` too: a
+retraction recorded against the journal version reaches the preprint's
+candidate, the evidence naming that identifier). Only the candidates that pass the prefilter are checked (the others
 cannot be included without a decision); to include a prefiltered-out one, check
 it first with `retraction --run <run dir> --keys <key>` — `screen` refuses to
 include an unchecked candidate. Retracted / withdrawn candidates are excluded by the script itself;

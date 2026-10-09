@@ -1570,6 +1570,7 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             except (net.HttpError, json.JSONDecodeError, ValueError) as e:
                 q["error"] = net.redact(str(e))[:200]
                 queries.append(q)
+                lost_q = q
                 # Semantic Scholar did not answer: the same neighbours from OpenAlex, said so
                 q = {**q, "id": f"S{len(queries) + 1:03d}", "source": "openalex", "query": f"{pid}/{rel}",
                      "raw": [], "error": None, "total": None, "fetched": 0, "fallback_for": q["id"]}
@@ -1579,6 +1580,8 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                     q["error"] = net.redact(str(e2))[:200]
                     queries.append(q)
                     continue
+                # the fallback read the same neighbours: the lost query is not missing papers
+                lost_q["recovered_by"] = q["id"]
             else:
                 papers = [it.get("citedPaper" if rel == "references" else "citingPaper") or {} for it in items]
                 recs, _ = parse_s2(json.dumps({"data": papers}).encode())
@@ -1696,6 +1699,23 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             "abstracts_completados": filled, "next": "retraction"}
 
 
+OTHER_ID_SEP = "#otro-id-"
+STATUS_RANK = {"clear": 0, "concern": 1, "withdrawn": 2, "retracted": 3}
+
+
+def retraction_entries(c: dict) -> list[dict]:
+    """The checks one candidate needs: its primary DOI / arXiv id, then each other
+    identifier it holds (`other_ids`: a second DOI, another arXiv id) — a retraction
+    may be recorded against any of them."""
+    out = [{"id": c["key"], "doi": c.get("doi"), "arxiv": c.get("arxiv")}]
+    oi = c.get("other_ids") or {}
+    dois, arx = list(oi.get("doi") or []), list(oi.get("arxiv") or [])
+    for n in range(max(len(dois), len(arx))):
+        out.append({"id": f"{c['key']}{OTHER_ID_SEP}{n + 1}", "doi": dois[n] if n < len(dois) else None,
+                    "arxiv": arx[n] if n < len(arx) else None})
+    return out
+
+
 def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None) -> dict:
     """Check the candidates that pass the prefilter (the only ones that can be
     included without an explicit decision), or, with `keys`, those candidates
@@ -1714,24 +1734,35 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
     else:
         todo = [c for c in cands if passes_prefilter(c)]
         prev = None
-    res = check_retraction.run([{"id": c["key"], "doi": c.get("doi"), "arxiv": c.get("arxiv")} for c in todo],
+    entries = {e["id"]: e for c in todo for e in retraction_entries(c)}
+    res = check_retraction.run(list(entries.values()),
                                mailto) if todo else {"results": [], "counts": {
         s: {"checked": 0, "removed": 0, "lost": 0} for s in ("crossref", "arxiv")}}
-    by = {r["id"]: r for r in res["results"]}
+    by: dict[str, list[dict]] = {}
+    for r in res["results"]:
+        by.setdefault(str(r.get("id") or "").split(OTHER_ID_SEP, 1)[0], []).append(r)
     for c in todo:
-        r = by.get(c["key"]) or {}
-        c["retraction"] = {"status": r.get("status", "clear"), "evidence": r.get("evidence", []),
-                           "notice_for": r.get("notice_for", []),
+        rs = by.get(c["key"]) or [{}]
+        # the worst of its identifiers: a retracted journal version retracts the preprint's candidate
+        worst = max(rs, key=lambda r: STATUS_RANK.get(r.get("status", "clear"), 0))
+        c["retraction"] = {"status": worst.get("status", "clear"),
+                           # another identifier's evidence names that identifier
+                           "evidence": [e if OTHER_ID_SEP not in str(r.get("id")) else
+                                        f"{entries[r['id']].get('doi') or entries[r['id']].get('arxiv')}: {e}"
+                                        for r in rs for e in r.get("evidence", [])],
+                           "notice_for": [n for r in rs for n in r.get("notice_for", [])],
                            # a source that did not answer: "clear" then only means "nothing seen"
-                           "lost": sorted(s for s, ch in (r.get("checks") or {}).items()
-                                          if (ch or {}).get("state") == "lost")}
+                           "lost": sorted({s for r in rs for s, ch in (r.get("checks") or {}).items()
+                                           if (ch or {}).get("state") == "lost"})}
+        if len(rs) > 1:
+            c["retraction"]["checked_ids"] = len(rs)
     if prev:
         # a re-checked candidate replaces its earlier result: its earlier contribution
         # to the counts comes off first, so a re-check is never counted twice
-        again = {r["id"] for r in res["results"]}
+        again = {str(r["id"]).split(OTHER_ID_SEP, 1)[0] for r in res["results"]}
         counts = {s: dict(prev["counts"][s]) for s in prev["counts"]}
         for r in prev["results"]:
-            if r.get("id") not in again:
+            if str(r.get("id")).split(OTHER_ID_SEP, 1)[0] not in again:
                 continue
             for s, ch in (r.get("checks") or {}).items():
                 if s not in counts:
@@ -1743,7 +1774,8 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
                         counts[s]["removed"] -= 1
                 elif st == "lost":
                     counts[s]["lost"] -= 1
-        res = {**prev, "results": [r for r in prev["results"] if r.get("id") not in again] + res["results"],
+        res = {**prev, "results": [r for r in prev["results"]
+                                   if str(r.get("id")).split(OTHER_ID_SEP, 1)[0] not in again] + res["results"],
                "counts": {s: {k: counts[s][k] + res["counts"][s][k] for k in counts[s]} for s in counts}}
     res["checked_keys"] = sorted(c["key"] for c in cands if "retraction" in c)
     save(run / "candidates.json", cands)
@@ -1971,6 +2003,8 @@ def degraded_lines(queries: list[dict]) -> list[str]:
         what = {"anchor": "pase-ancla", "relevance": "pase de relevancia", "cross": "pase cruzado",
                 "enrich": "abstracts completados por DOI"}.get(
             q["pass"], q["pass"])
+        if q.get("error") and q.get("recovered_by"):
+            continue                            # its fallback read the same neighbours
         if q.get("error"):
             out.append(f"- Faceta {q['facet']} — {what} en {q['source'].replace('-anchor', '')} perdido "
                        f"({q['error']}). Consulta {q['id']}: los papers que solo esta consulta habría traído faltan.")
@@ -2045,7 +2079,8 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
           "",
           "| id | faceta | fuente | pase | query | hits | disponibles | estado |", "|---|---|---|---|---|---|---|---|"]
     for q in queries:
-        state = "perdida" if q.get("error") else "truncada" if q.get("truncated") else \
+        state = f"perdida, recuperada por {q['recovered_by']}" if q.get("error") and q.get("recovered_by") else \
+            "perdida" if q.get("error") else "truncada" if q.get("truncated") else \
             f"por citas (top {plan.get('anchors')})" if q["source"] == "s2-anchor" else \
             "por relevancia" if q.get("ranked") and (q.get("total") or 0) > q.get("fetched", 0) else "completa"
         if q.get("not_work"):
