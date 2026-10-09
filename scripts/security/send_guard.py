@@ -6,8 +6,9 @@ that reads the vault.
 A vault note whose frontmatter carries `send: never` is private to the
 researcher: Claude must not read it, quote it, or send its metadata to an
 external API. Skills and agents skip such notes explicitly; this script is the
-mechanical backstop, run as a Claude Code **PreToolUse command hook** (see
-the vault's `.claude/settings.json`; `docs/v3-interfaces.md` §3e), plus two read-only
+mechanical backstop, run as a Claude Code **PreToolUse command hook** (the
+plugin's `hooks/hooks.json` → `scripts/hooks/kairo_hook.py pre-tool`, which
+calls `decide`; `docs/v3-interfaces.md` §3e), plus two read-only
 helper modes the skills use to find flagged notes without opening them.
 
 Hook mode (default; reads the PreToolUse JSON from stdin):
@@ -42,21 +43,40 @@ Hook mode (default; reads the PreToolUse JSON from stdin):
 
   Paths are trimmed of surrounding whitespace/quotes first, as the tools do.
 
-  A reader command (`cat`, `grep`, `rg`, `Get-Content`, `Select-String`, …)
+  A reader command (`SHELL_READER`, the one list isolation.py also uses:
+  `cat`, `grep`, `rg`, `Get-Content`, `cp`, `xargs`, `python`, `node`, …)
   that reaches a flagged note without naming it is refused too: a glob that
   matches one (`cat Papers/*`) or a recursive reader over a folder holding one
   (`grep -r x Papers`, `rg x .`).
+
+    mcp__smart-connections__search_similar
+                                 `notePath` is flagged or a `_notas` note (the
+                                 answer would describe its neighbourhood)
 
   Limits (stated, not hidden): a program can still open a flagged note in ways
   no command line shows (`python -c …`, a script). The Bash check catches the
   direct cases;
   the instruction in every skill/agent that reads the vault is the primary
-  control. Smart Connections search results carry path + title + heading name
-  only, never note text, so they are not blocked here.
+  control.
 
-  Fail-open on the hook's own errors (unparseable input, unreadable file): a
-  broken guard must not lock the researcher out of every Read. Such errors go
-  to stderr (debug log only on exit 0).
+  Residual risk — Smart Connections searches. `search_by_text` and
+  `search_similar` are in the hook's matcher (hooks.json), but their answers
+  are not filtered: a result list can name a `send: never` note (its path,
+  title and matched heading — never its text) whenever the query lands near
+  it. A PreToolUse hook only sees the query, not the answer; whether a
+  PostToolUse hook can rewrite an MCP tool's output has not been verified for
+  this plugin, so nothing here relies on it. Queries are therefore allowed;
+  only a search_similar *from* a flagged note is refused. Keep private notes
+  out of the Smart Connections index (its own exclusion settings) when their
+  titles are themselves private.
+
+  Fail-closed inside a Kairo vault: a note that exists but cannot be read
+  counts as flagged, and an unparseable hook input or an internal error
+  refuses the call (exit 2, one line on stderr; kairo_hook.py also logs it to
+  hook-events). Outside a vault (no Papers/ + Projects/ at the root) the hook
+  stays out of the way and allows. The vault scan is cached by kairo_hook
+  (`CACHE_DIR`: each note's flag keyed by its mtime and size), so a shell call
+  in a vault of thousands of notes stats them instead of reading them.
 
 Helper modes (print paths only, never content):
 
@@ -71,6 +91,7 @@ flagged (check mode), 1 usage error. Standard library only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -78,7 +99,7 @@ import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.4.0"
 
 HEAD_BYTES = 16 * 1024  # frontmatter lives at the top; never read further
 SKIP_DIRS = {".git", ".obsidian", ".smart-env", "node_modules", ".trash", "__pycache__"}
@@ -107,17 +128,33 @@ def frontmatter_says_never(head: str) -> bool:
     return False
 
 
-def is_flagged(path: Path) -> bool:
-    """Whether `path` is a markdown note marked `send: never`. Unreadable or
-    non-markdown files are not flagged (the guard fails open)."""
-    if path.suffix.lower() != ".md":
-        return False
+def _read_flag(path: Path) -> bool:
+    """Read the top of `path` and say whether its frontmatter has `send: never`.
+    A file that exists but cannot be read counts as flagged (fail closed)."""
     try:
         with open(path, "rb") as fh:
             head = fh.read(HEAD_BYTES).decode("utf-8", errors="replace")
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
     return frontmatter_says_never(head)
+
+
+# (path, mtime_ns, size) -> flagged, for this process
+_READ_MEMO: dict[tuple[str, int, int], bool] = {}
+# Where the flagged-note scan is cached between hook calls (set by kairo_hook to
+# `<state dir>/send-guard-cache`); None: no file is written.
+CACHE_DIR: Path | None = None
+
+
+def is_flagged(path: Path) -> bool:
+    """Whether `path` is a markdown note marked `send: never`. Non-markdown and
+    missing files are not flagged; a note that exists but cannot be read is
+    (the guard fails closed)."""
+    if path.suffix.lower() != ".md":
+        return False
+    return _read_flag(path)
 
 
 def is_model_notes(path: Path) -> bool:
@@ -144,20 +181,74 @@ def model_notes_under(root: Path) -> list[Path]:
     return sorted(out)
 
 
+def _md_files(root: Path):
+    """(path, mtime_ns, size) of every .md under `root`, SKIP_DIRS pruned. scandir
+    gives the stat for free on Windows, so no note is opened here."""
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if e.name not in SKIP_DIRS:
+                        stack.append(Path(e.path))
+                elif e.name.lower().endswith(".md"):
+                    st = e.stat()
+                    yield Path(e.path), st.st_mtime_ns, st.st_size
+            except OSError:
+                continue
+
+
+def _cache_file(root: Path) -> Path | None:
+    if CACHE_DIR is None:
+        return None
+    key = hashlib.sha256(str(root.resolve()).lower().encode("utf-8")).hexdigest()[:24]
+    return Path(CACHE_DIR) / f"{key}.json"
+
+
 def flagged_under(root: Path) -> list[Path]:
-    """Every flagged note under `root` (or `root` itself if it is a file)."""
+    """Every flagged note under `root` (or `root` itself if it is a file).
+
+    Each note is read once per (mtime, size): the answers are kept in memory and,
+    when `CACHE_DIR` is set (the hook), in a small JSON file there, so a shell
+    call in a large vault stats its notes instead of reading every one."""
     if root.is_file():
         return [root] if is_flagged(root) else []
-    out: list[Path] = []
     if not root.is_dir():
-        return out
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        for name in filenames:
-            if name.lower().endswith(".md"):
-                p = Path(dirpath) / name
-                if is_flagged(p):
-                    out.append(p)
+        return []
+    cf = _cache_file(root)
+    cached: dict = {}
+    if cf is not None:
+        try:
+            cached = json.loads(cf.read_text(encoding="utf-8")).get("files") or {}
+        except (OSError, ValueError, AttributeError):
+            cached = {}
+    fresh: dict[str, list] = {}
+    out: list[Path] = []
+    for p, mtime, size in _md_files(root):
+        key = str(p)
+        hit = cached.get(key)
+        if isinstance(hit, list) and len(hit) == 3 and hit[0] == mtime and hit[1] == size:
+            flagged = bool(hit[2])
+        elif (key, mtime, size) in _READ_MEMO:
+            flagged = _READ_MEMO[(key, mtime, size)]
+        else:
+            flagged = _READ_MEMO[(key, mtime, size)] = _read_flag(p)
+        fresh[key] = [mtime, size, flagged]
+        if flagged:
+            out.append(p)
+    if cf is not None and fresh != cached:
+        try:
+            cf.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cf.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"root": str(root), "files": fresh}), encoding="utf-8")
+            os.replace(tmp, cf)
+        except OSError:
+            pass                      # a cache that cannot be written only costs time
     return sorted(out)
 
 
@@ -183,9 +274,17 @@ def _rel(p: Path, base: Path) -> str:
         return p.as_posix()
 
 
-_SHELL_READER = re.compile(r"(?:^|[\s;|&(`])(?:cat|type|more|less|head|tail|sed|awk|grep|egrep|fgrep|rg|"
-                           r"findstr|get-content|gc|select-string|sls|bat|nl|strings|od|xxd|xargs)(?:\.exe)?\b",
-                           re.IGNORECASE)
+# The one list of shell programs that can put a file's bytes in front of the
+# model: viewers and filters, copiers (a copy is read next), archivers and
+# encoders, and every interpreter that can open a file from inline code.
+# isolation.py (the main thread kept away from paper text) uses this same list.
+SHELL_READER = re.compile(
+    r"(?:^|[\s;|&(`\"':])(?:cat|type|more|less|head|tail|sed|awk|gawk|grep|egrep|fgrep|zgrep|rg|ag|ack|findstr|"
+    r"get-content|gc|select-string|sls|bat|nl|strings|od|xxd|hexdump|xargs|cp|copy|copy-item|cpi|mv|move|"
+    r"move-item|rsync|scp|tar|zip|7z|base64|certutil|iconv|sort|uniq|cut|tr|paste|diff|cmp|comm|fc|jq|yq|tee|dd|"
+    r"vi|vim|nano|pdftotext|mutool|python3?|py|node|deno|perl|ruby|php|powershell|pwsh|bash|sh|zsh|cmd|"
+    r"import-csv|convertfrom-json|readall(?:text|lines|bytes)|iex|invoke-expression)(?:\.exe)?\b",
+    re.IGNORECASE)
 _RECURSIVE = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|-recurse|/s)(?=\s|$)", re.IGNORECASE)
 
 
@@ -193,7 +292,7 @@ def _shell_reach(cmd: str, root: Path, cwd: Path) -> str | None:
     """A reader command that reaches a flagged note without naming it: a glob that
     matches one (`cat Papers/*`), or a recursive reader over a folder holding one
     (`grep -r x Papers`, `rg x .`). Best effort, like every shell check here."""
-    if not _SHELL_READER.search(cmd):
+    if not SHELL_READER.search(cmd):
         return None
     flagged = list(flagged_under(root))
     if not flagged:
@@ -293,6 +392,13 @@ def decide(event: dict, vault: Path | None) -> str | None:
                         "no se ejecuta.")
         return _shell_reach(cmd, root, Path(event.get("cwd") or root))
 
+    if tool.startswith("mcp__") and tool.endswith("__search_similar"):
+        # its answer is the flagged note's neighbourhood: titles that tell what it is about
+        np_ = _clean(tin.get("notePath") or "")
+        if np_ and (is_model_notes(_resolve(str(np_), root)) or is_flagged(_resolve(str(np_), root))):
+            return f"{np_} es privada o una nota de modelo; search_similar desde ella bloqueado."
+        return None
+
     if tool.startswith("mcp__") and tool.endswith("__get_note"):
         np_ = _clean(tin.get("notePath") or "")
         if np_ and is_model_notes(_resolve(str(np_), root)):
@@ -304,16 +410,26 @@ def decide(event: dict, vault: Path | None) -> str | None:
     return None
 
 
+def _in_vault(root: Path) -> bool:
+    return (root / "Papers").is_dir() and (root / "Projects").is_dir()
+
+
 def run_hook(vault: str | None) -> int:
+    root = Path(vault or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     try:
         event = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
     except (ValueError, UnicodeDecodeError) as exc:
-        print(f"send_guard: unparseable hook input ({exc}); allowing", file=sys.stderr)
+        if _in_vault(root):
+            print(f"send_guard (Kairo): entrada del hook ilegible ({exc}); bloqueado por precaución.",
+                  file=sys.stderr)
+            return 2
         return 0
     try:
         reason = decide(event, Path(vault).resolve() if vault else None)
-    except Exception as exc:  # fail open, loudly in the debug log
-        print(f"send_guard: internal error ({exc!r}); allowing", file=sys.stderr)
+    except Exception as exc:  # fail closed inside a vault
+        if _in_vault(root):
+            print(f"send_guard (Kairo): error interno ({exc!r}); bloqueado por precaución.", file=sys.stderr)
+            return 2
         return 0
     if reason:
         print(f"send_guard (Kairo): {reason}", file=sys.stderr)

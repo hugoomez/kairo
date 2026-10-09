@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The single entry point of every Kairo hook (declared in the plugin's hooks/hooks.json).
 
-    kairo_hook.py pre-tool      PreToolUse  Read | Grep | Bash | PowerShell | mcp__*__get_note
+    kairo_hook.py pre-tool      PreToolUse  Read | Grep | Bash | PowerShell | Smart Connections
+                                            get_note, search_by_text, search_similar
     kairo_hook.py post-write    PostToolUse Write | Edit
     kairo_hook.py post-shell    PostToolUse Bash | PowerShell
     kairo_hook.py session-end   SessionEnd
@@ -10,14 +11,21 @@
 Reads the hook's JSON on stdin and routes it:
 
   pre-tool     send_guard: refuse to read or name `send: never` notes and the
-               model-written reading notes (exit 2 blocks the tool).
-  post-write   by the written path —
+               model-written reading notes; isolation: hold isolated agents to
+               their packet and keep paper text (notes, cards, kept bytes,
+               transcripts, search material with abstracts) out of the main
+               thread (exit 2 blocks the tool).
+  post-write   by the written path, each step inside its own time budget
+               (all of them inside hooks.json's 90 s; a step that runs out of
+               time is logged as `timeout` and said in a systemMessage) —
                  Papers/**              Smart Connections re-index + SOTA staleness check
                  Projects/*/Hipotesis/  _digest.md + _ledger.md
                  Projects/*/Claims/     _ledger.md
   post-shell   Bitácora: log a `git commit` the shell call just made (not under
                KAIRO_PROFILE=literatura: the notebook serves the programme).
-  session-end  keep the transcript of a session that wrote research notes.
+  session-end  keep the transcript of a session that wrote research notes
+               (KAIRO_CAPTURE_TRANSCRIPTS=off: never), and once a day prune
+               packets and stored replies older than 90 days (isolation.py prune).
   subagent-stop  keep an isolated agent's final answer (screener, fresh-verifier,
                …) tied to the packet it read, so the script that records its
                verdict can check the orchestrator saved it unchanged. Works in
@@ -38,8 +46,14 @@ Every routed action appends one line to `~/.kairo/hook-events.jsonl`
 outcome. That is how you can see that a hook actually fired. Nothing from a
 note is written there, only paths relative to the vault.
 
-A failing action never breaks the session: everything but a send_guard
-refusal exits 0 and logs the error. Standard library only.
+A failing action never breaks the session: everything but a guard's refusal
+exits 0 and logs the error. The PreToolUse guards fail closed inside a vault:
+when send_guard or the main-thread paper check raises, or the hook input cannot
+be parsed, the tool call is refused (exit 2) with a one-line reason and the
+error goes to hook-events; outside a vault they stay a no-op. send_guard's scan
+for `send: never` notes is cached in `<state dir>/send-guard-cache/` (by each
+note's mtime and size), so a shell call in a large vault stays well inside the
+hook's 30 s. Standard library only.
 """
 
 from __future__ import annotations
@@ -55,7 +69,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS / "security"))
 
-TOOL = "kairo/kairo_hook@1.0.0"
+TOOL = "kairo/kairo_hook@1.5.0"
 
 
 # --------------------------------------------------------------------------
@@ -184,21 +198,29 @@ def pre_tool(payload: dict) -> int:
     # shell check scans the vault for flagged notes and needs one.
     if vault is None and tool in ("Bash", "PowerShell"):
         return 0
+    send_guard.CACHE_DIR = state_dir() / "send-guard-cache"
     try:
         reason = send_guard.decide(payload, vault)
-    except Exception as exc:  # fail open, loudly
+    except Exception as exc:  # inside a vault a guard that cannot decide refuses
+        if vault is None:
+            return 0
         record("PreToolUse", "send_guard", vault, "error", repr(exc))
-        print(f"send_guard: internal error ({exc!r}); allowing", file=sys.stderr)
-        return 0
+        print(f"Kairo: send_guard falló ({type(exc).__name__}); bloqueado por precaución — "
+              f"detalle en {state_dir() / 'hook-events.jsonl'}", file=sys.stderr)
+        return 2
     if reason:
         record("PreToolUse", "send_guard", vault, "blocked", tool)
         print(f"send_guard (Kairo): {reason}", file=sys.stderr)
         return 2
     try:
-        reason = isolation.main_paper_read(payload)
-    except Exception as exc:  # fail open, loudly (as send_guard)
-        reason = None
+        reason = isolation.main_paper_read(payload, vault)
+    except Exception as exc:  # inside a vault: fail closed, as send_guard
+        if vault is None:
+            return 0
         record("PreToolUse", "main_paper_read", vault, "error", repr(exc))
+        print(f"Kairo: la comprobación de lectura de papers falló ({type(exc).__name__}); bloqueado por "
+              f"precaución — detalle en {state_dir() / 'hook-events.jsonl'}", file=sys.stderr)
+        return 2
     if reason:
         record("PreToolUse", "main_paper_read", vault, "blocked", tool)
         print(f"Kairo: {reason}", file=sys.stderr)
@@ -208,6 +230,12 @@ def pre_tool(payload: dict) -> int:
     return 0
 
 
+# hooks.json gives post-write 90 s; every step together must finish before that,
+# or Claude Code kills the hook and nothing says which step was lost.
+POST_WRITE_BUDGET_S = 80
+STEP_BUDGET_S = {"sota_staleness": 20, "digest": 25, "ledger": 30, "reindex": 25}
+
+
 def post_write(payload: dict) -> int:
     fp = (payload.get("tool_input") or {}).get("file_path")
     if not fp:
@@ -215,6 +243,7 @@ def post_write(payload: dict) -> int:
     vault = find_vault(payload, fp)
     if vault is None:
         return 0
+    start = time.monotonic()
     path = Path(fp) if Path(fp).is_absolute() else Path(payload.get("cwd") or os.getcwd()) / fp
     r = rel(path, vault)
     parts = r.split("/")
@@ -226,27 +255,59 @@ def post_write(payload: dict) -> int:
     if len(parts) >= 4 and parts[0] == "Projects" and parts[2] in ("Hipotesis", "Claims"):
         actions.append(("ledger", "ledger/build_graph.py", ["--hook"]))
     forwarded = {**payload, "tool_input": {**(payload.get("tool_input") or {}), "file_path": str(path)}}
+    answer: dict = {}            # one JSON answer on stdout (additionalContext, systemMessage)
+    late: list[str] = []         # steps that ran out of time
+
+    def budget(name: str) -> int:
+        left = POST_WRITE_BUDGET_S - (time.monotonic() - start)
+        return int(min(STEP_BUDGET_S[name], left))
+
+    def out_of_time(name: str, why: str) -> None:
+        late.append(name)
+        record("PostToolUse", name, vault, "timeout", f"{r} {why}")
+
     for name, script, args in actions:
+        t = budget(name)
+        if t < 1:
+            out_of_time(name, "sin tiempo dentro del hook")
+            continue
         try:
-            code, out = run_script(script, args, forwarded)
+            code, out = run_script(script, args, forwarded, timeout=t)
             record("PostToolUse", name, vault, "ok" if code == 0 else f"exit {code}", r)
             if out and name == "sota_staleness" and out.startswith("{"):
-                print(out)  # additionalContext for the model
+                try:
+                    answer = json.loads(out)  # additionalContext for the model
+                except ValueError:
+                    print(out, file=sys.stderr)
             elif out:
                 print(out, file=sys.stderr)
+        except subprocess.TimeoutExpired:
+            out_of_time(name, f"más de {t} s")
         except Exception as exc:
             record("PostToolUse", name, vault, "error", repr(exc))
     if parts[0] == "Papers":
         js = smart_connections_reindexer(vault)
+        t = budget("reindex")
         if js is None:
             record("PostToolUse", "reindex", vault, "skipped", "no smart-connections server in .mcp.json")
+        elif t < 1:
+            out_of_time("reindex", "sin tiempo dentro del hook")
         else:
             try:
                 p = subprocess.run(["node", str(js), "--path", "Papers/", "--vault", str(vault)],
-                                   capture_output=True, timeout=30)
+                                   capture_output=True, timeout=t)
                 record("PostToolUse", "reindex", vault, "ok" if p.returncode == 0 else f"exit {p.returncode}", r)
+            except subprocess.TimeoutExpired:
+                out_of_time("reindex", f"más de {t} s")
             except (OSError, subprocess.SubprocessError) as exc:
                 record("PostToolUse", "reindex", vault, "error", repr(exc))
+    if late:
+        msg = (f"Kairo: tras escribir {r} no terminó a tiempo: {', '.join(late)} (vistas derivadas sin "
+               "actualizar; vuelve a guardar la nota o ejecuta el script a mano).")
+        print(msg, file=sys.stderr)
+        answer["systemMessage"] = (str(answer.get("systemMessage") or "") + " " + msg).strip()
+    if answer:
+        print(json.dumps(answer, ensure_ascii=False))
     return 0
 
 
@@ -269,7 +330,30 @@ def post_shell(payload: dict) -> int:
     return 0
 
 
+PRUNE_EVERY_S = 86400
+
+
+def prune_state() -> None:
+    """Best effort, at most once a day: delete packets and stored replies older
+    than isolation.PRUNE_DAYS. Never raises; nothing when Kairo never stored any."""
+    try:
+        import isolation
+        d = state_dir()
+        if not (isolation.packets_dir().is_dir() or isolation.replies_dir().is_dir()):
+            return
+        mark = d / "prune.last"
+        if mark.exists() and time.time() - mark.stat().st_mtime < PRUNE_EVERY_S:
+            return
+        mark.touch()
+        got = isolation.prune(isolation.PRUNE_DAYS)
+        if got["deleted"]:
+            record("SessionEnd", "prune", None, "ok", f"{got['deleted']} borrados")
+    except Exception as exc:
+        record("SessionEnd", "prune", None, "error", repr(exc))
+
+
 def session_end(payload: dict) -> int:
+    prune_state()
     vault = find_vault(payload)
     if vault is None:
         return 0
@@ -310,8 +394,18 @@ def main(argv: list[str] | None = None) -> int:
             pass
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError):
-        return 0
+        if not isinstance(payload, dict):
+            raise ValueError(f"hook input is a {type(payload).__name__}, not an object")
+    except (ValueError, UnicodeDecodeError) as exc:
+        # The guards cannot tell who asks for what: inside a vault a PreToolUse
+        # call is refused (an isolated agent's included), elsewhere nothing happens.
+        vault = find_vault({"cwd": os.getcwd()}) if argv[0] == "pre-tool" else None
+        if vault is None:
+            return 0
+        record("PreToolUse", "hook_input", vault, "error", repr(exc))
+        print("Kairo: la entrada del hook no se pudo leer; bloqueado por precaución dentro del vault.",
+              file=sys.stderr)
+        return 2
     return EVENTS[argv[0]](payload)
 
 

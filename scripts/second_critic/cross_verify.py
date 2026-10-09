@@ -14,10 +14,13 @@ shown, never averaged away.
 
 It only runs when the second critic is switched on (`KAIRO_SECOND_CRITIC=on`
 and `DEEPINFRA_TOKEN`, see status.py); otherwise it says «no disponible» and
-exits 4. It is a paid call outside Anthropic: the packet — the map's sentences
-and the cited papers' text, never a `send: never` paper (the packet builder
-leaves them out) — leaves your machine for DeepInfra under its terms.
-`--dry-run` shows the size and the estimated cost without sending anything.
+exits 4. It is a paid call outside Anthropic. Privacy, plainly: the whole
+packet leaves your machine for DeepInfra (and the model host behind it) under
+DeepInfra's terms — the map's sentences AND the verbatim text of the cited
+papers' sections and abstracts, word for word, as they are in your vault.
+Only a `send: never` paper is left out (the packet builder skips it); nothing
+else is redacted or summarised first. `--dry-run` shows the size and the
+estimated cost without sending anything.
 
 The packet must be an intact store packet (its name is its sha256). Nothing is
 written to a note: the caller lists the findings like the fresh-verifier's,

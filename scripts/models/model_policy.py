@@ -7,6 +7,8 @@ runs on the model the policy names, never on an account default.
     model_policy.py show                       the resolved policy (JSON)
     model_policy.py model --task T             one task's pinned model id
     model_policy.py check                      agents/ frontmatter and tools agree with the policy
+                                               (isolated agents: Read only; reads_papers agents:
+                                               read and search tools only)
     model_policy.py sync                       rewrite each agent's `model:` line from the policy
     model_policy.py set --task T --tier X      change one task's tier (edits the toml, then sync)
 
@@ -22,7 +24,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "config" / "models.toml"
@@ -35,6 +37,11 @@ PINNED = re.compile(r"^claude-(opus|sonnet|haiku)-\d+(-\d+)*$")
 # so the orchestrator hands over a path, never retypes the packet. An empty
 # `tools:` inherits every tool, so the list must be exactly this.
 ISOLATED_TOOLS = frozenset({"Read"})
+# A `reads_papers = true` agent reads third-party paper text (notes, cards,
+# abstracts), which may carry instructions written for a model. It may only
+# read and search: no shell, network, write, edit, subagent or index tool.
+PAPER_READER_TOOLS = frozenset({"Read", "Grep", "Glob", "mcp__smart-connections__search_by_text",
+                                "mcp__smart-connections__search_similar", "mcp__smart-connections__get_note"})
 
 
 class Refused(Exception):
@@ -60,8 +67,9 @@ def load(path: Path = POLICY) -> dict:
             raise Refused(f"task {tid!r}: tier {t.get('tier')!r} is not one of {', '.join(tiers)}")
         if t["kind"] == "agent" and not t.get("file"):
             raise Refused(f"task {tid!r}: an agent task needs `file`")
-        if "isolated" in t and (t["kind"] != "agent" or not isinstance(t["isolated"], bool)):
-            raise Refused(f"task {tid!r}: `isolated` is a true/false flag of agent tasks only")
+        for flag in ("isolated", "reads_papers"):
+            if flag in t and (t["kind"] != "agent" or not isinstance(t[flag], bool)):
+                raise Refused(f"task {tid!r}: `{flag}` is a true/false flag of agent tasks only")
     return data
 
 
@@ -133,6 +141,11 @@ def check(root: Path = ROOT, path: Path | None = None) -> list[str]:
             if extra:
                 problems.append(f"{tid}: {t['file']} is isolated but has {', '.join(extra)}; "
                                 f"only {', '.join(sorted(ISOLATED_TOOLS))} are allowed")
+        elif raw_tasks[tid].get("reads_papers"):
+            extra = [x for x in tools if x not in PAPER_READER_TOOLS]
+            if extra:
+                problems.append(f"{tid}: {t['file']} reads paper text but has {', '.join(extra)}; "
+                                f"only {', '.join(sorted(PAPER_READER_TOOLS))} are allowed")
     for f in sorted((root / "agents").glob("*.md")):
         if f.resolve() not in listed:
             problems.append(f"{f.relative_to(root).as_posix()}: a subagent with no task in the model policy")

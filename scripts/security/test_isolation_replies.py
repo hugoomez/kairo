@@ -62,6 +62,36 @@ class Replies(unittest.TestCase):
         with mock.patch.object(isolation, "capture_reply", side_effect=OSError("disk")):
             self.assertEqual(kairo_hook.subagent_stop({"agent_type": "screener", "agent_id": "s"}), 0)
 
+    def test_each_reply_records_the_model_the_agent_ran_on(self):
+        t = Path(self.tmp.name) / "agent-m.jsonl"
+        t.write_text("\n".join(json.dumps(x) for x in (
+            {"type": "user", "message": {"role": "user", "content": "path"}},
+            {"type": "assistant", "message": {"role": "assistant", "model": "claude-sonnet-9-9",
+                                              "content": [{"type": "text", "text": "{\"v\": 2}"}]}},
+            {"type": "assistant", "message": {"role": "assistant", "model": "<synthetic>",
+                                              "content": [{"type": "text", "text": ""}]}},
+        )) + "\n", encoding="utf-8")
+        isolation.record_receipt({"sha256": "d" * 64, "agent_type": "screener", "agent_id": "s-8"})
+        rec = isolation.capture_reply({"agent_type": "screener", "agent_id": "s-8", "agent_transcript_path": str(t),
+                                       "last_assistant_message": "{\"v\": 2}"})
+        self.assertEqual(rec["model"], "claude-sonnet-9-9")
+        [r] = isolation.replies("d" * 64, "screener")
+        self.assertEqual(r["model"], "claude-sonnet-9-9")
+        isolation.record_receipt({"sha256": "e" * 64, "agent_type": "screener", "agent_id": "s-9"})
+        isolation.capture_reply({"agent_type": "screener", "agent_id": "s-9", "last_assistant_message": "{}"})
+        [r] = isolation.replies("e" * 64, "screener")
+        self.assertIn("model", r)
+        self.assertIsNone(r["model"])                          # unknown: no transcript
+
+    def test_a_reply_stored_before_the_model_key_reads_as_model_none(self):
+        (Path(self.tmp.name) / "replies").mkdir()
+        (Path(self.tmp.name) / "replies" / ("f" * 64 + ".txt")).write_text("{}", encoding="utf-8")
+        (Path(self.tmp.name) / isolation.REPLIES).write_text(json.dumps(
+            {"agent_type": "screener", "agent_id": "s", "packets": ["9" * 64], "reply_sha256": "f" * 64}) + "\n",
+            encoding="utf-8")
+        [r] = isolation.replies("9" * 64)
+        self.assertIsNone(r["model"])
+
     def test_the_last_json_block_is_the_answer(self):
         self.assertEqual(isolation.json_of('```json\n{"a": 1}\n```\nthen\n```json\n{"b": 2}\n```'), {"b": 2})
         self.assertEqual(isolation.json_of('{"bare": true}'), {"bare": True})

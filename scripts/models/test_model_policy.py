@@ -132,6 +132,33 @@ class TestSetTier(unittest.TestCase):
             f.write_text(text.replace("tools: Read\n", f"tools: {tools}\n"), encoding="utf-8")
             self.assertTrue(any("fresh_verifier" in p and "isolated" in p for p in mp.check(self.root)), tools)
 
+    def test_the_agents_that_read_paper_text_are_marked_and_held_to_read_tools(self):
+        raw = mp.load(self.root / "config/models.toml")["tasks"]
+        marked = {k for k, t in raw.items() if t.get("reads_papers")}
+        self.assertEqual(marked, {"corpus_reader", "facet_summarizer", "paper_carder", "paper_reader",
+                                  "sota_synthesizer"})
+        self.assertEqual(mp.check(self.root), [])
+        for agent, task in (("paper-reader", "paper_reader"), ("sota-synthesizer", "sota_synthesizer")):
+            f = self.root / f"agents/{agent}.md"
+            text = (ROOT / f"agents/{agent}.md").read_text(encoding="utf-8")
+            for extra in ("Bash", "WebFetch", "Write", "Edit", "mcp__smart-connections__reindex", "Agent"):
+                f.write_text(text.replace("tools: Read, Grep, Glob\n", f"tools: Read, Grep, Glob, {extra}\n"),
+                             encoding="utf-8")
+                problems = mp.check(self.root)
+                self.assertTrue(any(task in p and "reads paper text" in p and extra in p for p in problems),
+                                (extra, problems))
+            f.write_text(text.replace("tools: Read, Grep, Glob\n",
+                                      "tools: Read, Grep, Glob, mcp__smart-connections__get_note\n"), encoding="utf-8")
+            self.assertEqual(mp.check(self.root), [])
+            f.write_text(text, encoding="utf-8")
+
+    def test_reads_papers_is_an_agent_flag(self):
+        toml = self.root / "config/models.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace(
+            'label = "Redactar el paper"', 'label = "Redactar el paper"\nreads_papers = true'), encoding="utf-8")
+        with self.assertRaises(mp.Refused):
+            mp.load(toml)
+
     def test_isolated_is_an_agent_flag(self):
         toml = self.root / "config/models.toml"
         toml.write_text(toml.read_text(encoding="utf-8").replace(

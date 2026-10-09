@@ -171,6 +171,16 @@ class TestKairoHook(unittest.TestCase):
                                    "agent_type": "kairo:paper-reader", "agent_id": "pr-1"})
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_main_thread_may_not_reach_paper_text_by_get_note_or_shell(self):
+        r = self.hook("pre-tool", {"tool_name": "mcp__smart-connections__get_note",
+                                   "tool_input": {"notePath": "Papers/P-0971 invented.md"}, "cwd": str(self.vault)})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        for cmd in ("cd Papers; cat P-0971*", "git show HEAD"):
+            r = self.hook("pre-tool", {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(self.vault)})
+            self.assertEqual(r.returncode, 2, cmd)
+        r = self.hook("pre-tool", {"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": str(self.vault)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
 
 LAUNCHER = HOOK.with_name("kairo_hook.sh")
 SH = shutil.which("sh")

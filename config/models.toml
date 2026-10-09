@@ -15,6 +15,10 @@
 #                reach the network: its only tool is `Read`, which the vault
 #                hook (scripts/security/isolation.py) limits to its packet;
 #                `check` refuses any other tool. An empty `tools:` inherits every tool.
+# reads_papers = true  (agents) the agent reads third-party paper text (notes,
+#                cards, abstracts) that may carry instructions aimed at a model:
+#                `check` refuses any tool but Read, Grep, Glob and Smart
+#                Connections search_by_text / search_similar / get_note.
 #
 # Tasks with no model at all are not listed: «¿Dónde estaba?», the lab notebook,
 # the shareable report, idea capture, numerical checks, repo remote/push.
@@ -139,6 +143,7 @@ kind = "agent"
 file = "agents/sota-synthesizer.md"
 tier = "opus"
 label = "Síntesis final del Estado del arte (escuelas, huecos)"
+reads_papers = true     # reads paper text: read and search tools only (check)
 
 [tasks.novelty_judge]
 kind = "agent"
@@ -152,6 +157,7 @@ kind = "agent"
 file = "agents/facet-summarizer.md"
 tier = "sonnet"
 label = "Resumen por faceta (pasada map)"
+reads_papers = true     # reads paper text: read and search tools only (check)
 
 [tasks.second_critic]
 kind = "agent"
@@ -164,18 +170,21 @@ kind = "agent"
 file = "agents/corpus-reader.md"
 tier = "sonnet"
 label = "Lector del corpus (ask-corpus): lee los papers y redacta citas literales, sin shell ni red"
+reads_papers = true     # reads paper text: read and search tools only (check)
 
 [tasks.paper_reader]
 kind = "agent"
 file = "agents/paper-reader.md"
 tier = "sonnet"
 label = "Lector de papers para la sesión principal (sin shell ni red)"
+reads_papers = true     # reads paper text: read and search tools only (check)
 
 [tasks.paper_carder]
 kind = "agent"
 file = "agents/paper-carder.md"
 tier = "sonnet"
 label = "Ficha de un paper (una vez por paper; citas comprobadas literales)"
+reads_papers = true     # reads paper text: read and search tools only (check)
 
 [tasks.screener]
 kind = "agent"

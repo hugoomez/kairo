@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Grep|Bash|PowerShell|mcp__smart-connections__get_note",
+        "matcher": "Read|Grep|Bash|PowerShell|mcp__smart-connections__get_note|mcp__smart-connections__search_by_text|mcp__smart-connections__search_similar",
         "hooks": [
           {
             "type": "command",
