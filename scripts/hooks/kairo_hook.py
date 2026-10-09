@@ -14,7 +14,9 @@ Reads the hook's JSON on stdin and routes it:
                their packet and keep paper text (notes, cards, kept bytes,
                transcripts, search material with abstracts) out of the main
                thread (exit 2 blocks the tool).
-  post-write   by the written path —
+  post-write   by the written path, each step inside its own time budget
+               (all of them inside hooks.json's 90 s; a step that runs out of
+               time is logged as `timeout` and said in a systemMessage) —
                  Papers/**              Smart Connections re-index + SOTA staleness check
                  Projects/*/Hipotesis/  _digest.md + _ledger.md
                  Projects/*/Claims/     _ledger.md
@@ -64,7 +66,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS / "security"))
 
-TOOL = "kairo/kairo_hook@1.2.0"
+TOOL = "kairo/kairo_hook@1.3.0"
 
 
 # --------------------------------------------------------------------------
@@ -225,6 +227,12 @@ def pre_tool(payload: dict) -> int:
     return 0
 
 
+# hooks.json gives post-write 90 s; every step together must finish before that,
+# or Claude Code kills the hook and nothing says which step was lost.
+POST_WRITE_BUDGET_S = 80
+STEP_BUDGET_S = {"sota_staleness": 20, "digest": 25, "ledger": 30, "reindex": 25}
+
+
 def post_write(payload: dict) -> int:
     fp = (payload.get("tool_input") or {}).get("file_path")
     if not fp:
@@ -232,6 +240,7 @@ def post_write(payload: dict) -> int:
     vault = find_vault(payload, fp)
     if vault is None:
         return 0
+    start = time.monotonic()
     path = Path(fp) if Path(fp).is_absolute() else Path(payload.get("cwd") or os.getcwd()) / fp
     r = rel(path, vault)
     parts = r.split("/")
@@ -243,27 +252,59 @@ def post_write(payload: dict) -> int:
     if len(parts) >= 4 and parts[0] == "Projects" and parts[2] in ("Hipotesis", "Claims"):
         actions.append(("ledger", "ledger/build_graph.py", ["--hook"]))
     forwarded = {**payload, "tool_input": {**(payload.get("tool_input") or {}), "file_path": str(path)}}
+    answer: dict = {}            # one JSON answer on stdout (additionalContext, systemMessage)
+    late: list[str] = []         # steps that ran out of time
+
+    def budget(name: str) -> int:
+        left = POST_WRITE_BUDGET_S - (time.monotonic() - start)
+        return int(min(STEP_BUDGET_S[name], left))
+
+    def out_of_time(name: str, why: str) -> None:
+        late.append(name)
+        record("PostToolUse", name, vault, "timeout", f"{r} {why}")
+
     for name, script, args in actions:
+        t = budget(name)
+        if t < 1:
+            out_of_time(name, "sin tiempo dentro del hook")
+            continue
         try:
-            code, out = run_script(script, args, forwarded)
+            code, out = run_script(script, args, forwarded, timeout=t)
             record("PostToolUse", name, vault, "ok" if code == 0 else f"exit {code}", r)
             if out and name == "sota_staleness" and out.startswith("{"):
-                print(out)  # additionalContext for the model
+                try:
+                    answer = json.loads(out)  # additionalContext for the model
+                except ValueError:
+                    print(out, file=sys.stderr)
             elif out:
                 print(out, file=sys.stderr)
+        except subprocess.TimeoutExpired:
+            out_of_time(name, f"más de {t} s")
         except Exception as exc:
             record("PostToolUse", name, vault, "error", repr(exc))
     if parts[0] == "Papers":
         js = smart_connections_reindexer(vault)
+        t = budget("reindex")
         if js is None:
             record("PostToolUse", "reindex", vault, "skipped", "no smart-connections server in .mcp.json")
+        elif t < 1:
+            out_of_time("reindex", "sin tiempo dentro del hook")
         else:
             try:
                 p = subprocess.run(["node", str(js), "--path", "Papers/", "--vault", str(vault)],
-                                   capture_output=True, timeout=30)
+                                   capture_output=True, timeout=t)
                 record("PostToolUse", "reindex", vault, "ok" if p.returncode == 0 else f"exit {p.returncode}", r)
+            except subprocess.TimeoutExpired:
+                out_of_time("reindex", f"más de {t} s")
             except (OSError, subprocess.SubprocessError) as exc:
                 record("PostToolUse", "reindex", vault, "error", repr(exc))
+    if late:
+        msg = (f"Kairo: tras escribir {r} no terminó a tiempo: {', '.join(late)} (vistas derivadas sin "
+               "actualizar; vuelve a guardar la nota o ejecuta el script a mano).")
+        print(msg, file=sys.stderr)
+        answer["systemMessage"] = (str(answer.get("systemMessage") or "") + " " + msg).strip()
+    if answer:
+        print(json.dumps(answer, ensure_ascii=False))
     return 0
 
 
