@@ -81,8 +81,17 @@ The JSON gives the run file (`_vigilancia/vigilancia-<date>.json`), the window
 (`since`, the `queried_from` actually used, `until`), how many queries were
 lost or truncated, and the counts.
 
-- `lost_all: true`: nothing was written and `last_watch` did not move. Report
-  the failure (network, 429, Semantic Scholar key) and stop.
+- `lost_all: true` (exit 4): no run was written and `last_watch` did not move;
+  a short page (`digest`) says the watch failed and why. Report the failure
+  (network, 429, Semantic Scholar key) and stop.
+- Exit 5: another watch of this project is running (`_vigilancia/.vigilancia.lock`;
+  a lock older than 6 h is taken over). Say so and stop — never delete the lock
+  of a run that may still be going.
+- Exit 2 naming a run file or `cursores.json`: that state file is corrupt. The
+  watch refuses rather than guess what was offered or covered: report it; the
+  researcher restores it from git or fixes it.
+- Every run leaves `_vigilancia/estado.json` (`status` ok · degraded · failed,
+  counts, page): a scheduled run's failure is visible there and on its page.
 - Some queries lost: continue, and name them (`lost_queries`). Their windows
   stay open (`open_windows`): the next watch re-reads them from where they
   were lost, so never call the run "nothing new" for those queries.
@@ -128,7 +137,8 @@ lost or truncated, and the counts.
   published version recorded (`resolve_refs.py --only <P-id> --write`) before
   citing it.
 - `config_warnings`: a free key missing for the sources the watch uses
-  (OpenAlex's small keyless budget, Semantic Scholar's 429s). Say it once.
+  (OpenAlex's small keyless budget, Semantic Scholar's 429s). The page says it
+  too; say it once.
 - `abstract_lookups`: candidates that came without an abstract were looked up
   in OpenAlex by DOI — only those that could be strong (a credited facet, a
   facet term in the title, or a citation of the project's papers); a lost
@@ -181,8 +191,11 @@ the 3 highest per hypothesis.
 
 A candidate with `reofrecido: true` was listed before without being read: a
 weak candidate that is now strong, or — with `pendiente_desde: <run file>` — a
-strong one an earlier watch left past `--top`. Triage it like any other and say
-so in its line. The backlog is triaged first, so a busy week never starves it.
+strong one no earlier watch has read (left past `--top`, or marked for triage
+but never given its line). Triage it like any other and say so in its line.
+This window's papers take the triage slots first and the backlog follows,
+oldest first, so an old backlog never starves a new week; a candidate counts as
+offered only once its triage line or a decision is recorded.
 
 The judgement is not yours: it runs on the policy's hard-task model
 (`config/models.toml`, task `novelty_judge`).

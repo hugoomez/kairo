@@ -64,11 +64,14 @@
     whose queries found it, plus (with a plan) the facet terms in its title or
     abstract, by lit_search's rule (or the project has one facet) — or when it
     cites the project's papers and shows one facet, or cites two of them.
-    The top `--top` strong candidates are marked for
-    triage. A strong candidate left past `--top` is the backlog: the next
-    watch carries it (`pendiente_desde`: the run that first left it), first in
-    line and whether or not the new window finds it again, until it is triaged
-    or decided — nothing a watch found strong is dropped unread. The output
+    The top `--top` strong candidates are marked for triage (`triage: true`),
+    this window's first, then the backlog: a strong candidate is *offered* only
+    once someone read it — its triage line (`why`) or a decision is recorded;
+    being marked is not reading. One not offered is the backlog: the next
+    watch carries it (`pendiente_desde`: the run that first left it), whether
+    or not the new window finds it again, oldest first behind that week's
+    papers, until it is triaged or decided — nothing a watch found strong is
+    dropped unread, and an old backlog never starves a new week. The output
     counts `strong_not_triaged` and `carried`.
   - Each candidate keeps `abstract_sha256`, the hash of the abstract exactly
     as the source returned it, so a later threat can only quote that text.
@@ -89,8 +92,15 @@
     still truncated after splitting, keeps its cursor: its own window stays open
     (`open_windows`) — never counted as covered — without holding the other
     queries back; papers already offered are dropped,
-    never repeated. If every query failed, nothing is written and the run says
-    so.
+    never repeated. The page is written before the run file, so a candidate is
+    never in a run without being on a page. If every query failed, no run is
+    written and nothing moves: the run exits 4 and leaves a short page,
+    `vigilancia-<date>[-n].md`, saying the watch failed and why.
+  - Every run leaves `_vigilancia/estado.json`: date, `status` (ok · degraded ·
+    failed), `exit_code`, the run and page names, the counts, the lost queries,
+    the open windows, the config warnings and, when it failed, the `error` — for
+    an interface or a cron wrapper to notify from. Missing free keys
+    (`config_warnings`) are also said on the page.
   - One watch of a project at a time: `delta` holds `_vigilancia/.vigilancia.lock`
     while it runs; a second one refuses (exit 5) unless the lock is older than
     LOCK_STALE_HOURS (a run that died), which it takes over and says so
@@ -135,8 +145,8 @@ triaged candidate has its one-line reason and every threat has a severity and
 a verbatim sentence. Exit 3 when something is missing (listed in `missing`).
 
 Prints one JSON object. Exit codes: 0 ok · 2 refused (bad input, or corrupt
-state) · 3 run incomplete (`check`) · 5 another watch of the project is running
-(`delta`) · 1 error.
+state) · 3 run incomplete (`check`) · 4 every query lost (`delta`; a page says
+so) · 5 another watch of the project is running (`delta`) · 1 error.
 Standard library only.
 """
 
@@ -593,7 +603,9 @@ def earlier_keys(pdir: Path) -> tuple[dict[str, bool], dict[str, tuple[str, dict
     pending: dict[str, tuple[str, dict]] = {}
     for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json"), key=lambda f: f.stat().st_mtime):
         for c in load_run(f).get("candidates", []):
-            full = bool(c.get("triage") or c.get("decision")) or "strong" not in c
+            # offered = someone read it: its triage line or a decision is recorded. Being
+            # picked for triage (`triage: true`) is not reading it.
+            full = bool(c.get("why") or c.get("decision")) or "strong" not in c
             offered[c["key"]] = offered.get(c["key"], False) or full
             if c.get("strong") and not full:
                 pending.setdefault(c["key"], (c.get("pendiente_desde") or f.name, c))
@@ -627,6 +639,7 @@ def digest_md(run: dict) -> str:
     L = [f"# Vigilancia de literatura — {run.get('project') or ''} — {run.get('until')}", "",
          f"*Ventana:* desde {run.get('since')} (consultado desde {run.get('queried_from')}) hasta {run.get('until')} · "
          f"*Consultas de:* {run.get('queries_from')}", ""]
+    L += _warnings_md(run)
     if run.get("lost") or run.get("truncated"):
         L += ["## ⚠️ Cobertura degradada", ""]
         L += [f"- Perdida (su ventana sigue abierta): {x}" for x in run.get("lost") or []]
@@ -705,6 +718,25 @@ def digest_md(run: dict) -> str:
     weak = sum(1 for c in run.get("candidates") or [] if not c.get("strong"))
     L += ["", f"*Otros {weak} candidatos débiles en el JSON de la ejecución.*", ""]
     return "\n".join(L)
+
+
+def failure_md(run: dict) -> str:
+    """The page of a watch that lost every query: nothing offered, nothing moved."""
+    L = [f"# Vigilancia de literatura — {run.get('project') or ''} — {run.get('until')}", "",
+         "## ❌ La vigilancia falló: se perdieron todas las consultas", "",
+         "No se ha guardado ninguna ejecución y ni `last_watch` ni las ventanas de las consultas se han movido: "
+         f"la próxima vigilancia vuelve a leer desde donde estaba (consultado desde {run.get('queried_from')}).", "",
+         "Por qué (cada consulta y su error):", ""]
+    L += [f"- {x}" for x in run.get("lost") or []]
+    L.append("")
+    L += _warnings_md(run)
+    return "\n".join(L)
+
+
+def _warnings_md(run: dict) -> list[str]:
+    if not run.get("config_warnings"):
+        return []
+    return ["## ⚠️ Configuración", ""] + [f"- {w}" for w in run["config_warnings"]] + [""]
 
 
 def write_digest(run_file: Path, run: dict) -> Path:
@@ -1160,14 +1192,42 @@ def own_papers_news(vault: Path, pdir: Path, fetch: Fetch, today: date) -> tuple
     return news, asked
 
 
+STATUS = "estado.json"
+
+
+def write_status(pdir: Path, today: date, status: str, res: dict | None = None, error: str | None = None) -> None:
+    """`_vigilancia/estado.json`: how the last watch went (ok / degraded / failed),
+    its counts and its page — for an interface or a cron wrapper to notify from."""
+    import time
+    res = res or {}
+    counts = ("queries", "lost", "candidates", "strong", "to_triage", "strong_not_triaged", "carried",
+              "suspicious", "publicadas")
+
+    def name(p):                                       # run and page live in _vigilancia/
+        return Path(p).name if p else None
+    atomic_write(pdir / "_vigilancia" / STATUS, json.dumps({
+        "tool": TOOL, "project": hub_field(pdir, "id"), "date": today.isoformat(),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "status": status,
+        "exit_code": 0 if status in ("ok", "degraded") else EXIT_LOST_ALL if res.get("lost_all") else 1,
+        "run": name(res.get("run")), "page": name(res.get("digest")),
+        "counts": {k: res[k] for k in counts if k in res},
+        "truncated": len(res.get("truncated") or []), "lost_queries": res.get("lost_queries") or [],
+        "open_windows": res.get("open_windows") or [], "config_warnings": res.get("config_warnings") or [],
+        "error": error}, ensure_ascii=False, indent=2) + "\n")
+
+
 def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
           citations: bool = True, own: bool = True) -> dict:
-    """One watch of the project, holding its lock (`take_lock`) while it runs."""
+    """One watch of the project, holding its lock (`take_lock`) while it runs. Every
+    run that gets the lock leaves `_vigilancia/estado.json`, a failed one too."""
     if not hub_path(pdir).is_file():
         raise Refused(f"{pdir} is not a project folder (no _hub.md)")
     stale = take_lock(pdir)
     try:
         res = _delta(vault, pdir, since, top, fetch, today, citations, own)
+    except Exception as exc:
+        write_status(pdir, today, "failed", error=str(exc)[:400])
+        raise
     finally:
         release_lock(pdir)
     return {**res, "stale_lock_removed": stale}
@@ -1323,8 +1383,9 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
     for c in cands:
         c["novelty"] = sorted(pairs[c["key"]].values(), key=lambda x: (-x["shared"], -x["score"]))[:3]
     cands.sort(key=lambda c: c.get("date") or "", reverse=True)  # newest first within a rank
-    # the backlog first (oldest unread strong candidates), so a busy feed never starves it
-    cands.sort(key=lambda c: (not c["strong"], c.get("pendiente_desde") is None, c.get("pendiente_desde") or "",
+    # this window's strong papers take the triage slots first, then the backlog (oldest
+    # first): an old backlog never starves this week's papers, and it is carried, not dropped
+    cands.sort(key=lambda c: (not c["strong"], c.get("pendiente_desde") is not None, c.get("pendiente_desde") or "",
                               -len(c["facets"]), -max([n["score"] for n in c["novelty"]] or [0])))
     for i, c in enumerate(cands):
         c["triage"] = c["strong"] and i < top
@@ -1338,6 +1399,10 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
                         "perdidas": [f"comprobación de tus papers: {net.redact(str(exc))[:160]}"]}
     truncated = [x for x in log if x.get("truncated")]
     lost = [x for x in log if x.get("error")]
+    # citations always go through OpenAlex
+    warnings = lit_search.config_warnings(
+        {"sources": sorted(set((plan or {}).get("sources") or [q["source"] for q in queries])
+                           | ({"openalex"} if citations else set()))})
     run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(),
            "queried_from": query_from.isoformat(), "until": today.isoformat(),
            "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)",
@@ -1349,14 +1414,19 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
                                 if x in NOT_WINDOWABLE],
            "citation_roots": len(roots), "citation_root_errors": root_errors, "abstract_lookups": enrich_log,
            "queries": log, "candidates": cands, "publicadas": publicadas, "threats": [],
-           "raw_dir": raw_dir.relative_to(pdir).as_posix(),
+           "raw_dir": raw_dir.relative_to(pdir).as_posix(), "config_warnings": warnings,
            **({"tus_papers": own_news} if own_news is not None else {})}
     written = None
     moved = False
-    if not lost_all:
-        written = out
-        save_run(out, run)
+    if lost_all:
+        # nothing is offered and no window moves; the page says the watch failed and why
+        digest = out.with_suffix(".md")
+        atomic_write(digest, failure_md(run))
+    else:
+        # the page first: a candidate is in a run file only once it is on a page
         digest = write_digest(out, run)
+        save_run(out, run)
+        written = out
         # Coverage is kept per query. One that answered — in full, or capped at
         # MAX_RESULTS by relevance (reported as truncated, never hidden) — is covered
         # up to today; a lost one keeps its own start, so its window stays open
@@ -1380,28 +1450,29 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
         text, nl = read_text(hub_path(pdir))
         write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
         moved = True
-    return {"run": written.relative_to(vault).as_posix() if written else None,
-            "digest": digest.relative_to(vault).as_posix() if written else None, "since": run["since"],
-            "queried_from": run["queried_from"], "until": run["until"],
-            "queries": len(log), "lost": len(lost), "lost_all": lost_all,
-            "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
-            "open_windows": sorted({x["from"] for x in lost + truncated}),
-            "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
-            "to_triage": sum(c["triage"] for c in cands),
-            "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),
-            "carried": sum(1 for c in cands if c.get("pendiente_desde")),
-            "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
-            "novelty_candidates": sum(1 for c in cands if c["novelty"]),
-            "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
-            "publicadas": len(publicadas),
-            **({"tus_papers": {k: len(v) if isinstance(v, list) else v for k, v in own_news.items()}}
-               if own_news is not None else {}),
-            "citation_root_errors": root_errors,
-            "suspicious": sum(1 for c in cands if c.get("sospechoso")),
-            # citations always go through OpenAlex
-            "config_warnings": lit_search.config_warnings(
-                {"sources": sorted(set((plan or {}).get("sources") or [q["source"] for q in queries])
-                                   | ({"openalex"} if citations else set()))})}
+    res = {"run": written.relative_to(vault).as_posix() if written else None,
+           "digest": digest.relative_to(vault).as_posix(), "since": run["since"],
+           "queried_from": run["queried_from"], "until": run["until"],
+           "queries": len(log), "lost": len(lost), "lost_all": lost_all,
+           "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
+           "open_windows": sorted({x["from"] for x in lost + truncated}),
+           "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
+           "to_triage": sum(c["triage"] for c in cands),
+           "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),
+           "carried": sum(1 for c in cands if c.get("pendiente_desde")),
+           "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
+           "novelty_candidates": sum(1 for c in cands if c["novelty"]),
+           "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
+           "publicadas": len(publicadas),
+           **({"tus_papers": {k: len(v) if isinstance(v, list) else v for k, v in own_news.items()}}
+              if own_news is not None else {}),
+           "citation_root_errors": root_errors,
+           "suspicious": sum(1 for c in cands if c.get("sospechoso")),
+           "config_warnings": warnings}
+    res["status"] = "failed" if lost_all else "degraded" if run["degraded"] else "ok"
+    write_status(pdir, today, res["status"], res, error=None if not lost_all else
+                 "se perdieron todas las consultas: " + "; ".join(run["lost"])[:400])
+    return res
 
 
 # --------------------------------------------------------------------------
@@ -1666,6 +1737,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 1
     print(json.dumps(out, ensure_ascii=False))
+    if a.cmd == "delta" and out.get("lost_all"):
+        return EXIT_LOST_ALL
     return 3 if out.get("complete") is False else 0
 
 

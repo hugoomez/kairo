@@ -141,6 +141,15 @@ class TestLitWatch(unittest.TestCase):
     def run_file(self, res) -> Path:
         return self.vault / res["run"]
 
+    def triage_all(self, res) -> None:
+        """Record a triage line for every candidate the run picked: only then is it offered."""
+        run = str(self.run_file(res))
+        for c in json.loads(Path(run).read_text(encoding="utf-8"))["candidates"]:
+            if c["triage"]:
+                code, out = self.cli("triage", "--project-dir", str(self.p), "--run", run, "--key", c["key"],
+                                     "--why", "Línea de triage inventada.")
+                self.assertEqual(code, 0, out)
+
     def test_recorded_queries_only_watchable_sources(self):
         qs = lit_watch.recorded_queries(self.p)
         self.assertEqual([(q["facet"], q["source"], q["query"]) for q in qs],
@@ -204,11 +213,13 @@ class TestLitWatch(unittest.TestCase):
         self.assertEqual(len(c2), 1)
         self.assertTrue(c2[0]["strong"])
         self.assertTrue(c2[0]["reofrecido"])
+        self.triage_all(second)
         _, third = self.delta(fetch)                        # strong once offered: never again
         self.assertEqual(json.loads(self.run_file(third).read_text(encoding="utf-8"))["candidates"], [])
 
     def test_a_second_watch_does_not_offer_the_same_papers(self):
-        self.delta()
+        _, first = self.delta()
+        self.triage_all(first)
         _, res = self.delta()
         run = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         self.assertEqual(run["candidates"], [])
@@ -231,12 +242,13 @@ class TestLitWatch(unittest.TestCase):
         self.assertIn("submittedDate:[203102150000", arxiv_url)
         self.assertIn("publicationDateOrYear=2030-12-03:", next(u for u in net.urls if "semanticscholar" in u))
         self.assertEqual(set(lit_watch.load_cursors(self.p).values()), {"2031-03-08"})
-        # every query lost: nothing written, nothing moves
+        # every query lost: no run written, nothing moves, a distinct exit code and a page saying so
         (self.p / "_hub.md").write_text(HUB, encoding="utf-8")
         for f in (self.p / "_vigilancia").glob("*.json"):
             f.unlink()
         code, res = self.delta(FakeNet(fail={"api.semanticscholar.org", "export.arxiv.org"}))
-        self.assertEqual((code, res["lost_all"], res["run"]), (0, True, None))
+        self.assertEqual((code, res["lost_all"], res["run"]), (lit_watch.EXIT_LOST_ALL, True, None))
+        self.assertIn("falló", (self.vault / res["digest"]).read_text(encoding="utf-8"))
         self.assertIn("last_watch: 2031-02-01", (self.p / "_hub.md").read_text(encoding="utf-8"))
         self.assertEqual(lit_watch.load_cursors(self.p), {})
 
@@ -740,6 +752,7 @@ class TestTriageOverflow(TestLitWatch):
         left = [k for k, c in c1.items() if c["strong"] and not c["triage"]]
         self.assertEqual(len(left), 1)
         self.assertEqual(first["strong_not_triaged"], 1)
+        self.triage_all(first)
         # next week the window finds nothing new: the one nobody read is still offered
         code, second = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), "--top", "1",
                                 fetch=fetch)
@@ -749,7 +762,8 @@ class TestTriageOverflow(TestLitWatch):
         self.assertTrue(c2[left[0]]["triage"])
         self.assertEqual(c2[left[0]]["pendiente_desde"], first["run"].rsplit("/", 1)[-1])
         self.assertEqual(second["carried"], 1)
-        # once triaged (offered in full), it does not come back
+        # once its triage line is written (offered in full), it does not come back
+        self.triage_all(second)
         _, third = self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), "--top", "1",
                             fetch=fetch)
         self.assertEqual(self.candidates(third), {})
