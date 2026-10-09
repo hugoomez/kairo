@@ -16,7 +16,9 @@
 the DOI link to open with your own access and the file names `attach-pdf`
 recognises; `attach-pdf` gives each the full text of the PDF you saved — named
 by its P-id or DOI, or any name when the PDF prints its DOI (never matched by
-title) — converted and kept like any PDF, so `verify` checks it.
+title) — converted and kept like any PDF, so `verify` checks it. Like `add`,
+`attach-pdf`, `rebuild` and `reconvert` fire the derived views (SOTA staleness
+check, Smart Connections re-index) for every note whose text they changed.
 
 A paper note's source fields — the frontmatter metadata, `## Referencia`,
 `## Resumen`, `## Texto completo` — are never typed by a model. `add` fetches
@@ -620,6 +622,16 @@ def derived_views(vault: Path, paths: list[Path]) -> dict:
     return {"sota_stale": "; ".join(stale) or None}
 
 
+def refresh_views(vault: Path, out: dict) -> dict:
+    """After attach-pdf / rebuild / reconvert: the derived views `add` fires, for
+    every note whose source text was written and changed (never on --dry-run)."""
+    paths = [vault / r["path"] for r in out.get("notes", [])
+             if r.get("status") in ("attached", "rebuilt", "reconverted") and r.get("changed", True) and r.get("path")]
+    if paths:
+        out.update(derived_views(vault, paths))
+    return out
+
+
 def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: str | None = None) -> dict:
     vault = a.vault.resolve()
     if not (vault / "Papers").is_dir():
@@ -917,6 +929,7 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
             store.write()
             path.write_text(new, encoding="utf-8", newline="\n")
         out.append({"id": pid, "status": "rebuilt" if not a.dry_run else "dry_run",
+                    "path": path.relative_to(vault).as_posix(),
                     "fulltext": kind or "abstract-only", "changed": new != text, "warnings": warn})
     return {"tool": TOOL, "notes": out}
 
@@ -959,7 +972,9 @@ def cmd_reconvert(a) -> dict:
                 manifest["converter"] = vf.TOOL_ID
                 mpath.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
                                  newline="\n")
-            out.append({"id": pid, "status": "reconverted" if not a.dry_run else "dry_run", "changed": new != text})
+            out.append({"id": pid, "status": "reconverted" if not a.dry_run else "dry_run",
+                        "changed": new.rstrip("\n") != text.rstrip("\n"),
+                        "path": path.relative_to(vault).as_posix()})
     return {"tool": TOOL, "converter": vf.TOOL_ID, "notes": out}
 
 
@@ -1054,7 +1069,8 @@ def cmd_attach_pdf(a, today: str | None = None) -> dict:
             if not block:
                 out.append({"id": pid, "status": "refused", "reason": f"pdftotext no sacó texto de {pdf.name}"})
                 continue
-            row = {"id": pid, "status": "attached" if not a.dry_run else "dry_run", "pdf": pdf.name, "matched_by": how}
+            row = {"id": pid, "status": "attached" if not a.dry_run else "dry_run", "pdf": pdf.name, "matched_by": how,
+                   "path": path.relative_to(vault).as_posix()}
             if not a.dry_run:
                 rel = vn.fm_get(fm, "fuentes")
                 mpath = vault / rel if rel else None
@@ -1151,15 +1167,15 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
             if not a.dry_run and out.get("path") and (out.get("status") == "created" or out.get("project_added")):
                 out.update(derived_views(a.vault.resolve(), [a.vault.resolve() / out["path"]]))
         elif a.cmd == "rebuild":
-            out = cmd_rebuild(a, fetch, fetch_arxiv, today)
+            out = refresh_views(a.vault.resolve(), cmd_rebuild(a, fetch, fetch_arxiv, today))
         elif a.cmd == "verify":
             out = cmd_verify(a)
         elif a.cmd == "reconvert":
-            out = cmd_reconvert(a)
+            out = refresh_views(a.vault.resolve(), cmd_reconvert(a))
         elif a.cmd == "gaps":
             out = cmd_gaps(a)
         elif a.cmd == "attach-pdf":
-            out = cmd_attach_pdf(a, today)
+            out = refresh_views(a.vault.resolve(), cmd_attach_pdf(a, today))
         else:
             out = cmd_zotero_key(a)
     except Refused as e:
