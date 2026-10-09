@@ -40,10 +40,12 @@ def entry(aid, version, doi=""):
 
 
 class Net:
-    def __init__(self, accepted_title=None, fail_openreview=False):
+    def __init__(self, accepted_title=None, fail_openreview=False, listed_title=None, venue="ICLR 2031 Poster"):
         self.urls = []
         self.accepted_title = accepted_title
         self.fail_openreview = fail_openreview
+        self.listed_title = listed_title          # the title OpenReview lists (default: the one asked)
+        self.venue = venue
 
     def __call__(self, url, headers):
         self.urls.append(url)
@@ -60,7 +62,7 @@ class Net:
             term = q["term"][0]
             if self.accepted_title and term == self.accepted_title:
                 return json.dumps({"count": 1, "notes": [{"id": "or1", "cdate": 1916006400000, "content": {
-                    "title": {"value": term}, "venue": {"value": "ICLR 2031 Poster"},
+                    "title": {"value": self.listed_title or term}, "venue": {"value": self.venue},
                     "authors": {"value": ["Ana Ficticia"]},
                     "_bibtex": {"value": "@inproceedings{a,\ntitle={x},\nbooktitle={Invented ICLR},\nyear={2031}\n}"}}}]
                 }).encode()
@@ -115,6 +117,19 @@ class OwnPapers(unittest.TestCase):
         self.assertEqual(set(asked), {"P-0971", "P-0973"})     # P-0972 has a declared version now
         # nothing was written to the paper notes
         self.assertNotIn("published", (self.vault / "Papers" / "P-0973 c.md").read_text(encoding="utf-8"))
+
+    def test_a_close_title_or_a_workshop_is_a_candidate_to_confirm_never_an_acceptance(self):
+        for net in (Net(accepted_title="Accepted toy widgets", listed_title="Accepted toy widget"),
+                    Net(accepted_title="Accepted toy widgets", venue="ICLR 2031 Workshop on Invented Widgets")):
+            code, res = self.delta(net)
+            self.assertEqual(code, 0, res)
+            own = json.loads((self.vault / res["run"]).read_text(encoding="utf-8"))["tus_papers"]
+            self.assertEqual(own["aceptadas_openreview"], [])
+            self.assertEqual([v["id"] for v in own["candidatas_openreview"]], ["P-0973"])
+            page = (self.vault / res["digest"]).read_text(encoding="utf-8")
+            self.assertNotIn("aceptado en OpenReview", page)
+            self.assertIn("posible aceptación en OpenReview (confírmala", page)
+            shutil.rmtree(self.p / "_vigilancia")
 
     def test_openreview_is_asked_a_few_papers_per_watch_least_recently_first(self):
         with mock.patch.object(lit_watch, "OPENREVIEW_PER_RUN", 1):

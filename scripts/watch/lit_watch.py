@@ -221,7 +221,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.12.0"
+TOOL = "kairo/lit_watch@1.13.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -858,7 +858,8 @@ def digest_md(run: dict) -> str:
                      f" — {ids} · otra versión de `{p['of']}` ({p['where']})")
         L.append("")
     own = run.get("tus_papers") or {}
-    if any(own.get(k) for k in ("versiones", "publicadas_arxiv", "aceptadas_openreview", "perdidas")):
+    if any(own.get(k) for k in ("versiones", "publicadas_arxiv", "aceptadas_openreview", "candidatas_openreview",
+                                "perdidas")):
         L += ["## Tus papers: qué ha cambiado", "",
               "Papers del proyecto ya ingeridos. Nada se ha cambiado en sus notas: decide tú si re-ingerir "
               "(`ingest_paper.py rebuild`) o registrar la versión publicada (`resolve_refs.py --write`).", ""]
@@ -870,6 +871,11 @@ def digest_md(run: dict) -> str:
         L += [f"- **{v['id']}** — aceptado en OpenReview: {v['venue']} (decisión «{v.get('decision')}»"
               + (f"; título publicado: «{v['titulo_publicado']}»" if v.get("titulo_publicado") else "") + ")"
               for v in own.get("aceptadas_openreview") or []]
+        L += [f"- **{v['id']}** — posible aceptación en OpenReview (confírmala: "
+              + ("es un workshop, no la versión publicada" if v.get("workshop") else "título parecido, no idéntico")
+              + f"): {v['venue']} (decisión «{v.get('decision')}»"
+              + (f"; título publicado: «{v['titulo_publicado']}»" if v.get("titulo_publicado") else "") + ")"
+              for v in own.get("candidatas_openreview") or []]
         L += [f"- ⚠️ No se pudo comprobar: {x}" for x in own.get("perdidas") or []]
         if own.get("openreview_pendientes"):
             L.append(f"- {own['openreview_pendientes']} preprints esperan su turno para OpenReview (se consultan "
@@ -1407,7 +1413,8 @@ def own_papers_news(vault: Path, pdir: Path, fetch: Fetch, today: date) -> tuple
     import paper_card
     import retraction
     papers = project_papers(vault, hub_field(pdir, "id"))
-    news: dict = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [], "perdidas": []}
+    news: dict = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [], "candidatas_openreview": [],
+                  "perdidas": []}
     with_arxiv = [p for p in papers if p["arxiv"]]
     entries, lost = retraction.fetch_arxiv([p["arxiv"] for p in with_arxiv], get=fetch) if with_arxiv else ({}, {})
     for p in with_arxiv:
@@ -1443,9 +1450,13 @@ def own_papers_news(vault: Path, pdir: Path, fetch: Fetch, today: date) -> tuple
             continue
         asked[p["id"]] = today.isoformat()
         if hit:
-            news["aceptadas_openreview"].append({"id": p["id"], "venue": hit["venue"],
-                                                 "decision": hit.get("openreview_venue"), "year": hit.get("year"),
-                                                 "url": hit.get("url"), "titulo_publicado": hit["retitled"] or None})
+            # only this exact title at a main venue is an acceptance; a retitled
+            # (close) title may be a follow-up, a workshop is not the published version
+            sure = hit.get("level") == "exact" and not hit.get("workshop")
+            news["aceptadas_openreview" if sure else "candidatas_openreview"].append(
+                {"id": p["id"], "venue": hit["venue"], "decision": hit.get("openreview_venue"),
+                 "year": hit.get("year"), "url": hit.get("url"), "titulo_publicado": hit["retitled"] or None,
+                 "nivel": hit.get("level"), "workshop": bool(hit.get("workshop"))})
     news["openreview_pendientes"] = max(0, len(pending) - OPENREVIEW_PER_RUN)
     return news, asked
 
@@ -1725,7 +1736,7 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
         try:
             own_news, asked = own_papers_news(vault, pdir, fetch, today)
         except Exception as exc:  # noqa: BLE001 — an extra check never costs the watch itself
-            own_news = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [],
+            own_news = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [], "candidatas_openreview": [],
                         "perdidas": [f"comprobación de tus papers: {net.redact(str(exc))[:160]}"]}
     # a gap re-read still capped is not news: what is left of it is in `huecos`
     truncated = [x for x in log if x.get("truncated") and not x.get("relectura_hueco")]
