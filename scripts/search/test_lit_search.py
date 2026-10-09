@@ -691,6 +691,20 @@ class SeniorAuditFixes(Base):
         open_end = ls.load_plan_dict({**PLAN, "from": "2030-10-06"})
         self.assertIn("publicationDateOrYear=2030-10-06:", ls.page_urls("s2", "toy code", open_end, 0, 100)[0])
 
+    def test_order_date_pages_the_newest_first_where_the_source_can(self):
+        plan = ls.load_plan_dict({**PLAN, "order": "date"})
+        self.assertIn("sortBy=submittedDate&sortOrder=descending", ls.page_urls("arxiv", "q", plan, 0, 100)[0])
+        self.assertIn("&sort=publication_date:desc", ls.page_urls("openalex", "q", plan, 0, 100)[0])
+        self.assertIn("&sort=published&order=desc", ls.page_urls("crossref", "q", plan, 0, 100)[0])
+        indexed = ls.load_plan_dict({**PLAN, "order": "date", "window_by": "indexed"})
+        self.assertIn("&sort=created&order=desc", ls.page_urls("crossref", "q", indexed, 0, 100)[0])
+        default = ls.load_plan_dict(PLAN)
+        self.assertEqual(default["order"], "relevance")
+        self.assertIn("sortBy=relevance", ls.page_urls("arxiv", "q", default, 0, 100)[0])
+        self.assertNotIn("sort=", ls.page_urls("openalex", "q", default, 0, 100)[0])
+        with self.assertRaises(ls.Refused):
+            ls.load_plan_dict({**PLAN, "order": "newest"})
+
     def test_short_acronym_plurals_match_their_singular(self):
         plan = {"facets": [{"id": "A", "term": "TPU kernels", "synonyms": []},
                            {"id": "B", "term": "XYZ training", "synonyms": []}]}

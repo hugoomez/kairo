@@ -209,6 +209,10 @@ FIELDS = {
     "medicine": ("27", "Medicine"),
     "economics": ("20", "Economics"),
 }
+# `order`: how a source that can sort pages its results — "relevance" (a search)
+# or "date", newest first (a watch: a capped window then still holds this week's
+# papers). Semantic Scholar's /paper/search and OpenReview cannot sort by date.
+ORDERS = ("relevance", "date")
 OPENALEX_KEYLESS_CALLS = 100         # keyless list calls a day ($0.10 at $0.001 each, checked 2026-09-24)
 TITLE_CLOSE = 0.85                   # preprint ↔ retitled published version (same first author)
 MIN_WHY_WORDS_EXCLUDE = 3
@@ -325,6 +329,9 @@ def load_plan_dict(plan: dict) -> dict:
     plan["enrich"] = bool(plan.get("enrich", True))
     plan["exhaustive"] = bool(plan.get("exhaustive", False))
     plan["arxiv_revisions"] = bool(plan.get("arxiv_revisions", False))
+    plan["order"] = plan.get("order") or "relevance"
+    if plan["order"] not in ORDERS:
+        raise Refused(f"`order` must be one of {ORDERS}")
     for k in ("include", "exclude", "scope_out", "arxiv_categories", "fields"):
         plan[k] = list(plan.get(k) or [])
     bad_fields = [x for x in plan["fields"] if x not in FIELDS]
@@ -602,7 +609,8 @@ def config_warnings(plan: dict) -> list[str]:
 def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tuple[str, dict]:
     if source == "arxiv":
         return ("https://export.arxiv.org/api/query?search_query=" + urllib.parse.quote(query, safe="")
-                + f"&start={start}&max_results={size}&sortBy=relevance&sortOrder=descending",
+                + f"&start={start}&max_results={size}&sortBy="
+                + ("submittedDate" if plan.get("order") == "date" else "relevance") + "&sortOrder=descending",
                 {"Accept": "application/atom+xml"})
     if source == "s2":
         return (f"{S2}/paper/search?query={urllib.parse.quote(query)}&offset={start}&limit={size}"
@@ -618,6 +626,7 @@ def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tup
             flt.append(f"to_publication_date:{plan['to']}")
         return ("https://api.openalex.org/works?search=" + urllib.parse.quote(query)
                 + (f"&filter={','.join(flt)}" if flt else "") + f"&per-page={size}&page={start // size + 1}"
+                + ("&sort=publication_date:desc" if plan.get("order") == "date" else "")
                 + f"&select={OA_SELECT}" + _oa_key(), {})
     if source == "crossref":
         flt = []
@@ -631,6 +640,8 @@ def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tup
         mailto = os.environ.get("KAIRO_MAILTO")          # Crossref's polite pool, optional
         return ("https://api.crossref.org/works?query=" + urllib.parse.quote(query)
                 + (f"&filter={','.join(flt)}" if flt else "") + f"&rows={size}&offset={start}"
+                + (f"&sort={'created' if kind == 'created' else 'published'}&order=desc"
+                   if plan.get("order") == "date" else "")
                 + f"&select={CROSSREF_SELECT}" + (f"&mailto={urllib.parse.quote(mailto)}" if mailto else ""),
                 {"Accept": "application/json"})
     if source == "openreview":
