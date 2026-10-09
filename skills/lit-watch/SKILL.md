@@ -184,7 +184,9 @@ so in its line ("fuera de tema: …"). Do not drop it: the researcher decides.
 ### 3. Novelty threats
 
 Look at each candidate whose `novelty` list names hypotheses. The list is a
-word-overlap prefilter (stemmed words; every active hypothesis also gets its
+word-overlap prefilter (stems Spanish and English forms share — «circuitos» meets
+"circuits", «simulaciones» "simulations" — plus short acronyms in capitals such
+as GPU or MPI; every active hypothesis also gets its
 three closest candidates sharing two or more terms, since a Spanish claim
 shares few words with an English abstract) and not a verdict. Take at most
 the 3 highest per hypothesis.

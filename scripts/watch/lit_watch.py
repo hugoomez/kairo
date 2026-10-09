@@ -86,7 +86,8 @@
     written to a note. A failure there is reported and never costs the watch.
   - Novelty prefilter: word overlap between each active hypothesis's (not
     `refutada`, not `descartada`, not `send: never`)
-    `## Claim` and each candidate's title + abstract. Only ids and scores are
+    `## Claim` and each candidate's title + abstract (`words`: shared
+    Spanish/English stems, and 2–3 letter acronyms in capitals). Only ids and scores are
     stored — the claim text never leaves the note.
   - Title and abstract are third-party text: a candidate whose text reads like
     an instruction to a model carries `sospechoso` (the patterns found).
@@ -250,9 +251,43 @@ def norm_title(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 
+_ACCENTS = str.maketrans("áéíóúüñ", "aeiouun")
+# Spanish → the form an English word reaches: claims are written in Spanish and
+# abstracts in English, so both sides go through the same rules (first match wins).
+_ES_ENDINGS = (("cionales", "tional"), ("cional", "tional"), ("ciones", "tion"), ("cion", "tion"), ("ales", "al"), ("iles", "il"), ("ores", "or"),
+               ("icos", "ic"), ("icas", "ic"), ("ico", "ic"), ("ica", "ic"), ("os", ""), ("as", ""),
+               ("o", ""), ("a", ""))
+_SHORT_CAPS_STOP = {"and", "the", "for", "not", "its", "our", "are", "can", "but", "all", "per", "via", "los",
+                    "las", "del", "con", "sin", "por", "una", "uno", "que", "on", "in", "of", "to", "at", "by",
+                    "or", "an", "as", "is", "it", "we", "no", "en", "el", "la", "de", "se", "su", "un", "y"}
+
+
+def shared_stem(w: str) -> str:
+    """One word (lowercase) → a stem a Spanish and an English form share:
+    accents dropped; -cional(es) → -tional, -ción/-ciones → -tion, -ales → -al, -ores → -or,
+    -ico/-ica(s) → -ic, a final -o/-a(s) dropped, -ial dropped (tensorial →
+    tensor); then lit_search's English stem."""
+    w = w.translate(_ACCENTS)
+    if len(w) >= 5:
+        for end, to in _ES_ENDINGS:
+            if w.endswith(end) and len(w) - len(end) >= 4:
+                w = w[:-len(end)] + to
+                break
+    if w.endswith("ial") and len(w) - 3 >= 4:
+        w = w[:-3]
+    return stem(w)
+
+
 def words(s: str) -> set[str]:
-    """Content words, stemmed (lit_search's rule), so inflections share a form."""
-    return {stem(w) for w in re.findall(r"[a-záéíóúñü][a-záéíóúñü0-9-]{3,}", (s or "").lower()) if w not in STOP}
+    """Content words as shared stems (`shared_stem`), so inflections and the
+    Spanish and English forms of a term meet; plus 2–3 letter acronyms written
+    in capitals (HPC, GPU, GPUs, MPI), lowercased and without their plural."""
+    s = s or ""
+    out = {shared_stem(w) for w in re.findall(r"[a-záéíóúñü][a-záéíóúñü0-9-]{3,}", s.lower()) if w not in STOP}
+    for a in re.findall(r"(?<![\w-])([A-Z][A-Z0-9]{1,2})s?(?![\w-])", s):
+        if a.lower() not in _SHORT_CAPS_STOP:
+            out.add(a.lower())
+    return out
 
 
 def section(body: str, heading: str) -> str:
