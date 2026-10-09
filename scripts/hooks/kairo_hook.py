@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The single entry point of every Kairo hook (declared in the plugin's hooks/hooks.json).
 
-    kairo_hook.py pre-tool      PreToolUse  Read | Grep | Bash | PowerShell | mcp__*__get_note
+    kairo_hook.py pre-tool      PreToolUse  Read | Grep | Bash | PowerShell | Smart Connections
+                                            get_note, search_by_text, search_similar
     kairo_hook.py post-write    PostToolUse Write | Edit
     kairo_hook.py post-shell    PostToolUse Bash | PowerShell
     kairo_hook.py session-end   SessionEnd
@@ -68,7 +69,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS / "security"))
 
-TOOL = "kairo/kairo_hook@1.4.0"
+TOOL = "kairo/kairo_hook@1.5.0"
 
 
 # --------------------------------------------------------------------------

@@ -49,12 +49,26 @@ Hook mode (default; reads the PreToolUse JSON from stdin):
   matches one (`cat Papers/*`) or a recursive reader over a folder holding one
   (`grep -r x Papers`, `rg x .`).
 
+    mcp__smart-connections__search_similar
+                                 `notePath` is flagged or a `_notas` note (the
+                                 answer would describe its neighbourhood)
+
   Limits (stated, not hidden): a program can still open a flagged note in ways
   no command line shows (`python -c …`, a script). The Bash check catches the
   direct cases;
   the instruction in every skill/agent that reads the vault is the primary
-  control. Smart Connections search results carry path + title + heading name
-  only, never note text, so they are not blocked here.
+  control.
+
+  Residual risk — Smart Connections searches. `search_by_text` and
+  `search_similar` are in the hook's matcher (hooks.json), but their answers
+  are not filtered: a result list can name a `send: never` note (its path,
+  title and matched heading — never its text) whenever the query lands near
+  it. A PreToolUse hook only sees the query, not the answer; whether a
+  PostToolUse hook can rewrite an MCP tool's output has not been verified for
+  this plugin, so nothing here relies on it. Queries are therefore allowed;
+  only a search_similar *from* a flagged note is refused. Keep private notes
+  out of the Smart Connections index (its own exclusion settings) when their
+  titles are themselves private.
 
   Fail-closed inside a Kairo vault: a note that exists but cannot be read
   counts as flagged, and an unparseable hook input or an internal error
@@ -85,7 +99,7 @@ import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 HEAD_BYTES = 16 * 1024  # frontmatter lives at the top; never read further
 SKIP_DIRS = {".git", ".obsidian", ".smart-env", "node_modules", ".trash", "__pycache__"}
@@ -377,6 +391,13 @@ def decide(event: dict, vault: Path | None) -> str | None:
                 return (f"El comando menciona {m.group(1)}, una nota `send: never` ({rel}); "
                         "no se ejecuta.")
         return _shell_reach(cmd, root, Path(event.get("cwd") or root))
+
+    if tool.startswith("mcp__") and tool.endswith("__search_similar"):
+        # its answer is the flagged note's neighbourhood: titles that tell what it is about
+        np_ = _clean(tin.get("notePath") or "")
+        if np_ and (is_model_notes(_resolve(str(np_), root)) or is_flagged(_resolve(str(np_), root))):
+            return f"{np_} es privada o una nota de modelo; search_similar desde ella bloqueado."
+        return None
 
     if tool.startswith("mcp__") and tool.endswith("__get_note"):
         np_ = _clean(tin.get("notePath") or "")

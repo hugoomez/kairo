@@ -105,6 +105,20 @@ class TestDecide(VaultCase):
         self.assertIsNotNone(decide(self.ev(t, notePath="Papers/P-0099 Privado.md"), self.v))
         self.assertIsNone(decide(self.ev(t, notePath="Papers/P-0001 Normal.md"), self.v))
 
+    def test_search_similar_from_a_flagged_note_is_refused_and_text_search_passes(self):
+        t = "mcp__smart-connections__search_similar"
+        self.assertIsNotNone(decide(self.ev(t, notePath="Papers/P-0099 Privado.md"), self.v))
+        self.assertIsNotNone(decide(self.ev(t, notePath="Papers/_notas/P-0001.md"), self.v))
+        self.assertIsNone(decide(self.ev(t, notePath="Papers/P-0001 Normal.md"), self.v))
+        self.assertIsNone(decide(self.ev("mcp__smart-connections__search_by_text", query="decoders"), self.v))
+
+    def test_the_hook_sees_the_smart_connections_searches(self):
+        hooks = json.loads((Path(__file__).resolve().parents[2] / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        matcher = hooks["hooks"]["PreToolUse"][0]["matcher"].split("|")
+        for t in ("mcp__smart-connections__get_note", "mcp__smart-connections__search_by_text",
+                  "mcp__smart-connections__search_similar"):
+            self.assertIn(t, matcher)
+
     def test_review_bypasses_are_closed(self):
         # brace glob: fnmatch can't expand it, so it must count as matching
         self.assertIsNotNone(decide(self.ev("Grep", pattern="x", glob="*.{md,txt}",
