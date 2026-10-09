@@ -72,8 +72,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
 import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
 
-__version__ = "1.5.0"   # 1.5.0: PDF text no reader sees (invisible, < 1 pt, white) marked hidden; 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
+__version__ = "1.6.0"   # 1.6.0: PDF headings follow the paper's numbering (no table cell / wrapped line as a heading), supplement after the references as «Material suplementario»; 1.5.0: PDF text no reader sees (invisible, < 1 pt, white) marked hidden; 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
+VERSION = tuple(int(x) for x in __version__.split("."))
+PDF_HEADINGS_SINCE = (1, 6, 0)          # before this, legacy PDF heading rules (_pdf_heading_v15)
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
 UNSECTIONED_HEADING = "Texto (sin secciones numeradas en la fuente)"
@@ -468,11 +470,9 @@ def _num_heading(num: str, title: str) -> str:
     return ("###", "####", "#####", "#####")[min(num.count("."), 3)] + f" {num} {title}"
 
 
-def _pdf_heading(s: str, st: dict) -> str | None:
-    """The `###` heading a pdftotext line opens, or None. Numbered ("3.2 Title",
-    "3.2. Title"), Roman ("II. METHODS") with lettered subsections ("A. Decoders"),
-    and appendices ("A Title", "Appendix A: Title"); Roman, lettered and dotted
-    numbers must follow on from the previous one, so an enumeration is not a heading."""
+def _pdf_heading_v15(s: str, st: dict) -> str | None:
+    """The heading rules of converter 1.5.0 and earlier, kept unchanged so a note
+    those versions wrote is regenerated exactly by `verify` (legacy=True)."""
     if s.endswith(".") or len(s) >= 95:
         return None
     m = re.match(r"^(?:APPENDIX|Appendix)\s+([A-Z])(?:[:.]\s*|\s+)(.*)$", s)
@@ -512,6 +512,102 @@ def _pdf_heading(s: str, st: dict) -> str | None:
     return None
 
 
+SUPPLEMENT_HEADING = "### Material suplementario"
+# a table cell is a number and a unit ("64 GPUs", "16 Nodes"), never a section title
+_UNITS = {"gpu", "cpu", "tpu", "node", "core", "thread", "rank", "process", "device", "accelerator", "server",
+          "machine", "worker", "socket", "gb", "mb", "tb", "kb", "gib", "mib", "tib", "gb/", "mb/", "ghz", "mhz",
+          "tflop", "gflop", "pflop", "flop", "epoch", "layer", "token", "sample", "iteration", "step", "bit",
+          "byte", "sec", "min", "hour", "day", "replica", "shard", "partition", "batche", "batch", "head"}
+
+
+def _looks_like_heading(title: str) -> bool:
+    """Short, no sentence punctuation, not a number-and-unit table cell."""
+    toks = title.split()
+    if len(toks) > 14 or re.search(r"[;!?]|\.\s|[,:]$", title) or title.count(",") >= 2:
+        return False
+    first = re.sub(r"(?:/s|s)$", "", toks[0].lower()) if toks else ""
+    if len(toks) <= 2 and (first in _UNITS or toks[0].lower() in _UNITS):
+        return False
+    numeric = sum(1 for t in toks if re.fullmatch(r"[\d.,]+[%x×]?", t))
+    return numeric * 2 < len(toks) or len(toks) > 4
+
+
+def _next_in_sequence(parts: list[int], path: list[int]) -> bool:
+    """Whether the number `parts` (3.2 → [3, 2]) follows `path`, the last number
+    seen: the next section, the next subsection of the current one, or a first
+    subsection one level down (each level below a new number starts at 1)."""
+    j = 0
+    while j < len(parts) and j < len(path) and parts[j] == path[j]:
+        j += 1
+    if j == len(parts):
+        return False                                 # the same number again, or an ancestor
+    prev = path[j] if j < len(path) else 0
+    return parts[j] == prev + 1 and all(p == 1 for p in parts[j + 1:])
+
+
+def _pdf_heading(s: str, st: dict, in_table: bool = False) -> str | None:
+    """The `###` heading a pdftotext line opens, or None. Numbered ("3.2 Title",
+    "3.2. Title"), Roman ("II. METHODS") with lettered subsections ("A. Decoders"),
+    and appendices ("A Title", "Appendix A: Title").
+
+    A number must follow on from the current numbering (the next section or
+    subsection, or the first one) and its title must look like a heading, so a
+    table cell ("64 GPUs") or an enumeration is not one; under a table caption it
+    also needs a word of six letters or more. A bare appendix letter ("A Title") counts only
+    after the references or an explicit "Appendix", in order — a wrapped line
+    ("A GPU node hosts …") is not an appendix. Numbering that restarts at 1 after
+    the references is the supplementary material: a «Material suplementario» part
+    whose headings carry an S prefix ("S1", "S1.2"), never the main text's §1."""
+    if s.endswith(".") or len(s) >= 95:
+        return None
+    m = re.match(r"^(?:APPENDIX|Appendix)\s+([A-Z])(?:[:.]\s*|\s+)(.*)$", s)
+    if m and (not st["app"] or m.group(1) >= st["app"]):
+        st.update(app=m.group(1), in_roman=False, boundary=True)
+        return f"### Appendix {m.group(1)}: {m.group(2)}".rstrip(": ")
+    m = _PDF_ROMAN.match(s)
+    if m and _title_ok(m.group(2)) and st["roman"] < len(_ROMANS) and m.group(1) == _ROMANS[st["roman"]]:
+        st["roman"] += 1
+        st.update(letter="", in_roman=True)
+        return f"### {m.group(1)}. {m.group(2)}"
+    if st["in_roman"]:
+        m = _PDF_LETTER.match(s)
+        nxt = chr(ord(st["letter"]) + 1) if st["letter"] else "A"
+        if m and _title_ok(m.group(2)) and m.group(1) == nxt:
+            st["letter"] = nxt
+            return f"#### {nxt}. {m.group(2)}"
+    m = _PDF_HEAD_DOT.match(s) or _PDF_HEAD.match(s)
+    if not m or not _title_ok(m.group(2)) or not _looks_like_heading(m.group(2)):
+        return None
+    num, title = m.group(1), m.group(2)
+    if num[0].isalpha():
+        if in_table or not (st["boundary"] or st["app"]):
+            return None
+        if "." in num:                               # "A.2": a subsection of the current appendix
+            ok = num[0] == (st["app"] or "A")
+        else:                                        # the next letter (one may be missing: A, C)
+            ok = 1 <= ord(num[0]) - ord(st["app"] or "@") <= 2
+        if not ok:
+            return None
+        st.update(app=num[0], in_roman=False)
+        return f"### Appendix {num}: {title}" if re.fullmatch(r"[A-Z]", num) else _num_heading(num, title)
+    parts = [int(x) for x in num.split(".")]
+    if st["roman"] and not st["supp"] and not st["boundary"]:
+        return None                                  # a Roman-numbered paper: an arabic number is no section
+    if ((st["boundary"] or st["app"]) and not st["supp"] and parts == [1] and (st["path"] or st["roman"])
+            and not in_table):
+        st.update(supp=True, path=[1], in_roman=False)
+        return SUPPLEMENT_HEADING + "\n\n#" + _num_heading("S1", title)
+    if in_table and not re.search(r"[A-Za-z]{6,}", title):
+        return None                                  # under a table caption: a row label is no heading
+    if not _next_in_sequence(parts, st["path"]):
+        return None
+    st["path"] = parts
+    if st["supp"]:
+        return "#" + _num_heading("S" + num, title)
+    st["top"] = parts[0]
+    return _num_heading(num, title)
+
+
 def _caption(s: str) -> tuple[str, str] | None:
     """(kind, label line) for a figure / table caption. "FIG. 2." and "TABLE II."
     (physics style) keep their own label next to the arabic number locators use."""
@@ -529,10 +625,11 @@ def _caption(s: str) -> tuple[str, str] | None:
     return kind, f"**{kind} {n}{own}:** {rest}"
 
 
-def pdftext_to_body(txt: str, start: str | None = None) -> str:
+def pdftext_to_body(txt: str, start: str | None = None, legacy: bool = False) -> str:
     """pdftotext output → verbatim body. The text starts at the introduction:
     `start` names its exact line, else the first "1 Introduction" /
-    "1. Introduction" / "I. INTRODUCTION" / "Introduction" line, else the top."""
+    "1. Introduction" / "I. INTRODUCTION" / "Introduction" line, else the top.
+    `legacy`: the heading rules of converter 1.5.0 and earlier (see legacy_rules)."""
     lines = [_lig(l.rstrip()) for l in txt.replace("\f", "\n").split("\n")]
     if start is not None:
         i0 = next((i for i, l in enumerate(lines) if l.strip() == start), 0)
@@ -541,7 +638,8 @@ def pdftext_to_body(txt: str, start: str | None = None) -> str:
     # text no reader sees (mark_hidden) is kept wherever it sits, front matter included
     out: list[str] = [l.strip() for l in lines[:i0] if l.strip().startswith(HIDDEN_OPEN)]
     damaged_run = in_refs = False
-    st = {"app": "", "roman": 0, "letter": "", "in_roman": False, "top": 0}
+    st = {"app": "", "roman": 0, "letter": "", "in_roman": False, "top": 0,
+          "path": [], "boundary": False, "supp": False}
     table_rows = -1                                  # -1: not inside a table; else rows kept
     for l in lines[i0:]:
         s = l.strip()
@@ -553,6 +651,7 @@ def pdftext_to_body(txt: str, start: str | None = None) -> str:
             continue
         if _PDF_REFS.fullmatch(s):
             in_refs = True
+            st["boundary"] = True
             table_rows = -1
             continue
         if not in_refs and _PDF_INTRO.match(s) and not out:
@@ -560,7 +659,7 @@ def pdftext_to_body(txt: str, start: str | None = None) -> str:
             if not re.match(r"^(?:1|I)\.?\s", s):
                 out.append(f"### {s}")
                 continue
-        head = _pdf_heading(s, st)
+        head = _pdf_heading_v15(s, st) if legacy else _pdf_heading(s, st, in_table=table_rows >= 0)
         if head:
             in_refs = False
             table_rows = -1
@@ -901,24 +1000,39 @@ def fuente_line(url: str, version: str, kind: str, sha: str, date: str, figures:
                 "una gráfica no es literal)" if figures else "")
              if kind != "pdf" else
              "ligaduras tipográficas normalizadas a letras; las filas de cada tabla, tal como "
-             "las extrae pdftotext, bajo su pie; se omiten el abstract (en ## Resumen) y la "
+             "las extrae pdftotext, bajo su pie; un encabezado numerado sigue la numeración del paper; "
+             "el material que reinicia la numeración tras la bibliografía va como «Material suplementario», "
+             "con prefijo S; se omiten el abstract (en ## Resumen) y la "
              "bibliografía")
     return (f"> Fuente: {url} ({how}, versión {version}), obtenido {date}; sha256 del "
             f"archivo descargado: {sha}.\n> Texto verbatim generado por {TOOL_ID}: {rules}; "
             f"«{DAMAGED}» marca lo que no se pudo extraer, sin reconstruirlo.")
 
 
-def build_from_text(data: bytes, url: str, version: str, date: str) -> str | None:
+def rules_of(converter_id: str | None) -> tuple:
+    """The conversion rules a note was written with, from its manifest's converter
+    id ("kairo/verbatim_fulltext@1.5.0" → (1, 5, 0)); never newer than this one.
+    `verify` regenerates an older note with its own rules, so a converter change
+    never turns a note it did not write into an integrity problem."""
+    m = re.search(r"@(\d+)\.(\d+)\.(\d+)", converter_id or "")
+    return min(tuple(int(x) for x in m.groups()), VERSION) if m else (0, 0, 0)
+
+
+def build_from_text(data: bytes, url: str, version: str, date: str, rules: tuple = VERSION) -> str | None:
     """--pdf-text: pdftotext output already on disk; the same rules as build()."""
-    return _assemble("pdf", url, version, data, pdftext_to_body(data.decode("utf-8", errors="replace")), date)
+    body = pdftext_to_body(data.decode("utf-8", errors="replace"), legacy=rules < PDF_HEADINGS_SINCE)
+    return _assemble("pdf", url, version, data, body, date)
 
 
-def build(kind: str, url: str, version: str, data: bytes, date: str, fig_prefix: str = "") -> str | None:
+def build(kind: str, url: str, version: str, data: bytes, date: str, fig_prefix: str = "",
+          rules: tuple = VERSION) -> str | None:
+    """The `## Texto completo` block. `rules`: the converter version whose rules to
+    apply (rules_of), for `verify` of a note an older version wrote."""
     if kind == "pdf":
         txt = pdf_bytes_to_text(data)
         if txt is None:
             return None
-        body = pdftext_to_body(mark_hidden(txt, pdf_hidden_runs(data)["runs"]))
+        body = pdftext_to_body(mark_hidden(txt, pdf_hidden_runs(data)["runs"]), legacy=rules < PDF_HEADINGS_SINCE)
     else:
         body = html_to_body(data.decode("utf-8", errors="replace"), fig_prefix)
     return _assemble(kind, url, version, data, body, date, figures=bool(fig_prefix) and kind != "pdf")

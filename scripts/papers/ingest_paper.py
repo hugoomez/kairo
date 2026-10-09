@@ -748,12 +748,13 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
                     "abstract": meta.get("abstract") or ""}}
 
 
-def convert(f: dict, data: bytes, prefix: str = "") -> str | None:
-    """The `## Texto completo` block the current converter gives for one kept file
-    (`prefix`: where its figure links point, when the note kept figure images)."""
+def convert(f: dict, data: bytes, prefix: str = "", rules: tuple = vf.VERSION) -> str | None:
+    """The `## Texto completo` block the converter gives for one kept file
+    (`prefix`: where its figure links point, when the note kept figure images;
+    `rules`: an older converter's rules, vf.rules_of, to re-check a note it wrote)."""
     if f["kind"] == "pdf-text":
-        return vf.build_from_text(data, f["url"], f.get("version", "?"), f["obtenido"])
-    return vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"], fig_prefix=prefix)
+        return vf.build_from_text(data, f["url"], f.get("version", "?"), f["obtenido"], rules=rules)
+    return vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"], fig_prefix=prefix, rules=rules)
 
 
 def manifest_prefix(manifest: dict, mpath: Path) -> str:
@@ -812,8 +813,11 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
         got_body = section_body(text, "Texto completo") or ""
         if manifest.get("converter") != vf.TOOL_ID:
             # another converter version wrote it: its `> Fuente:` lines name that version,
-            # so only the text itself can be compared with what this version gives
-            if ws(_unquoted(block or "")) != ws(_unquoted(got_body)):
+            # so only the text itself is compared — with what that version's rules give
+            # (kept here), or with what this version gives
+            rules = vf.rules_of(manifest.get("converter"))
+            own = convert(f, data, manifest_prefix(manifest, mpath), rules) if rules < vf.VERSION else block
+            if ws(_unquoted(got_body)) not in (ws(_unquoted(own or "")), ws(_unquoted(block or ""))):
                 problems.append(f"convertidor distinto ({manifest.get('converter')} → {vf.TOOL_ID}) y "
                                 "## Texto completo no coincide con lo que da el actual (el cambio de versión o "
                                 "una edición a mano): `reconvert` lo regenera desde los bytes guardados, sin red")
