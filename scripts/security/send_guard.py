@@ -42,7 +42,8 @@ Hook mode (default; reads the PreToolUse JSON from stdin):
 
   Paths are trimmed of surrounding whitespace/quotes first, as the tools do.
 
-  A reader command (`cat`, `grep`, `rg`, `Get-Content`, `Select-String`, …)
+  A reader command (`SHELL_READER`, the one list isolation.py also uses:
+  `cat`, `grep`, `rg`, `Get-Content`, `cp`, `xargs`, `python`, `node`, …)
   that reaches a flagged note without naming it is refused too: a glob that
   matches one (`cat Papers/*`) or a recursive reader over a folder holding one
   (`grep -r x Papers`, `rg x .`).
@@ -78,7 +79,7 @@ import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 HEAD_BYTES = 16 * 1024  # frontmatter lives at the top; never read further
 SKIP_DIRS = {".git", ".obsidian", ".smart-env", "node_modules", ".trash", "__pycache__"}
@@ -183,9 +184,17 @@ def _rel(p: Path, base: Path) -> str:
         return p.as_posix()
 
 
-_SHELL_READER = re.compile(r"(?:^|[\s;|&(`])(?:cat|type|more|less|head|tail|sed|awk|grep|egrep|fgrep|rg|"
-                           r"findstr|get-content|gc|select-string|sls|bat|nl|strings|od|xxd|xargs)(?:\.exe)?\b",
-                           re.IGNORECASE)
+# The one list of shell programs that can put a file's bytes in front of the
+# model: viewers and filters, copiers (a copy is read next), archivers and
+# encoders, and every interpreter that can open a file from inline code.
+# isolation.py (the main thread kept away from paper text) uses this same list.
+SHELL_READER = re.compile(
+    r"(?:^|[\s;|&(`\"':])(?:cat|type|more|less|head|tail|sed|awk|gawk|grep|egrep|fgrep|zgrep|rg|ag|ack|findstr|"
+    r"get-content|gc|select-string|sls|bat|nl|strings|od|xxd|hexdump|xargs|cp|copy|copy-item|cpi|mv|move|"
+    r"move-item|rsync|scp|tar|zip|7z|base64|certutil|iconv|sort|uniq|cut|tr|paste|diff|cmp|comm|fc|jq|yq|tee|dd|"
+    r"vi|vim|nano|pdftotext|mutool|python3?|py|node|deno|perl|ruby|php|powershell|pwsh|bash|sh|zsh|cmd|"
+    r"import-csv|convertfrom-json|readall(?:text|lines|bytes)|iex|invoke-expression)(?:\.exe)?\b",
+    re.IGNORECASE)
 _RECURSIVE = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|-recurse|/s)(?=\s|$)", re.IGNORECASE)
 
 
@@ -193,7 +202,7 @@ def _shell_reach(cmd: str, root: Path, cwd: Path) -> str | None:
     """A reader command that reaches a flagged note without naming it: a glob that
     matches one (`cat Papers/*`), or a recursive reader over a folder holding one
     (`grep -r x Papers`, `rg x .`). Best effort, like every shell check here."""
-    if not _SHELL_READER.search(cmd):
+    if not SHELL_READER.search(cmd):
         return None
     flagged = list(flagged_under(root))
     if not flagged:

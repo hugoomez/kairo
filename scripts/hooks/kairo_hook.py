@@ -10,7 +10,10 @@
 Reads the hook's JSON on stdin and routes it:
 
   pre-tool     send_guard: refuse to read or name `send: never` notes and the
-               model-written reading notes (exit 2 blocks the tool).
+               model-written reading notes; isolation: hold isolated agents to
+               their packet and keep paper text (notes, cards, kept bytes,
+               transcripts, search material with abstracts) out of the main
+               thread (exit 2 blocks the tool).
   post-write   by the written path —
                  Papers/**              Smart Connections re-index + SOTA staleness check
                  Projects/*/Hipotesis/  _digest.md + _ledger.md
@@ -55,7 +58,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS / "security"))
 
-TOOL = "kairo/kairo_hook@1.0.0"
+TOOL = "kairo/kairo_hook@1.1.0"
 
 
 # --------------------------------------------------------------------------
@@ -195,7 +198,7 @@ def pre_tool(payload: dict) -> int:
         print(f"send_guard (Kairo): {reason}", file=sys.stderr)
         return 2
     try:
-        reason = isolation.main_paper_read(payload)
+        reason = isolation.main_paper_read(payload, vault)
     except Exception as exc:  # fail open, loudly (as send_guard)
         reason = None
         record("PreToolUse", "main_paper_read", vault, "error", repr(exc))
