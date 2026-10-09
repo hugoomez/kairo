@@ -1819,7 +1819,8 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
 
 
 OTHER_ID_SEP = "#otro-id-"
-STATUS_RANK = {"clear": 0, "concern": 1, "withdrawn": 2, "retracted": 3}
+# `unverifiable`: a DOI Crossref does not know (e.g. DataCite) — never `clear`, never a block
+STATUS_RANK = {"clear": 0, "unverifiable": 1, "concern": 2, "withdrawn": 3, "retracted": 4}
 
 
 def retraction_entries(c: dict) -> list[dict]:
@@ -1856,7 +1857,7 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
     entries = {e["id"]: e for c in todo for e in retraction_entries(c)}
     res = check_retraction.run(list(entries.values()),
                                mailto) if todo else {"results": [], "counts": {
-        s: {"checked": 0, "removed": 0, "lost": 0} for s in ("crossref", "arxiv")}}
+        s: {"checked": 0, "removed": 0, "lost": 0, "unverifiable": 0} for s in ("crossref", "arxiv")}}
     by: dict[str, list[dict]] = {}
     for r in res["results"]:
         by.setdefault(str(r.get("id") or "").split(OTHER_ID_SEP, 1)[0], []).append(r)
@@ -1893,9 +1894,12 @@ def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None)
                         counts[s]["removed"] -= 1
                 elif st == "lost":
                     counts[s]["lost"] -= 1
+                elif st == "unverifiable":
+                    counts[s]["unverifiable"] = counts[s].get("unverifiable", 0) - 1
         res = {**prev, "results": [r for r in prev["results"]
                                    if str(r.get("id")).split(OTHER_ID_SEP, 1)[0] not in again] + res["results"],
-               "counts": {s: {k: counts[s][k] + res["counts"][s][k] for k in counts[s]} for s in counts}}
+               "counts": {s: {k: counts[s].get(k, 0) + res["counts"][s].get(k, 0)
+                              for k in {*counts[s], *res["counts"][s]}} for s in counts}}
     res["checked_keys"] = sorted(c["key"] for c in cands if "retraction" in c)
     save(run / "candidates.json", cands)
     save(run / "retraction.json", res)
@@ -2244,7 +2248,9 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
             if c.get("muestra_prefiltro") else []),
           f"- Tras cribado por retracción/retirada: {c['tras_retraccion']}",
           f"  - Crossref (DOI): revisados {c['retraccion']['crossref']['checked']}, retirados "
-          f"{c['retraccion']['crossref']['removed']}, perdidos {c['retraccion']['crossref']['lost']}",
+          f"{c['retraccion']['crossref']['removed']}, perdidos {c['retraccion']['crossref']['lost']}"
+          + (f", no comprobables {c['retraccion']['crossref']['unverifiable']} (DOI que Crossref no registra)"
+             if c['retraccion']['crossref'].get('unverifiable') else ""),
           f"  - arXiv (withdrawn): revisados {c['retraccion']['arxiv']['checked']}, retirados "
           f"{c['retraccion']['arxiv']['removed']}, perdidos {c['retraccion']['arxiv']['lost']}",
           f"- Incluidos: {c['incluidos']}",
@@ -2273,7 +2279,9 @@ def _line(c: dict, today: str) -> str:
         venue += f" · OpenReview: {openreview_status(c)}"
     retr = c.get("retraction") or {}
     concern = (" · ⚠️ **expresión de preocupación**: " + "; ".join(retr.get("evidence") or [])
-               if retr.get("status") == "concern" else "")
+               if retr.get("status") == "concern" else
+               " · retracción no comprobable en Crossref (DOI de otra agencia)"
+               if retr.get("status") == "unverifiable" else "")
     anchor = " · *candidato ancla por citas, no por relevancia directa*" if c.get("anchor") else ""
     vault = " · **ya en el vault**" if c.get("in_vault") else ""
     ys = c.get("years") or []

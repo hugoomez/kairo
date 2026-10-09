@@ -350,6 +350,40 @@ class Screen(Base):
         code, out = self.decide(d)
         self.assertEqual(code, 0, out)
 
+    def test_a_doi_crossref_cannot_check_is_includable_said_and_counted_never_clear(self):
+        key = next(c["key"] for c in self.cands if c.get("arxiv") == "0000.00003")
+        orig = ls.check_retraction.run
+
+        def run(cands, mailto=None):
+            res = orig(cands, mailto)
+            for r in res["results"]:
+                if r["id"] == key:
+                    r["status"] = "unverifiable"
+                    r["checks"] = {"crossref": {"state": "unverifiable", "flag": "unverifiable"},
+                                   "arxiv": {"state": "ok", "flag": None}}
+            res["counts"]["crossref"]["unverifiable"] = 1
+            res["counts"]["arxiv"]["unverifiable"] = 0
+            return res
+        ls.check_retraction.run = run
+        self.cli("retraction", "--run", str(self.run_dir))
+        cand = next(c for c in json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+                    if c["key"] == key)
+        self.assertEqual(cand["retraction"]["status"], "unverifiable")
+        d = self.all_decisions()
+        d[key] = {"decision": "include", "relevance": "alta", "why": "Reports a toy decoder result on a toy code."}
+        code, out = self.decide(d)
+        self.assertEqual(code, 0, out)                       # never blocked forever
+        ranked = (self.run_dir / "ranked.md").read_text(encoding="utf-8")
+        line = next(x for x in ranked.split("\n- ") if f"`{key}`" in x)
+        self.assertIn("retracción no comprobable en Crossref", line)
+        md = (self.run_dir / "busqueda.md").read_text(encoding="utf-8")
+        self.assertIn("no comprobables 1", md)
+        # a re-check of that key takes its earlier count off first
+        ls.check_retraction.run = run
+        code, out = self.cli("retraction", "--run", str(self.run_dir), "--keys", key)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["counts"]["crossref"]["unverifiable"], 1)
+
     def test_incomplete_or_invalid_decisions_are_refused(self):
         self.cli("retraction", "--run", str(self.run_dir))
         d = self.all_decisions()
