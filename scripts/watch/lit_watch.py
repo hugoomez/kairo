@@ -3,6 +3,8 @@
 
     lit_watch.py delta   --vault <vault> --project-dir <dir> [--since YYYY-MM-DD] [--top 10] [--no-citations]
                          [--no-own-papers] [--adopt-plan <_busquedas/run | latest>]
+    lit_watch.py triage-packet --project-dir <dir> --run <file>
+    lit_watch.py triage  --project-dir <dir> --run <file> --from-store | --reply <file> [--allow-unread]
     lit_watch.py triage  --project-dir <dir> --run <file> --key <k> --why "<one line>"
     lit_watch.py threat  --vault <vault> --project-dir <dir> --run <file> --key <k>
                          --hypothesis H-XXXX --sentence "<verbatim from the abstract>"
@@ -132,6 +134,21 @@
     stops it with that file's name (exit 2). Every state file is written to a
     temporary file and then renamed over the old one, so an interrupted write
     leaves the old file whole.
+
+`triage-packet` / `triage --from-store | --reply` (prompt-injection isolation):
+the session that runs commands never reads a candidate's title or abstract.
+`triage-packet` stores, in Kairo's packet store (`isolation.store`, named by
+its sha256), lit_search's packet format holding the followed plan's criteria
+and every candidate marked for triage still without a line, and records it in
+the run (`triage_packet`); it prints the path, sha256 and keys only. A
+`screener` reads it. `triage --from-store` takes its reply as the SubagentStop
+hook stored it (`--reply <file>`: the reply saved unchanged, checked against the
+stored one when there is one); it is refused without a screener's read receipt
+for the packet (unless `--allow-unread`) or when its keys are not the packet's.
+Each decision becomes the candidate's line verbatim — `<relevance or exclusion
+reason>: <why>`, prefixed «cita …:» when it cites the project's papers — with
+`triage_by` (agent, packet, receipt, whether the reply was verified). It prints
+counts only. `triage --key --why` records a line by hand.
 
 `threat` records a novelty threat, which is a model's judgement and not
 evidence:
@@ -1791,6 +1808,12 @@ def hypothesis_file(pdir: Path, hid: str) -> Path:
 
 
 def cmd_triage(a) -> dict:
+    """One triage line: by hand (`--key` + `--why`, the researcher's own), or the
+    screener's reply to the run's triage packet (`--from-store` / `--reply`)."""
+    if a.from_store or a.reply:
+        return triage_from_screener(a)
+    if not a.key or a.why is None:
+        raise Refused("triage needs --key and --why, or --from-store / --reply <file> (the screener's reply)")
     run = load_run(a.run)
     c = find_candidate(run, a.key)
     why = ws(a.why)
@@ -1799,6 +1822,113 @@ def cmd_triage(a) -> dict:
     c["why"] = why
     save_run(a.run, run)
     return {"key": a.key, "why": why}
+
+
+def _packet_plan(pdir: Path, run: dict) -> dict:
+    """The criteria the screener triages against: the followed lit_search plan,
+    else (a legacy project) the hub's name and the facets of its Consultas table."""
+    f = pdir / str(run.get("queries_from") or "") / "plan.json"
+    if str(run.get("queries_from") or "").startswith("_busquedas/") and f.is_file():
+        return json.loads(f.read_text(encoding="utf-8"))
+    facets = sorted({q.get("facet") for q in run.get("queries") or [] if q.get("facet") not in (None, "*")})
+    return {"description": hub_field(pdir, "name") or run.get("project") or "",
+            "facets": [{"id": f, "term": f} for f in facets],
+            "include": [], "exclude": [], "scope_out": []}
+
+
+def triage_packet_text(pdir: Path, run: dict) -> tuple[str, list[str]]:
+    """The screener's whole input for a run's triage: the plan's criteria and the
+    candidates marked for triage still without a line — titles and abstracts
+    exactly as fetched, in lit_search's packet format."""
+    import lit_search
+    todo = [c for c in run.get("candidates") or [] if c.get("triage") and not ws(c.get("why") or "")]
+    keys = [c["key"] for c in todo]
+    items = []
+    for c in todo:
+        item = {"key": c["key"], "title": c.get("title") or "", "year": (c.get("date") or "")[:4] or None,
+                "facets": c.get("facets") or [], "sources": c.get("sources") or [],
+                "venues": [c["venue"]] if c.get("venue") else [], "anchor": False, "in_vault": False,
+                "abstract": c.get("abstract") or ""}
+        if c.get("cita_a"):
+            item["cita_a"] = c["cita_a"]
+        if c.get("sospechoso"):
+            item["sospechoso"] = c["sospechoso"]
+        items.append(item)
+    pid = "t-" + hashlib.sha256("\n".join(keys).encode()).hexdigest()[:12]
+    return lit_search.page_packet(_packet_plan(pdir, run), pid, items), keys
+
+
+def cmd_triage_packet(a) -> dict:
+    """Store the triage packet (Kairo's packet store, named by its sha256) and
+    record it in the run. Prints its path and the keys — never a title or an
+    abstract: the session hands the path to a `screener` and never reads them."""
+    run = load_run(a.run)
+    text, keys = triage_packet_text(a.project_dir, run)
+    if not keys:
+        return {"packet": None, "sha256": None, "keys": [], "note": "nothing left to triage in this run"}
+    stored = isolation.store(text)
+    run["triage_packet"] = {"sha256": stored["sha256"], "keys": keys}
+    save_run(a.run, run)
+    return {"packet": stored["path"], "sha256": stored["sha256"], "keys": keys}
+
+
+def _screener_line(c: dict, d: dict) -> str:
+    if not isinstance(d, dict) or d.get("decision") not in ("include", "exclude") or not ws(d.get("why") or ""):
+        raise Refused(f"{c['key']}: the reply's entry is not a screener decision with its `why`")
+    head = d.get("relevance") if d["decision"] == "include" else d.get("reason")
+    line = (f"{head}: " if head else "") + ws(d["why"])
+    if c.get("cita_a"):
+        line = f"cita {', '.join(c['cita_a'])}: {line}"
+    return line[:300]
+
+
+def triage_from_screener(a) -> dict:
+    """Record a screener's reply to the run's triage packet, verbatim, as the
+    triage lines. Like lit_search's merge: the packet must have a read receipt
+    from a screener (unless --allow-unread), the reply must decide exactly the
+    packet's keys, and a reply given as a file must equal what the screener
+    answered (its reply stored by the SubagentStop hook) when one is stored."""
+    run = load_run(a.run)
+    pk = run.get("triage_packet") or {}
+    sha = pk.get("sha256")
+    if not sha:
+        raise Refused("this run has no triage packet: build it with `triage-packet` and hand its path to a screener")
+    if a.from_store:
+        got = isolation.replies(sha, "screener")
+        if not got:
+            raise Refused("no screener reply in the store for this run's packet: Kairo's SubagentStop hook did not "
+                          "run (a session without the plugin's hooks?) — save the reply unchanged and pass --reply")
+        text = got[-1]["text"]
+    else:
+        try:
+            text = Path(a.reply).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise Refused(f"--reply: cannot read it ({e})") from None
+    obj = isolation.json_of(text)
+    if not isinstance(obj, dict):
+        raise Refused("the reply carries no JSON object (the screener's ```json block)")
+    read = bool(isolation.received(sha, "screener"))
+    if not read and not a.allow_unread:
+        raise Refused(f"no screener is recorded as having read the triage packet ({sha[:12]}…): dispatch a "
+                      "`screener` with the packet path `triage-packet` printed; --allow-unread records the lines "
+                      "without that proof")
+    if set(obj) != set(pk.get("keys") or []):
+        raise Refused(f"the reply's keys are not the packet's keys (missing {sorted(set(pk['keys']) - set(obj))[:10]}, "
+                      f"not in the packet {sorted(set(obj) - set(pk['keys']))[:10]}) — re-dispatch the screener")
+    verified = True if a.from_store else isolation.reply_matches(sha, "screener", obj)
+    if verified is False:
+        raise Refused("the reply differs from what the screener answered for this packet (its reply, stored by the "
+                      "SubagentStop hook) — save the reply unchanged, or use --from-store")
+    by_key = {c["key"]: c for c in run["candidates"]}
+    lines = {k: _screener_line(by_key[k], obj[k]) for k in pk["keys"]}
+    for k, line in lines.items():
+        by_key[k]["why"] = line
+        by_key[k]["triage_by"] = {"agent": "screener", "packet_sha256": sha, "packet_read": read,
+                                  "reply_verified": verified,
+                                  "reply_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+    save_run(a.run, run)
+    return {"recorded": len(lines), "packet_read": read, "reply_verified": verified,
+            "excluded": sum(1 for k in lines if obj[k].get("decision") == "exclude")}
 
 
 def judge_packet_text(pdir: Path, run: dict, key: str, hid: str) -> str:
@@ -1988,15 +2118,21 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--no-own-papers", action="store_true",
                    help="skip the check of the project's own papers (new arXiv versions, published versions, "
                         "OpenReview decisions)")
-    for name in ("triage", "threat", "decide", "threat-decide", "check", "judge-packet", "digest"):
+    for name in ("triage", "triage-packet", "threat", "decide", "threat-decide", "check", "judge-packet", "digest"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
         p.add_argument("--run", required=True, type=Path)
-        if name not in ("check", "digest"):
+        if name not in ("check", "digest", "triage", "triage-packet"):
             p.add_argument("--key", required=True)
         p.add_argument("--vault", type=Path, default=None)
         if name == "triage":
-            p.add_argument("--why", required=True)
+            p.add_argument("--key", default=None)
+            p.add_argument("--why", default=None)
+            p.add_argument("--from-store", action="store_true",
+                           help="the screener's reply to the run's triage packet, as the hook stored it")
+            p.add_argument("--reply", default=None, help="the screener's reply, saved unchanged in a file")
+            p.add_argument("--allow-unread", action="store_true",
+                           help="record the lines without a receipt that a screener read the packet")
         if name == "threat":
             p.add_argument("--hypothesis", required=True)
             p.add_argument("--sentence", required=True)
@@ -2036,7 +2172,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
                 raise Refused("--run must be a file in this project's _vigilancia/")
             out = {"triage": cmd_triage, "threat": cmd_threat, "decide": cmd_decide,
                    "threat-decide": cmd_threat_decide, "check": cmd_check,
-                   "judge-packet": cmd_judge_packet, "digest": cmd_digest}[a.cmd](a)
+                   "judge-packet": cmd_judge_packet, "digest": cmd_digest,
+                   "triage-packet": cmd_triage_packet}[a.cmd](a)
     except Busy as exc:
         print(json.dumps({"error": str(exc), "busy": True}, ensure_ascii=False))
         return EXIT_BUSY
