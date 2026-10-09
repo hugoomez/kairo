@@ -41,6 +41,11 @@ it contains only:
   `Enmiendas` (post-freeze amendments — part of the record the analysis ran
   under).
 - **`## Salida de análisis`** blocks — analysis-script output, verbatim.
+- **`## Frases sin cita con cifras o comparaciones`** (state-of-the-art
+  packets only) — sentences of the map that give a figure or compare papers
+  with no citation, so no source text. Any of them that attributes a result to
+  a paper, or compares papers, is an `importante` finding: it must cite each
+  paper it uses.
 - **A proof packet** (a lemma / theorem claim note): `### Enunciado` (the
   statement), `### Demostración` (the proof), and **`## Supuestos`** — the
   statements of the lemmas / hypotheses it depends on, which the proof may

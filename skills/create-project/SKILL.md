@@ -504,7 +504,12 @@ resolved (the paper does not say it anywhere you can find), drop the
 sentence — never leave a figure the cited text does not contain. Only as a
 last resort, `--write` marks the remaining ones «⚠ …» in place, and the
 end-of-run message lists them as `importante`. Citations without a locator
-are listed, not failed; prefer adding one.
+are listed, not failed; prefer adding one. The report's `sin_cita` lists the
+sentences that state a figure or compare papers **without any citation** —
+nothing checks them: cite each (through `paper-reader`) or drop it. A model
+inference across papers (a comparison no single paper makes) is allowed only
+cited to **each** paper it combines and marked «(inferencia)»; the report
+counts them (`inferencias`) and warns on one citing a single paper.
 
 **Then check that each sentence says what its source says (a gate too).**
 `check_sota.py` proves locators and figures are real, not that a paraphrase is

@@ -49,7 +49,14 @@ reads its part whole.
 
 A value read off a plot is never literal: it is written `≈0.8 (leído de la
 Figura 3, no literal)`, is not looked for in the text, and its sentence must
-cite that figure (`P-0007 Figura 3`) — else it is a problem. A small count with
+cite that figure (`P-0007 Figura 3`) — else it is a problem. In a table, the
+figure is cited in that row's `fuente` cell (a *Matriz* cell names it itself).
+
+An uncited sentence that states a figure or compares papers is checked by
+nothing: the report lists it under `sin_cita` (a warning), and the support
+packet hands it to the verifier. A model's inference across papers is marked
+«(inferencia)» and cites each paper it combines: the report counts them
+(`inferencias`) and warns on one citing a single paper. A small count with
 a unit (`8 GPUs`, `4 pipeline stages`, `7 qubits`) is checked like any figure.
 The support packet ends with where, in the cited text, each figure of each
 sentence appears, so the verifier sees whether it belongs to the same quantity.
@@ -100,7 +107,7 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.6.0"
+TOOL = "kairo/check_sota@1.7.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
@@ -167,6 +174,34 @@ def blocks(text: str) -> list[tuple[int, int, str]]:
         if cov and cov.start() <= off + mm.start() < cov_end:
             continue
         out.append((off + mm.start(), off + mm.end(), mm.group(0)))
+    return out
+
+
+# a model's inference across papers, marked as such by the summarizer / synthesizer
+INFERENCE = re.compile(r"«?\(inferencia\)»?")
+COMPARISON = re.compile(r"\b(?:mejor(?:es)? que|peor(?:es)? que|superior(?:es)? a|inferior(?:es)? a|más (?:rápid|lent)\w* que|"
+                        r"supera\w*|outperform\w*|better than|worse than|faster than|slower than|frente a|"
+                        r"en comparación con|compared (?:to|with)|vs\.?)(?!\w)", re.I)
+
+
+def uncited_claim(block: str) -> bool:
+    """An uncited sentence that states a figure or compares papers: nothing checks it."""
+    body = re.sub(r"(?m)^\*as of [^*\n]*\*\s*$", " ", block)          # a staleness line is not a claim
+    if not body.strip() or body.lstrip().startswith(">"):
+        return False
+    return bool(numbers(body)) or bool(COMPARISON.search(body))
+
+
+def _not_synthesis(text: str) -> list[tuple[int, int]]:
+    """Spans that are not the synthesis's prose: the degraded-coverage notice and the
+    appended Búsqueda ejecutada block (counts, queries)."""
+    out = []
+    for m in re.finditer(r"(?m)^## ⚠️ Cobertura degradada.*$", text):
+        nxt = re.search(r"(?m)^## ", text[m.end():])
+        out.append((m.start(), m.end() + nxt.start() if nxt else len(text)))
+    b = re.search(r"(?m)^#{2,3} .*B[uú]squeda ejecutada", text)
+    if b:
+        out.append((b.start(), len(text)))
     return out
 
 
@@ -536,9 +571,31 @@ def check_numbers(block: str, units: list[str], citation: str, offset: int, repo
                                        "number": tok, "reason": f"la cifra «{tok}» no aparece en el texto citado"})
 
 
+def _check_plots(text: str, figures: set[str], offset: int, report: dict) -> None:
+    """A value read off a plot must cite that figure (`figures`: the ones cited)."""
+    for fig in plot_readings(text):
+        if fig not in figures:
+            report["problems"].append({"citation": None, "offset": offset, "severity": "importante",
+                                       "number": f"≈ (Figura {fig})",
+                                       "reason": f"valor leído de la Figura {fig} sin citar esa figura "
+                                                 "(P-XXXX Figura " + fig + ")"})
+
+
+FUENTE_HEADER = re.compile(r"^(?:fuentes?|sources?)$", re.I)
+
+
 def check_tables(vault: str, project: str | None, text: str, report: dict) -> None:
     for t in tables(text):
         cols = {i: m.group(1) for i, h in enumerate(t["header"]) if (m := HEADER_PAPER.match(h))}
+        # a plot reading in a row is tied to its figure in that row's `fuente` cell (or,
+        # with no such column, anywhere in the row); a matrix cell names it itself
+        fuente = next((t["cells"][i] for i, h in enumerate(t["header"])
+                       if FUENTE_HEADER.match(h) and i < len(t["cells"])), None)
+        if cols and not CITE.search(t["row"]):
+            for cell in t["cells"]:
+                _check_plots(cell, set(FIG_CITE.findall(PLOT.sub(" ", cell))), t["end"], report)
+        else:
+            _check_plots(t["row"], cited_figures(fuente if fuente is not None else t["row"]), t["end"], report)
         if CITE.search(t["row"]):
             cites, units = cited_units(vault, project, t["row"], t["start"], report)
             check_numbers(t["row"], units, ", ".join(c.group(0).strip() for c in cites), t["end"], report,
@@ -582,15 +639,19 @@ def check(vault: str, project: str | None, text: str) -> dict:
               "table_rows_checked": 0,
               # values read off a plot: never checkable against text — say how many there are
               "plot_readings": len(PLOT.findall(text))}
+    report["sin_cita"] = []
+    report["inferencias"] = len(INFERENCE.findall(text))
+    skip = _not_synthesis(text)
     for start, end, block in blocks(text):
-        for fig in plot_readings(block):
-            if fig not in cited_figures(block):
-                report["problems"].append({"citation": None, "offset": end, "severity": "importante",
-                                           "number": f"≈ (Figura {fig})",
-                                           "reason": f"valor leído de la Figura {fig} sin citar esa figura "
-                                                     "(P-XXXX Figura " + fig + ")"})
+        _check_plots(block, cited_figures(block), end, report)
         if not CITE.search(block):
+            if not any(a <= start < b for a, b in skip) and uncited_claim(block):
+                report["sin_cita"].append(" ".join(block.split()))
             continue
+        if INFERENCE.search(block) and len({m.group(1) for m in CITE.finditer(block)}) < 2:
+            report.setdefault("warnings", []).append(
+                "una inferencia «(inferencia)» cita un solo paper: una inferencia entre papers cita cada paper "
+                "que combina — " + " ".join(block.split())[:160])
         per: list = []
         cited_units(vault, project, block, start, report, per)
         check_attributed(block, per, end, report)
@@ -634,6 +695,15 @@ def section_claims(text: str, heading: str | None) -> list[str]:
     return claims + [t["row"].strip() for t in tables(body) if CITE.search(t["row"])]
 
 
+def section_uncited(text: str, heading: str | None) -> list[str]:
+    """The uncited sentences of the document (or one section) that state a figure or
+    compare papers — what `sin_cita` lists."""
+    body = section_text(text, heading)
+    skip = _not_synthesis(body)
+    return [" ".join(b.split()) for s, _, b in blocks(body)
+            if not CITE.search(b) and not any(x <= s < y for x, y in skip) and uncited_claim(b)]
+
+
 def support_packets(vault: str, text: str, label: str, heading: str | None,
                     max_chars: int = MAX_PACKET_CHARS) -> list[tuple[str, dict]]:
     """The support packet, split into parts of at most `max_chars` (a single
@@ -643,13 +713,14 @@ def support_packets(vault: str, text: str, label: str, heading: str | None,
     groups: list[list[str]] = [[]]
     size = 0
     for c in claims:
-        n = len(support_packet(vault, text, label, heading, [c])[0])
+        n = len(support_packet(vault, text, label, heading, [c], with_uncited=False)[0])
         if groups[-1] and size + n > max_chars:
             groups.append([])
             size = 0
         groups[-1].append(c)
         size += n
-    parts = [support_packet(vault, text, label, heading, g) for g in groups]
+    # the uncited sentences go once, with the first part
+    parts = [support_packet(vault, text, label, heading, g, with_uncited=i == 0) for i, g in enumerate(groups)]
     if len(parts) > 1:
         parts = [(p.replace("\n- Alcance:", f"\n- Parte: {i} de {len(parts)}\n- Alcance:", 1), m)
                  for i, (p, m) in enumerate(parts, 1)]
@@ -657,7 +728,7 @@ def support_packets(vault: str, text: str, label: str, heading: str | None,
 
 
 def support_packet(vault: str, text: str, label: str, heading: str | None,
-                   claims: list[str] | None = None) -> tuple[str, dict]:
+                   claims: list[str] | None = None, with_uncited: bool = True) -> tuple[str, dict]:
     """The fresh-verifier packet for a synthesis: every cited sentence or table row
     as an Afirmación, each followed by the verbatim text its locators point at."""
     if claims is None:
@@ -690,6 +761,12 @@ def support_packet(vault: str, text: str, label: str, heading: str | None,
                 "(Mecánico: la primera frase del texto citado que contiene cada cifra de la afirmación. "
                 "Comprueba que mide lo mismo que la afirmación dice: misma magnitud, misma condición, misma fila.)",
                 "", *ctx_lines, ""]
+    loose = section_uncited(text, heading) if with_uncited else []
+    if loose:
+        out += ["## Frases sin cita con cifras o comparaciones", "",
+                "(Mecánico: frases de esta parte del mapa que dan una cifra o comparan papers sin citar ninguno; "
+                "no tienen texto fuente. Señala como error la que atribuye un resultado a un paper o compara "
+                "papers: debe citar cada paper que usa.)", "", *(f"- «{x}»" for x in loose), ""]
     manifest["assertions"] = len(claims)
     return "\n".join(out).rstrip() + "\n", manifest
 

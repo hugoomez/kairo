@@ -30,6 +30,13 @@ differs:
   papers addresses it, written as «no aparece en los N papers del corpus
   (P-…)». The corpus is a screened sample, so a gap of the second kind is
   never "nobody has done X": open the section with one line saying so.
+- **Inferences are marked and cited to every paper they combine.** A sentence
+  you or a summarizer draw across papers (a comparison no paper makes, a
+  result carried to another paper's setting) cites each paper it rests on with
+  its locator and ends with «(inferencia)»; `check_sota.py` counts these and
+  warns on one that cites a single paper. Never leave a figure or a
+  cross-paper comparison without a citation: it is listed as `sin_cita` and
+  nothing checks it.
 - **Verbatim discipline.** Paraphrase is marked as paraphrase; anything in
   quotation marks is copied exactly from the paper note's `## Texto completo`
   (use Read/Grep to check a locator you are not sure of). If you can't support a

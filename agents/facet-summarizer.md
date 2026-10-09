@@ -126,6 +126,14 @@ with no citable location does not go in. Never paraphrase across papers
 without saying which paper each part came from, and never write a locator
 you have not just re-read in this pass.
 
+**Inferences across papers.** A conclusion no single paper states — one
+paper's result applied to another's setting, a comparison of figures from two
+papers, "A is therefore faster than B" — is your inference, not a finding.
+Cite **each** paper it combines with its own locator and end the sentence with
+«(inferencia)». A sentence with a figure or a comparison and no citation is
+never checked by anything: `check_sota.py` lists it under `sin_cita` and the
+main session must cite or drop it.
+
 ## Output — the ONLY thing you return
 
 ```
