@@ -57,6 +57,15 @@ class TestTitleLevel(unittest.TestCase):
         # a 2-word prefix of a longer title is not accepted as "subtitle dropped"
         self.assertEqual(rr.title_level("Deep Learning", "Deep Learning for Protein Folding at Scale")[0], "differs")
 
+    def test_a_strict_caller_needs_a_long_prefix(self):
+        short, longer = "Deep Double Descent", "Deep Double Descent: Where Bigger Models and More Data Hurt"
+        self.assertEqual(rr.title_level(short, longer, min_prefix=6, prefix_share=0.7)[0], "differs")
+        six = "Invented sparse widgets for toy gadget learning"
+        self.assertEqual(rr.title_level(six, six + " at scale", min_prefix=6, prefix_share=0.7)[0], "close")
+        self.assertEqual(rr.title_level(six, six + " for many invented machines")[0], "close")
+        self.assertEqual(rr.title_level(six, six + " for many invented machines",
+                                        min_prefix=6, prefix_share=0.7)[0], "differs")
+
     def test_missing(self):
         self.assertEqual(rr.title_level("", "x")[0], "missing")
 
@@ -715,7 +724,8 @@ class TestPublishedVersion(unittest.TestCase):
         ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2021, id_key="arxiv:9999.00061",
                  raw={"doi": "10.9999/jour.5", "journal_ref": "Invented Journal 12, 34 (2022)"})
         self.assertEqual(rr.published_version(self.note, [ax]),
-                         {"doi": "10.9999/jour.5", "venue": "Invented Journal 12, 34 (2022)", "source": "arXiv"})
+                         {"doi": "10.9999/jour.5", "venue": "Invented Journal 12, 34 (2022)", "source": "arXiv",
+                          "year": "2022"})
 
     def test_from_an_openalex_journal_location(self):
         oa = rec("openalex", X["title"], ["Marta Alvarez"], 2021, openalex_id="W61", found_by="arxiv-doi",
@@ -734,3 +744,95 @@ class TestPublishedVersion(unittest.TestCase):
         self.assertIsNone(rr.published_version(self.note, [ax]))
         self.assertIsNone(rr.published_version({**self.note, "doi": "10.9999/own"},
                                                [rec("arxiv", "t", [], 2021, raw={"doi": "10.9999/x"})]))
+
+
+ATOM_PUB = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+<entry><id>http://arxiv.org/abs/9999.00071v2</id><published>2021-03-01T00:00:00Z</published>
+<title>Sparse Widgets Improve Gadget Learning</title><summary>Abstract.</summary>
+<author><name>Marta Alvarez</name></author><author><name>Li Chen</name></author>
+<arxiv:doi>10.9999/jour.71</arxiv:doi><arxiv:journal_ref>Invented J. Widgets 12, 34 (2022)</arxiv:journal_ref>
+</entry></feed>"""
+
+CR_PUB = {"message": {"DOI": "10.9999/jour.71", "type": "journal-article", "title": ["Sparse widgets, published"],
+                      "author": [{"given": "Marta", "family": "Alvarez"}],
+                      "container-title": ["Invented Journal of Widgets"],
+                      "issued": {"date-parts": [[2022, 5]]}, "volume": "12", "page": "34-40"}}
+
+
+class TestWritePublishedVersion(unittest.TestCase):
+    """--write records the published version with its year, the publisher's
+    title and record, and freezes the citation key it would change."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.papers = Path(self.tmp.name) / "Papers"
+        self.papers.mkdir()
+        self.crossref = "up"
+        env = {k: v for k, v in os.environ.items() if k not in ("OPENALEX_API_KEY",)}
+        for p in (mock.patch.object(net, "get", side_effect=self.web), mock.patch.dict(os.environ, env, clear=True)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def web(self, url, headers=None, **kw):
+        if "api.openalex.org/works/doi:10.48550/arxiv.9999.00071" in url:
+            return json.dumps({"id": "https://openalex.org/W171", "display_name": X["title"],
+                               "publication_year": 2021, "is_retracted": False,
+                               "authorships": [{"author": {"display_name": "Marta Alvarez"}}]}).encode()
+        if "export.arxiv.org" in url:
+            return ATOM_PUB.encode()
+        if "api.crossref.org/works/10.9999/jour.71" in url:
+            if self.crossref == "down":
+                raise net.HttpError(url, 503, "down")
+            return json.dumps(CR_PUB).encode()
+        raise net.HttpError(url, 404, "not found")
+
+    def write(self, extra=""):
+        path = self.papers / "P-0071 w.md"
+        path.write_text(note_text("P-0071", X["title"], X["authors"], 2021, arxiv="9999.00071", extra=extra),
+                        encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rr.main(["--papers", str(self.papers), "--write"])
+        fm = vn.split_frontmatter(path.read_text(encoding="utf-8"))[0]
+        return lambda k: vn.fm_get(fm, k)
+
+    def test_the_year_title_and_clean_venue_come_from_the_publishers_record(self):
+        g = self.write()
+        self.assertEqual(g("published_doi"), "10.9999/jour.71")
+        self.assertEqual(g("published_venue"), "Invented Journal of Widgets")     # not the free-text journal_ref
+        self.assertEqual(g("published_year"), "2022")
+        self.assertEqual(g("published_title"), "Sparse widgets, published")
+        self.assertEqual((g("venue_type"), g("volume"), g("pages")), ("journal-article", "12", "34--40"))
+        # the key the note was cited by before its published year was known stays
+        self.assertEqual(g("citation_key"), "alvarez2021sparse")
+
+    def test_without_the_publisher_the_journal_ref_gives_venue_and_year(self):
+        self.crossref = "down"
+        g = self.write()
+        self.assertEqual((g("published_doi"), g("published_year")), ("10.9999/jour.71", "2022"))
+        self.assertEqual(g("published_venue"), "Invented J. Widgets 12, 34 (2022)")
+
+    def test_a_clean_venue_is_never_overwritten_by_the_journal_ref(self):
+        self.crossref = "down"
+        g = self.write('published_doi: "10.9999/jour.71"\npublished_venue: "Invented Journal of Widgets"\n'
+                       'published_year: 2022\nvenue_type: journal-article\npages: "34--40"\n')
+        self.assertEqual(g("published_venue"), "Invented Journal of Widgets")
+        self.assertEqual((g("venue_type"), g("pages")), ("journal-article", "34--40"))
+        self.assertFalse(g("citation_key"))                          # the key did not change
+
+    def test_stale_record_fields_of_another_version_are_replaced(self):
+        g = self.write('published_doi: "10.9999/old.1"\npublished_venue: "Invented Old Conf"\n'
+                       "venue_type: proceedings-article\nissue: 9\npages: 1--2\n")
+        self.assertEqual(g("published_doi"), "10.9999/jour.71")
+        self.assertEqual((g("venue_type"), g("pages"), g("issue") or ""), ("journal-article", "34--40", ""))
+
+    def test_an_existing_published_doi_is_never_blanked(self):
+        ax = rec("arxiv", X["title"], ["Marta Alvarez"], 2021, id_key="arxiv:9999.00071", raw={})
+        oa = rec("openalex", X["title"], ["Marta Alvarez"], 2021, openalex_id="W171", found_by="arxiv-doi",
+                 id_key="arxiv:9999.00071",
+                 raw={"locations": [{"source": {"type": "journal", "display_name": "Invented Journal of Widgets"}}]})
+        note = {**X, "id": "P-0071", "prev_status": None, "doi": None, "arxiv": "9999.00071"}
+        r = rr.decide(note, [oa, ax], oa, False, "clear", [], False, trace("openalex", "arxiv"))
+        r.published = rr.published_version(note, [oa, ax])
+        f = rr.fields_for(r, "2031-01-01", prev_published={"published_doi": "10.9999/jour.71"})
+        self.assertNotIn("published_doi", f)

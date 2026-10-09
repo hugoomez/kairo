@@ -248,6 +248,8 @@ def parse_arxiv_feed(xml_bytes: bytes) -> dict[str, dict]:
             "updated": (e.findtext("a:updated", default="", namespaces=_ATOM) or "").strip(),
             "doi": normalize_doi(e.findtext("arxiv:doi", default="", namespaces=_ATOM)),
             "journal_ref": " ".join((e.findtext("arxiv:journal_ref", default="", namespaces=_ATOM) or "").split()),
+            "primary_class": ((e.find("arxiv:primary_category", _ATOM) if e.find("arxiv:primary_category", _ATOM)
+                               is not None else {}).get("term") or ""),
         }
     return out
 

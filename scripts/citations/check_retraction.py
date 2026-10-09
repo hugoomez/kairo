@@ -12,23 +12,26 @@ JSON object on stdout:
       "endpoints_verified": "2026-09-24",
       "results": [
         {"id": "c1", "doi": "10.x/y", "arxiv": "2201.02177",
-         "status": "clear | concern | withdrawn | retracted",
+         "status": "clear | concern | withdrawn | retracted | unverifiable",
          "retracted": false, "withdrawn": false, "concern": false,
          "notice_for": [],               # this DOI is itself a notice about these DOIs
          "evidence": ["Crossref updated-by: retraction notice 10.x/z (2021-12-15, source retraction-watch)"],
-         "checks": {"crossref": {"state": "ok | not_found | lost | not_applicable",
-                                 "flag": "clear | concern | withdrawn | retracted"},
-                    "arxiv":    {"state": "...", "flag": "..."}}}
+         "checks": {"crossref": {"state": "ok | unverifiable | lost | not_applicable",
+                                 "flag": "clear | concern | withdrawn | retracted | unverifiable"},
+                    "arxiv":    {"state": "ok | not_found | lost | not_applicable", "flag": "..."}}}
       ],
-      "counts": {"crossref": {"checked": 3, "removed": 1, "lost": 0},
-                 "arxiv":    {"checked": 9, "removed": 0, "lost": 0}}
+      "counts": {"crossref": {"checked": 3, "removed": 1, "lost": 0, "unverifiable": 1},
+                 "arxiv":    {"checked": 9, "removed": 0, "lost": 0, "unverifiable": 0}}
     }
 
 `removed` counts candidates that source's own check flagged as retracted/withdrawn (an
 expression of concern is reported but not removed). `checked` counts
-candidates for which that source answered (ok or not_found); `lost` counts
+candidates for which that source answered (ok, or arXiv's not_found); `lost` counts
 candidates whose lookup failed after retries -- report those, never count
-them as checked. arXiv ids are batched (<=100 per call, 3 s serial spacing);
+them as checked. A DOI Crossref does not know (404: a DataCite DOI, another
+registration agency) is `unverifiable` -- «no comprobable en Crossref» --
+never checked and never `clear`: the candidate's status is `unverifiable`
+unless another source flags it. arXiv ids are batched (<=100 per call, 3 s serial spacing);
 Crossref is one call per unique DOI; 429/5xx are retried with backoff
 (3 attempts) then the lookup is LOST.
 
@@ -53,7 +56,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import retraction  # noqa: E402
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def load_candidates(raw: str) -> list[dict]:
@@ -65,19 +68,34 @@ def load_candidates(raw: str) -> list[dict]:
     return data
 
 
+UNVERIFIABLE = ("no comprobable en Crossref: el DOI no está registrado allí (DataCite u otra agencia), "
+                "así que su retracción no se pudo comprobar")
+
+
+def unverifiable_in_crossref(r: dict) -> dict:
+    """A DOI Crossref does not know (404: a DataCite DOI, another agency) was not
+    checked: `unverifiable`, never `clear`."""
+    cr = r["checks"].get("crossref") or {}
+    if cr.get("state") != "not_found":
+        return r
+    checks = {**r["checks"], "crossref": {**cr, "state": "unverifiable", "flag": "unverifiable"}}
+    return {**r, "checks": checks, "status": "unverifiable" if r["status"] == "clear" else r["status"],
+            "evidence": list(r.get("evidence") or []) + [f"crossref: {UNVERIFIABLE}"]}
+
+
 def run(cands: list[dict], mailto: str | None = None) -> dict:
     aids = [retraction.normalize_arxiv(c.get("arxiv")) or
             retraction.arxiv_from_doi(retraction.normalize_doi(c.get("doi"))) for c in cands]
     entries, lost = retraction.fetch_arxiv([a for a in aids if a])
     results, crossref_cache = [], {}
-    counts = {s: {"checked": 0, "removed": 0, "lost": 0} for s in ("crossref", "arxiv")}
+    counts = {s: {"checked": 0, "removed": 0, "lost": 0, "unverifiable": 0} for s in ("crossref", "arxiv")}
     for c in cands:
         doi = retraction.normalize_doi(c.get("doi"))
         key = (doi, retraction.normalize_arxiv(c.get("arxiv")))
         if key in crossref_cache:
             r = dict(crossref_cache[key])
         else:
-            r = retraction.check_one(doi, c.get("arxiv"), entries, lost, mailto)
+            r = unverifiable_in_crossref(retraction.check_one(doi, c.get("arxiv"), entries, lost, mailto))
             crossref_cache[key] = r
         r = {"id": c.get("id"), **r}
         for src in ("crossref", "arxiv"):
@@ -88,6 +106,8 @@ def run(cands: list[dict], mailto: str | None = None) -> dict:
                     counts[src]["removed"] += 1
             elif st == "lost":
                 counts[src]["lost"] += 1
+            elif st == "unverifiable":
+                counts[src]["unverifiable"] += 1
         results.append(r)
     return {"version": __version__, "endpoints_verified": retraction.ENDPOINTS_VERIFIED,
             "results": results, "counts": counts}

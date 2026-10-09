@@ -18,8 +18,11 @@ with its bytes kept gets its references without a re-ingestion. A `legacy` note
     (`[12]`, `Doe et al. (2020)`), its text verbatim (math as `$…$`), and the
     in-text anchor (`bib.bib12`) the body's citations link to;
   - a PDF (kept as text, or converted with `pdftotext`): the lines after the
-    `References` heading, split into entries at `[N]` / `N.` labels; an entry
-    split badly by the PDF is kept as extracted, never repaired.
+    `References` heading, split into entries at `[N]` / `N.` labels (one style
+    per list, and an `N.` label only as the next number: a line opening with a
+    year, `2019.`, continues its entry); an entry split badly by the PDF is
+    kept as extracted, never repaired — only a DOI broken across lines is read
+    whole for its identifier.
 
 From each entry only identifiers the text itself states are taken — an arXiv
 id (`arXiv:2401.01234`, `arxiv.org/abs/…`) or a DOI (`10.xxxx/…`, `doi.org/…`)
@@ -57,7 +60,7 @@ import vaultnotes as vn  # noqa: E402
 import verbatim_fulltext as vf  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 
-TOOL = "kairo/paper_refs@1.0.0"
+TOOL = "kairo/paper_refs@1.1.0"
 OUT = "referencias.json"
 _ARXIV = re.compile(r"(?:arxiv(?:\.org/(?:abs|pdf)/|:\s*)|\babs/)((?:\d{4}\.\d{4,5})|(?:[a-z-]+(?:\.[A-Z]{2})?/\d{7}))"
                     r"(?:v\d+)?", re.I)
@@ -111,21 +114,46 @@ def from_pdf_text(txt: str) -> list[dict]:
         return []
     entries: list[list[str]] = []
     labels: list[str] = []
+    style, last = None, 0
     for ln in lines[start + 1:]:
         s = ln.strip()
         if not s or re.fullmatch(r"\d{1,3}", s):
             continue
         m = _PDF_LABEL.match(s)
         if m:
-            labels.append(m.group(1))
-            entries.append([s[m.end():]])
-        elif entries:
+            num = int(m.group(1).strip("[].") or 0)
+            kind = "bracket" if m.group(1).startswith("[") else "dot"
+            # one labelling style per list; a "N." label must be the next number — a line
+            # opening with a year ("2019. doi:…") continues the entry before it
+            if style is None and (kind == "bracket" or num <= 5) \
+                    or kind == style and (kind == "bracket" or num == last + 1):
+                style, last = kind, num
+                labels.append(m.group(1))
+                entries.append([s[m.end():]])
+                continue
+        if entries:
             entries[-1].append(s)
     out = []
     for n, (label, parts) in enumerate(zip(labels, entries), 1):
         # a line broken at a hyphen is joined as printed: "quan-" + "tum" stays "quan- tum"
         text = vf.norm(" ".join(parts))
-        out.append({"n": n, "label": label, "anchor": None, "text": text, **_ids(text)})
+        out.append({"n": n, "label": label, "anchor": None, "text": text, **_ids(_join_split_dois(parts))})
+    return out
+
+
+_DOI_TAIL = re.compile(r"10\.\d{4,9}/\S*$")
+
+
+def _join_split_dois(parts: list[str]) -> str:
+    """The entry's lines joined for reading identifiers: a DOI the PDF broke across
+    lines is glued back — after a "/", "-", "_" or ".", when the next line goes on
+    with no capital (a capital after "." is the next sentence)."""
+    out = parts[0] if parts else ""
+    for nxt in parts[1:]:
+        m = _DOI_TAIL.search(out)
+        tail = m.group(0) if m else ""
+        glue = tail and (tail[-1] in "/-_" or (tail[-1] == "." and nxt[:1] and not nxt[:1].isupper()))
+        out += ("" if glue else " ") + nxt
     return out
 
 

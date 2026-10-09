@@ -84,6 +84,22 @@ class PaperRefs(unittest.TestCase):
         self.assertIn("continued on a second line", refs[1]["text"])
         self.assertEqual(refs[1]["doi"], ["10.9999/inv.4"])
 
+    def test_a_line_starting_with_a_year_is_no_new_entry_and_a_split_doi_is_read_whole(self):
+        txt = ("Body.\nReferences\n"
+               "1. A. Doe. Toy codes for invented machines. In Proc. Toy Conf.,\n"
+               "2019. doi:10.9999/inv-\n"
+               "long.5\n"
+               "2. B. Roe. Other invented paper. https://doi.org/10.9999/\n"
+               "inv.7.\n"
+               "3. C. Poe. A third one. doi:10.9999/inv.8.\n"
+               "Accessed in 2031.\n")
+        refs = pr.from_pdf_text(txt)
+        self.assertEqual([r["label"] for r in refs], ["1.", "2.", "3."])
+        self.assertIn("2019. doi:", refs[0]["text"])
+        self.assertEqual(refs[0]["doi"], ["10.9999/inv-long.5"])
+        self.assertEqual(refs[1]["doi"], ["10.9999/inv.7"])
+        self.assertEqual(refs[2]["doi"], ["10.9999/inv.8"])
+
     def test_extract_writes_beside_the_bytes_and_never_touches_the_note(self):
         self.add("P-0981", "PROJ-980", HTML.encode(), "arxiv-html")
         before = (self.v / "Papers" / "P-0981 toy.md").read_bytes()

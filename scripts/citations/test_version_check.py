@@ -81,6 +81,30 @@ class VersionCheck(unittest.TestCase):
         self.assertIn("arxiv_version: v1", after)                       # the anchored text is not moved
         self.assertTrue(after.endswith("## Referencia\n\nsynthetic\n"))
 
+    def test_a_publication_declared_without_a_new_version_is_news(self):
+        # arXiv lets authors add a DOI / journal_ref without posting a new version
+        (self.vault / "Papers" / "P-0001 one.md").write_text(paper("P-0001", "3001.00001", "v3"), encoding="utf-8")
+        code, out = self.run_cli()
+        self.assertEqual(code, 3, out)
+        self.assertEqual(out["changed"], [])
+        (p,) = out["published"]
+        self.assertEqual((p["id"], p["declared_published"]["doi"]), ("P-0001", "10.0000/journal.1"))
+        self.assertIn("H-0001", p["cited_by"])
+        # once recorded in the note, it is no longer news
+        (self.vault / "Papers" / "P-0001 one.md").write_text(
+            paper("P-0001", "3001.00001", "v3", 'published_doi: "10.0000/journal.1"\n'
+                                                'published_venue: "Invented J. 7, 11 (2031)"\n'), encoding="utf-8")
+        code, out = self.run_cli()
+        self.assertEqual((code, out["published"]), (0, []))
+
+    def test_an_unknown_ingested_version_is_said_once_not_as_news(self):
+        (self.vault / "Papers" / "P-0002 two.md").write_text(paper("P-0002", "3001.00002", ""), encoding="utf-8")
+        code, out = self.run_cli("--only", "P-0002", "--write")
+        self.assertEqual((code, out["changed"], out["unknown_version"]), (0, [], ["P-0002"]))
+        code, out = self.run_cli("--only", "P-0002")
+        self.assertEqual((code, out["changed"], out["unknown_version"]), (0, [], []))
+        self.assertEqual(out["unchanged"], 1)
+
     def test_a_lost_batch_is_reported_never_taken_as_unchanged(self):
         def down(url, headers=None, **kw):
             raise net.HttpError(url, 503, "down")

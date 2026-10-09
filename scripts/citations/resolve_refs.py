@@ -84,10 +84,22 @@ Fields written with --write (never without it), per docs/v3-interfaces.md §1c:
   resolution_status: resolved|unresolved|mismatch|retracted|withdrawn
   resolution_match: exact|close|mismatch  (empty when no record matched)
   resolution_evidence: "<one line: which sources, what differed/flagged>"
-  published_doi / published_venue  for a note anchored on an arXiv preprint (no
-                             DOI of its own): the published version, from the
-                             DOI / journal_ref arXiv declares, else a journal or
-                             conference location OpenAlex lists for the work.
+  published_doi / published_venue / published_year  for a note anchored on an
+                             arXiv preprint (no DOI of its own): the published
+                             version, from the DOI / journal_ref arXiv declares,
+                             else a journal or conference location OpenAlex lists
+                             for the work (a preprint repository never counts).
+                             A version with a DOI is completed from its own
+                             Crossref record: clean venue, year, venue_type,
+                             volume, issue, pages, and `published_title` when the
+                             publisher's title differs from the note's. A
+                             published_doi is never blanked; a venue is never
+                             replaced by the free-text journal_ref of the same
+                             version; a different version's record fields are
+                             replaced or blanked. When the year written changes
+                             the note's export_bib.py citation key, the old key
+                             is recorded as `citation_key` (existing \\cite's keep
+                             working).
   send: never notes are never written.
 
 Versions of one work: a note whose DOI and arXiv id differ only in year /
@@ -144,7 +156,7 @@ import net  # noqa: E402
 import retraction  # noqa: E402
 import vaultnotes as vn  # noqa: E402
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 OPENALEX = "https://api.openalex.org"
 OPENALEX_SELECT = ("id,doi,display_name,title,publication_year,authorships,is_retracted,ids,type,"
@@ -155,6 +167,10 @@ KEY_HELP = ("get a free OpenAlex API key at https://openalex.org/settings/api an
             "OPENALEX_API_KEY in the environment that runs Claude Code (never commit it)")
 
 REGISTRARS = ("arxiv", "crossref")      # the id's own registry: authoritative for its metadata
+# preprint servers and repositories (some filed as "journals": SSRN Electronic Journal):
+# where a preprint is, never a published version
+REPOSITORY_VENUE = re.compile(r"arxiv|biorxiv|medrxiv|chemrxiv|techrxiv|\bssrn\b|research ?square|preprints\.org|"
+                              r"zenodo|\bosf\b|open science framework|\bhal\b|openreview", re.I)
 STATUSES = ("resolved", "unresolved", "mismatch", "retracted", "withdrawn")
 LEVEL_RANK = {"exact": 2, "close": 1, "mismatch": 0}
 
@@ -190,8 +206,11 @@ def normalize_title(t: str) -> str:
     return fold(t)
 
 
-def title_level(note: str, source: str) -> tuple[str, float]:
-    """(exact | close | differs, similarity score in [0,1])."""
+def title_level(note: str, source: str, min_prefix: int = 3, prefix_share: float = 0.0) -> tuple[str, float]:
+    """(exact | close | differs, similarity score in [0,1]). One title being the
+    first words of the other counts as close when it has at least `min_prefix`
+    words and at least `prefix_share` of the longer title's words (a caller that
+    must not take a follow-up paper for this one raises both)."""
     a, b = normalize_title(note), normalize_title(source)
     if not a or not b:
         return "missing", 0.0
@@ -202,7 +221,8 @@ def title_level(note: str, source: str) -> tuple[str, float]:
     sa, sb = set(ta), set(tb)
     jac = len(sa & sb) / len(sa | sb)
     short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
-    prefix = len(short) >= 3 and long_[:len(short)] == short
+    prefix = (len(short) >= min_prefix and long_[:len(short)] == short
+              and len(short) >= prefix_share * len(long_))
     score = max(ratio, jac)
     if ratio >= 0.90 or jac >= 0.80 or prefix:
         return "close", round(max(score, 0.9 if prefix else score), 3)
@@ -436,19 +456,50 @@ def published_version(note: dict, records: list[SourceRecord]) -> dict | None:
         raw = rec.raw or {}
         if rec.source == "arxiv" and (raw.get("doi") or raw.get("journal_ref")):
             d = retraction.normalize_doi(raw.get("doi"))
+            # journal_ref is free text ("Invented J. 7, 11 (2031)"): its year, when it names one
+            years = re.findall(r"\b(?:19|20)\d{2}\b", raw.get("journal_ref") or "")
             return {"doi": d if d and not retraction.is_arxiv_doi(d) else "", "venue": raw.get("journal_ref") or "",
-                    "source": "arXiv"}
+                    "source": "arXiv", "year": years[-1] if years else ""}
     for rec in records:
         raw = rec.raw or {}
         if rec.source != "openalex":
             continue
         for loc in [raw.get("primary_location") or {}] + list(raw.get("locations") or []):
             src = loc.get("source") or {}
-            if (src.get("type") or "") in ("journal", "conference") and src.get("display_name"):
+            if (src.get("type") or "") in ("journal", "conference") and src.get("display_name") \
+                    and not REPOSITORY_VENUE.search(src["display_name"]):
                 d = retraction.normalize_doi(raw.get("doi"))
+                year = ""
+                if d and not retraction.is_arxiv_doi(d):
+                    year = str(raw.get("publication_year") or "")     # the work is the published one
+                else:
+                    # the work is the preprint's: the published version's DOI is its landing page's
+                    m = re.match(r"https?://(?:dx\.)?doi\.org/(.+)$", loc.get("landing_page_url") or "")
+                    d = retraction.normalize_doi(m.group(1)) if m else None
                 return {"doi": d if d and not retraction.is_arxiv_doi(d) else "", "venue": src["display_name"],
-                        "source": "OpenAlex"}
+                        "source": "OpenAlex", "year": year}
     return None
+
+
+def with_publisher_record(pub: dict, msg: dict | None, note_title: str) -> dict | None:
+    """The published version completed from its own Crossref record: the clean
+    container title (never arXiv's free-text journal_ref when this exists), the
+    year, the registered type, volume, issue and pages, and the publisher's title
+    (`title`, kept only when it differs from the note's). A record that is itself
+    a preprint (posted-content, a repository) is no published version."""
+    if not msg:
+        return pub
+    venue = ((msg.get("container-title") or [""])[0] or "").strip()
+    if (msg.get("type") or "") == "posted-content" or REPOSITORY_VENUE.search(venue):
+        rest = {**pub, "doi": ""}
+        return rest if rest.get("venue") and not REPOSITORY_VENUE.search(rest["venue"]) else None
+    cr = from_crossref(msg)
+    title = " ".join(_HTML.sub(" ", cr.title or "").split())
+    return {**pub, "source": pub["source"] + " + Crossref", "record": True,
+            "venue": venue or pub.get("venue") or "", "year": str(cr.year or pub.get("year") or ""),
+            "title": title if title and title_level(note_title, title)[0] != "exact" else "",
+            "venue_type": msg.get("type") or "", "volume": str(msg.get("volume") or ""),
+            "issue": str(msg.get("issue") or ""), "pages": str(msg.get("page") or "").replace("-", "--")}
 
 
 def version_only(diff: list[dict]) -> bool:
@@ -886,6 +937,12 @@ def resolve_note(note: dict, arxiv_entries: dict, arxiv_lost: dict) -> Result:
     lost_checks = [c.source for c in checks if c.state == "lost"]
     r = decide(note, records, oa_rec, oa_lost, status, ev, concern, traces, lost_checks)
     r.published = published_version(note, records)
+    if r.published and r.published["doi"]:
+        # the published version's own record: its year, clean venue and title
+        msg, chk = retraction.fetch_crossref(r.published["doi"])
+        r.published = with_publisher_record(r.published, msg, note["title"])
+        if chk.state == "lost":
+            r.evidence.append(f"Crossref record of the published version LOST ({net.redact(chk.error or '')[:80]})")
     if r.published:
         r.evidence.append(f"published version per {r.published['source']}: "
                           + " · ".join(x for x in (r.published["venue"], r.published["doi"]) if x))
@@ -914,7 +971,8 @@ def _join_ev(head: str, tail: str) -> str:
     return (head[:room].rstrip() + "; " + tail) if room > 0 else tail[:EVIDENCE_MAX]
 
 
-def fields_for(r: Result, today: str, prev_evidence: str | None = None) -> dict:
+def fields_for(r: Result, today: str, prev_evidence: str | None = None,
+               prev_published: dict | None = None) -> dict:
     """Frontmatter fields to write. OpenAlex lookup LOST: the §1c fields
     (resolved, openalex_id, resolution_checked) are NOT written -- previous
     values stay, or stay absent -- nor is resolution_status / resolution_match,
@@ -946,18 +1004,85 @@ def fields_for(r: Result, today: str, prev_evidence: str | None = None) -> dict:
     if r.published:
         # the note stays anchored on the preprint text it holds; this only says
         # where the work was published (cite that version, or re-anchor by hand)
-        out["published_doi"] = r.published["doi"]
-        out["published_venue"] = r.published["venue"]
+        out.update(published_fields(r.published, prev_published or {}))
     return out
 
 
-def write_result(path: Path, r: Result, today: str) -> bool:
+PUBLISHED_FIELDS = ("published_doi", "published_venue", "published_year", "published_title",
+                    "venue_type", "volume", "issue", "pages")
+RECORD_FIELDS = ("venue_type", "volume", "issue", "pages")
+
+
+def published_fields(pub: dict, prev: dict) -> dict:
+    """The published-version fields to write over the note's current ones (`prev`).
+    Never blanks a published_doi; never replaces a venue with the free-text
+    journal_ref for the same version; a version's record fields (type, volume,
+    issue, pages, publisher's title) are written from its own Crossref record,
+    and blanked when the version changed and nothing says what they are now."""
+    prev = {k: str(prev.get(k) or "").strip() for k in PUBLISHED_FIELDS}
+    out: dict = {}
+
+    def put(k: str, v: str) -> None:
+        if v or prev[k]:
+            out[k] = v
+    if not pub.get("doi") and prev["published_doi"]:
+        return {}                     # a version known by its DOI stays: evidence without one is weaker
+    same = (retraction.normalize_doi(prev["published_doi"]) == pub["doi"]) if pub.get("doi") \
+        else (prev["published_venue"] == pub.get("venue"))
+    out["published_doi"] = pub.get("doi") or ""
+    if pub.get("record"):
+        out["published_venue"] = pub.get("venue") or ""
+        put("published_year", pub.get("year") or "")
+        put("published_title", pub.get("title") or "")
+        for k in RECORD_FIELDS:
+            put(k, pub.get(k) or "")
+        return out
+    if not (same and prev["published_venue"]):
+        out["published_venue"] = pub.get("venue") or ""
+    if not (same and prev["published_year"]):
+        put("published_year", pub.get("year") or "")
+    if not same:
+        for k in RECORD_FIELDS + ("published_title",):
+            put(k, "")
+    return out
+
+
+def vault_keys(papers: Path) -> dict[str, str]:
+    """Every note's citation key now (export_bib.py's rule over the whole vault)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "papers"))
+    import export_bib
+    if papers.name != "Papers":
+        return {}
+    every, _ = export_bib.collect(papers.parent, None, None)
+    return dict(zip((m["id"] for m in every), export_bib.keys_for(every)))
+
+
+def frozen_key(fm: list[str], new_fm: list[str], key_now: str | None) -> str | None:
+    """The key to record as `citation_key` when the fields written would change the
+    note's citation key (a published year now known): the key it had, so every
+    existing \\cite keeps working. None when the key does not change or is recorded."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "papers"))
+    import export_bib
+    before, after = export_bib.note_meta(fm), export_bib.note_meta(new_fm)
+    if export_bib.recorded_key(before) or export_bib.base_key(before) == export_bib.base_key(after):
+        return None
+    return key_now or export_bib.base_key(before)
+
+
+def write_result(path: Path, r: Result, today: str, keys: dict[str, str] | None = None) -> bool:
     if r.status == "skipped_send_never":
         return False
     text, nl = vn.read_text(path)
     split = vn.split_frontmatter(text)
-    prev = vn.fm_get(split[0], "resolution_evidence") if split else None
-    vn.write_text(path, vn.set_fields(text, fields_for(r, today, prev)), nl)
+    fm = split[0] if split else []
+    prev = vn.fm_get(fm, "resolution_evidence") if split else None
+    fields = fields_for(r, today, prev, {k: vn.fm_get(fm, k) for k in PUBLISHED_FIELDS})
+    if split and any(k.startswith("published_") for k in fields):
+        new_fm = (vn.split_frontmatter(vn.set_fields(text, fields)) or ([], ""))[0]
+        key = frozen_key(fm, new_fm, (keys or {}).get(r.id))
+        if key:
+            fields["citation_key"] = key
+    vn.write_text(path, vn.set_fields(text, fields), nl)
     return True
 
 
@@ -1065,13 +1190,16 @@ def main(argv: list[str] | None = None) -> int:
             [p["arxiv"] or retraction.arxiv_from_doi(p["doi"]) for p in sendable
              if p["arxiv"] or retraction.arxiv_from_doi(p["doi"])])
         today = _dt.date.today().isoformat()
+        # the citation keys before anything is written: a key a new published year
+        # would change is frozen as `citation_key`
+        keys = vault_keys(a.papers) if a.write else {}
         results = []
         for p in parsed:
             if not p["send_never"]:
                 print(f"resolving {p['id']} ...", file=sys.stderr, flush=True)
             r = resolve_note(p, entries, lost)
             if a.write:
-                r.written = write_result(p["path"], r, today)
+                r.written = write_result(p["path"], r, today, keys)
             results.append(r)
     except Exception as e:  # noqa: BLE001 - any crash is "could not run"
         print(f"error: {type(e).__name__}: {net.redact(str(e))}", file=sys.stderr)

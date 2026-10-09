@@ -17,6 +17,12 @@ ingested:
   - every note that cites the paper: hypotheses and ADRs (as retraction_sweep
     finds them) and each project's Estado-del-arte.md.
 
+A published version arXiv declares is reported on its own too (`published`),
+new version or not: authors add a DOI or journal_ref without posting one. A
+note with no `arxiv_version` is listed once under `unknown_version` («versión
+ingerida desconocida»), never as a newer version; once --write recorded the
+check, it is not listed again.
+
 It never re-fetches or changes a paper's text — moving a note to a new version
 moves every locator into it, which is the researcher's decision (re-ingest
 with `ingest_paper.py rebuild`, then re-check what cites it). Default is
@@ -26,7 +32,7 @@ report-only; `--write` records `arxiv_latest_version` and
 `send: never` notes are skipped and their ids never sent. A batch arXiv did
 not answer is LOST: its papers are listed under `lost`, never as unchanged.
 
-Exit: 0 nothing newer · 3 newer versions found · 1 some lookups lost · 2 bad input.
+Exit: 0 nothing newer · 3 newer versions or a declared publication found · 1 some lookups lost · 2 bad input.
 Standard library only.
 """
 
@@ -44,7 +50,7 @@ import retraction  # noqa: E402
 import retraction_sweep as sw  # noqa: E402
 import vaultnotes as vn  # noqa: E402
 
-TOOL = "kairo/version_check@1.0.0"
+TOOL = "kairo/version_check@1.1.0"
 
 
 def _vnum(v: str | None) -> int | None:
@@ -78,7 +84,7 @@ def check(vault: Path, only: list[str] | None, write: bool, today: str) -> dict:
         if aid:
             notes.append((pid, path, fm, aid))
     entries, lost_ids = retraction.fetch_arxiv([aid for _, _, _, aid in notes])
-    changed, lost, unchanged, not_found = [], [], 0, []
+    changed, lost, unchanged, not_found, published, unknown = [], [], 0, [], [], []
     for pid, path, fm, aid in notes:
         if aid in lost_ids:
             lost.append(pid)
@@ -88,23 +94,46 @@ def check(vault: Path, only: list[str] | None, write: bool, today: str) -> dict:
             not_found.append(pid)
             continue
         stored, latest = _vnum(vn.fm_get(fm, "arxiv_version")), e.get("version")
-        declared = {k: v for k, v in (("doi", e.get("doi") or ""), ("journal_ref", e.get("journal_ref") or ""))
-                    if v and not retraction.is_arxiv_doi(v)}
-        known = {(vn.fm_get(fm, k) or "").strip().lower() for k in ("doi", "published_doi", "journal_ref")}
-        new_pub = {k: v for k, v in declared.items() if v.lower() not in known}
-        if latest and (stored is None or latest > stored):
-            changed.append({"id": pid, "arxiv": aid, "stored": f"v{stored}" if stored else None,
+        new_pub = declared_news(fm, e)
+        if latest and stored is not None and latest > stored:
+            changed.append({"id": pid, "arxiv": aid, "stored": f"v{stored}",
                             "latest": f"v{latest}", "latest_date": (e.get("updated") or "")[:10] or None,
                             "declared_published": new_pub or None, "cited_by": cited_by(vault, pid)})
+        elif latest and stored is None and _vnum(vn.fm_get(fm, "arxiv_latest_version")) != latest:
+            # which version was read is not recorded: said once (until --write records the
+            # check), never as a newer version
+            unknown.append(pid)
         else:
             unchanged += 1
+        if new_pub and not (changed and changed[-1]["id"] == pid):
+            # arXiv lets authors add a DOI / journal_ref without a new version: news on its own
+            # (with a new version it is already said in `changed`)
+            published.append({"id": pid, "arxiv": aid, "declared_published": new_pub,
+                              "cited_by": cited_by(vault, pid)})
         if write and latest:
             text = path.read_text(encoding="utf-8")
             new = vn.set_fields(text, {"arxiv_latest_version": f"v{latest}", "arxiv_version_checked": today})
             if new != text:
                 path.write_text(new, encoding="utf-8", newline="\n")
-    return {"tool": TOOL, "checked": len(notes) - len(lost), "changed": changed, "unchanged": unchanged,
+    return {"tool": TOOL, "checked": len(notes) - len(lost), "changed": changed, "published": published,
+            "unknown_version": unknown, "unchanged": unchanged,
             "lost": lost, "not_found": not_found, "skipped_send_never": skipped, "written": write}
+
+
+def declared_news(fm: list[str], e: dict) -> dict:
+    """The published version arXiv declares that the note does not record yet: a
+    DOI not among the note's, or — with no DOI declared — a journal_ref on a note
+    that records no published version at all."""
+    g = lambda k: (vn.fm_get(fm, k) or "").strip()  # noqa: E731
+    doi = retraction.normalize_doi(e.get("doi"))
+    ref = e.get("journal_ref") or ""
+    if doi and not retraction.is_arxiv_doi(doi):
+        if doi in {retraction.normalize_doi(g(k)) for k in ("doi", "published_doi")}:
+            return {}
+        return {k: v for k, v in (("doi", doi), ("journal_ref", ref)) if v}
+    if ref and not (g("published_doi") or g("published_venue") or g("journal_ref")):
+        return {"journal_ref": ref}
+    return {}
 
 
 def markdown(out: dict) -> str:
@@ -121,6 +150,16 @@ def markdown(out: dict) -> str:
         if c["cited_by"]:
             line += f"\n  Citada por: {', '.join(c['cited_by'])} — sus localizadores apuntan a {c['stored']}."
         L.append(line)
+    for c in out.get("published") or []:
+        line = (f"- {c['id']} (arXiv:{c['arxiv']}): arXiv declara una versión publicada que la nota no recoge: "
+                + ", ".join(f"{k} {v}" for k, v in c["declared_published"].items())
+                + " (`resolve_refs.py --write` la registra)")
+        if c["cited_by"]:
+            line += f"\n  Citada por: {', '.join(c['cited_by'])}."
+        L.append(line)
+    if out.get("unknown_version"):
+        L.append(f"- Versión ingerida desconocida (sin `arxiv_version`): {', '.join(out['unknown_version'])} — "
+                 "no se sabe qué versión se leyó; con --write no se vuelve a avisar.")
     return "\n".join(L)
 
 
@@ -141,7 +180,7 @@ def main(argv: list[str] | None = None, today: str | None = None) -> int:
         return 2
     out = check(a.vault, a.only, a.write, today or _dt.date.today().isoformat())
     print(json.dumps(out, ensure_ascii=False, indent=2) if a.json else markdown(out))
-    return 1 if out["lost"] else 3 if out["changed"] else 0
+    return 1 if out["lost"] else 3 if out["changed"] or out["published"] else 0
 
 
 if __name__ == "__main__":

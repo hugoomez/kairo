@@ -7,12 +7,16 @@
 Built only from each note's frontmatter, which ingest_paper.py / resolve_refs.py
 filled from the fetched records (never typed by a model). One entry per note:
 
-  - citation key: the note's `zotero_key` (Better BibTeX) when it has one, else
-    <first-author surname><year><first title word>, made unique with a, b, … in
-    P-id order over the whole vault — the same key whatever subset is exported;
+  - citation key: the note's `zotero_key` (Better BibTeX) or `citation_key`
+    (frozen by resolve_refs.py --write when a published year it records would
+    have changed the key) when it has one, else <first-author surname><year>
+    <first title word, TeX commands and math skipped>, made unique with a, b, …
+    in P-id order over the whole vault — the same key whatever subset is
+    exported; a recorded key is never suffixed;
   - a preprint with a known published version (`published_doi`,
     `published_venue`) is exported as that version, with the arXiv id kept as
-    `eprint` — cite what was peer-reviewed, keep the link to the text you read;
+    `eprint` and the publisher's title when it was retitled (`published_title`)
+    — cite what was peer-reviewed, keep the link to the text you read;
   - `keywords = {kairo:P-XXXX}` ties each entry back to its note; an entry cited as
     its published version also carries `kairoread = {arXiv:<id>v<N>}` (a field no
     style prints): the text the vault's locators point at — the report lists these
@@ -22,7 +26,9 @@ filled from the fetched records (never typed by a model). One entry per note:
     `journal` / `conference`); only a note without one falls back to reading
     the venue's name (PNAS, Proceedings of the IEEE and the like are journals);
   - `volume`, `number` and `pages` come with the published record when it has
-    them; math in a title (`$[[n,k,d]]$`) is kept as LaTeX, never escaped.
+    them; math in a title (`$[[n,k,d]]$`), TeX commands (`\\emph{…}`,
+    `\\mathbb`) and accents (`Schr\\"odinger`) are kept as LaTeX, never
+    escaped; a bare &, %, #, _ is escaped.
 
 A `send: never` note is never read: it is reported by id only. A note whose
 reference is in conflict, retracted or withdrawn (`resolution_status`) is
@@ -46,7 +52,7 @@ sys.path.insert(0, str(HERE.parent / "security"))
 import vaultnotes as vn  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/export_bib@1.3.0"
+TOOL = "kairo/export_bib@1.4.0"
 WARN = {"mismatch": "ATENCIÓN: referencia en conflicto en Kairo (resolution_status: mismatch); no citar sin revisar",
         "retracted": "ATENCIÓN: paper RETRACTADO", "withdrawn": "ATENCIÓN: preprint RETIRADO por sus autores"}
 PROCEEDINGS = re.compile(r"\b(proc(?:eedings)?|conference|symposium|workshop|SC\d*|IPDPS|ISC|NeurIPS|ICML|ICLR|"
@@ -66,22 +72,51 @@ VENUE_FIELD = {"article": "journal", "inproceedings": "booktitle", "incollection
                "book": "publisher", "phdthesis": "school", "techreport": "institution"}
 
 
-def _latex(s: str) -> str:
+# what arXiv titles and author names already write in TeX: `$…$` math, a control
+# word (`\emph`, `\mathbb`), an accent (`\"o`, `\'e`) or an escaped special (`\&`)
+_TEX_TOKEN = re.compile(r"(\$[^$]+\$|\\[A-Za-z]+\*?|\\[\"'`^~=.]|\\[&%$#_{}])")
+_HAS_TEX = re.compile(r"\\(?:[A-Za-z]+|[\"'`^~=.])")
+
+
+def _latex_text(s: str, tex_braces: bool) -> str:
+    """Plain text made safe for BibTeX. Braces stay when the string writes TeX
+    (`\\emph{…}`'s argument), else they are escaped too."""
     s = s.replace("\\", r"\textbackslash{}")
-    for ch in "&%$#_{}":
+    for ch in "&%$#_" + ("" if tex_braces else "{}"):
         s = s.replace(ch, "\\" + ch)
+    if not tex_braces:
+        s = s.replace(r"\textbackslash\{\}", r"\textbackslash{}")
     return s.replace("~", r"\textasciitilde{}").replace("^", r"\textasciicircum{}")
+
+
+def _tex_parts(s: str) -> list[tuple[str, str]]:
+    """[(kind, text)]: kind `math`, `tex` (passed as written) or `text` (escaped)."""
+    out = []
+    for i, part in enumerate(_TEX_TOKEN.split(s or "")):
+        if part:
+            out.append(("text", part) if i % 2 == 0 else ("math" if part.startswith("$") else "tex", part))
+    return out
+
+
+def _latex(s: str) -> str:
+    braces = bool(_HAS_TEX.search(s or ""))
+    return "".join(p if k != "text" else _latex_text(p, braces) for k, p in _tex_parts(s))
 
 
 def _protect(title: str) -> str:
     """Keep acronyms and capitalised technical words (qLDPC, GPU, BP-OSD) as written;
-    `$…$` math is passed through untouched (it is already LaTeX)."""
+    `$…$` math, TeX commands and accents are passed through untouched (they are
+    already LaTeX); bare &, %, #, _ are escaped."""
+    braces = bool(_HAS_TEX.search(title or ""))
     out = []
-    for i, part in enumerate(re.split(r"(\$[^$]+\$)", title)):
-        if i % 2:
+    for kind, part in _tex_parts(title):
+        if kind == "math":
             out.append("{" + part + "}")
+        elif kind == "tex":
+            out.append(part)
         else:
-            out.append(re.sub(r"\b(\w*[A-Z]\w*[A-Z0-9]\w*|[A-Z][a-z]*\d\w*)\b", r"{\1}", _latex(part)))
+            out.append(re.sub(r"\b(\w*[A-Z]\w*[A-Z0-9]\w*|[A-Z][a-z]*\d\w*)\b", r"{\1}",
+                              _latex_text(part, braces)))
     return "".join(out)
 
 
@@ -103,6 +138,7 @@ def note_meta(fm: list[str]) -> dict:
             "year": g("year"), "venue": g("venue"), "doi": g("doi"), "arxiv": g("arxiv"),
             "arxiv_version": g("arxiv_version"), "url": g("url"), "published_doi": g("published_doi"),
             "published_venue": g("published_venue"), "published_year": g("published_year"),
+            "published_title": g("published_title"), "citation_key": g("citation_key"),
             "zotero_key": g("zotero_key"), "venue_type": g("venue_type"), "volume": g("volume"),
             "issue": g("issue"), "pages": g("pages"), "openalex": g("openalex"),
             "status": g("resolution_status"), "source": g("source")}
@@ -116,10 +152,26 @@ def effective(m: dict) -> dict:
     if (m.get("published_venue") or m.get("published_doi")) and not str(m.get("published_year") or "").strip():
         bits = [b for b in (m.get("published_venue"),
                             f"DOI {m['published_doi']}" if m.get("published_doi") else "") if b]
-        return {**m, "published_venue": "", "published_doi": "",
+        return {**m, "published_venue": "", "published_doi": "", "published_title": "", "published_authors": [],
                 "pub_note": "Versión publicada: " + ", ".join(bits)
                             + " (año de la versión publicada no consta; se cita el preprint)"}
     return m
+
+
+def cited_title(m: dict) -> str:
+    """The title of the version cited: the publisher's (`published_title`, when the
+    published version was retitled) for an entry cited as its published version."""
+    m = effective(m)
+    if (m.get("published_venue") or m.get("published_doi")) and m.get("published_title"):
+        return m["published_title"]
+    return m.get("title") or ""
+
+
+def cited_authors(m: dict) -> list:
+    m = effective(m)
+    if (m.get("published_venue") or m.get("published_doi")) and m.get("published_authors"):
+        return list(m["published_authors"])
+    return list(m.get("authors") or [])
 
 
 def entry_type(m: dict) -> tuple[str, str | None]:
@@ -142,7 +194,8 @@ def entry_type(m: dict) -> tuple[str, str | None]:
 def base_key(m: dict) -> str:
     m = effective(m)
     first = _ascii(_surname(m["authors"][0])).lower() if m.get("authors") else "anon"
-    word = next((w for w in re.findall(r"[A-Za-z]{4,}", m.get("title") or "")
+    plain = re.sub(r"\$[^$]*\$|\\[A-Za-z]+\*?|\\.", " ", m.get("title") or "")     # math and TeX commands are no words
+    word = next((w for w in re.findall(r"[A-Za-z]{4,}", plain)
                  if w.lower() not in {"with", "from", "that", "this", "towards", "using"}), "paper")
     year = (m.get("published_year") if m.get("published_venue") or m.get("published_doi") else "") or m.get("year")
     return f"{first or 'anon'}{year or ''}{word.lower()}"
@@ -165,11 +218,11 @@ def notes(m: dict) -> str:
 def bibtex_entry(m: dict, key: str, read_field: bool = True) -> str:
     m = effective(m)
     kind, venue_field = entry_type(m)
-    venue = m.get("published_venue") or (m["venue"] if m.get("venue") != "arXiv preprint" else "")
+    venue = m.get("published_venue") or ((m.get("venue") or "") if m.get("venue") != "arXiv preprint" else "")
     doi = m.get("published_doi") or m.get("doi") or ""
     year = (m.get("published_year") if m.get("published_venue") or m.get("published_doi") else "") or m.get("year") or ""
-    fields = [("title", "{" + _protect(m.get("title") or "") + "}"),
-              ("author", "{" + " and ".join(_latex(a) for a in m.get("authors") or []) + "}"),
+    fields = [("title", "{" + _protect(cited_title(m)) + "}"),
+              ("author", "{" + " and ".join(_latex(a) for a in cited_authors(m) if a) + "}"),
               ("year", "{" + str(year) + "}")]
     if venue_field and venue:
         fields.append((venue_field, "{" + _latex(venue) + "}"))
@@ -180,6 +233,8 @@ def bibtex_entry(m: dict, key: str, read_field: bool = True) -> str:
         fields.append(("doi", "{" + doi + "}"))
     if m.get("arxiv"):
         fields += [("eprint", "{" + m["arxiv"] + "}"), ("archiveprefix", "{arXiv}")]
+        if m.get("primary_class"):
+            fields.append(("primaryclass", "{" + m["primary_class"] + "}"))
         if kind == "misc":
             fields.append(("howpublished", "{arXiv preprint arXiv:" + m["arxiv"] + (m.get("arxiv_version") or "") + "}"))
     if m.get("url") and not doi:
@@ -201,14 +256,14 @@ def csl_item(m: dict, key: str) -> dict:
     item = {"id": key, "type": {"article": "article-journal", "inproceedings": "paper-conference",
                                 "incollection": "chapter", "book": "book", "phdthesis": "thesis",
                                 "techreport": "report", "misc": "article", "patent": "patent"}[kind],
-            "title": m.get("title"),
+            "title": cited_title(m),
             "author": [{"family": _surname(a), "given": (a.split(",", 1)[1].strip() if "," in a
-                                                         else " ".join(a.split()[:-1]))} for a in m.get("authors") or []]}
+                                                         else " ".join(a.split()[:-1]))} for a in cited_authors(m) if a]}
     year = str((m.get("published_year") if m.get("published_venue") or m.get("published_doi") else "")
                or m.get("year") or "")
     if year.isdigit():
         item["issued"] = {"date-parts": [[int(year)]]}
-    venue = m.get("published_venue") or (m["venue"] if m.get("venue") != "arXiv preprint" else "")
+    venue = m.get("published_venue") or ((m.get("venue") or "") if m.get("venue") != "arXiv preprint" else "")
     if venue:
         item["container-title"] = venue
     if m.get("published_doi") or m.get("doi"):
@@ -244,14 +299,31 @@ def collect(vault: Path, project: str | None, only: list[str] | None) -> tuple[l
     return metas, skipped
 
 
+def recorded_key(m: dict) -> str:
+    """A key the note carries: Better BibTeX's (`zotero_key`), or `citation_key` —
+    the key frozen when a published year recorded later would have changed it."""
+    return (m.get("zotero_key") or m.get("citation_key") or "").strip()
+
+
 def keys_for(metas: list[dict]) -> list[str]:
+    """Recorded keys as they are; the others <surname><year><word>, suffixed a, b, …
+    in order past every key already taken (a recorded key is never suffixed)."""
+    taken = {recorded_key(m) for m in metas if recorded_key(m)}
     used: dict[str, int] = {}
     out = []
     for m in metas:
-        k = m.get("zotero_key") or base_key(m)
+        if recorded_key(m):
+            out.append(recorded_key(m))
+            continue
+        k = base_key(m)
         n = used.get(k, 0)
+        cand = k if n == 0 else k + "abcdefghijklmnopqrstuvwxyz"[min(n - 1, 25)]
+        while cand in taken and n < 26:
+            n += 1
+            cand = k + "abcdefghijklmnopqrstuvwxyz"[min(n - 1, 25)]
         used[k] = n + 1
-        out.append(k if n == 0 else k + "abcdefghijklmnopqrstuvwxyz"[min(n - 1, 25)])
+        taken.add(cand)
+        out.append(cand)
     return out
 
 

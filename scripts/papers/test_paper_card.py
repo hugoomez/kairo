@@ -26,7 +26,7 @@ OPENALEX = {"id": "https://openalex.org/W444", "doi": "https://doi.org/10.0000/s
             "primary_location": {"source": {"type": "conference", "display_name": "Invented SC 2030"}},
             "locations": [], "authorships": [{"author": {"display_name": "Jane Doe"}}]}
 
-CROSSREF = {"message": {"DOI": "10.0000/sc.444", "type": "proceedings-article", "title": ["Distributed Toy..."],
+CROSSREF = {"message": {"DOI": "10.0000/sc.444", "type": "proceedings-article", "title": ["Distributed Toy State-Vector Simulation"],
                         "container-title": ["Proceedings of the Invented SC Conference"],
                         "issued": {"date-parts": [[2030, 11]]}, "page": "1-12",
                         "relation": {"has-preprint": [{"id": "10.48550/arXiv.0000.44444", "id-type": "doi"}]}}}
@@ -165,6 +165,16 @@ class PaperCard(unittest.TestCase):
         self.assertIn("doi = {10.0000/conf.9}", bib)
         self.assertIn("booktitle = {Proceedings of the Invented Systems Conf}", bib)
 
+    def test_the_published_version_is_cited_with_the_publishers_title_and_authors(self):
+        cr = {"message": {**CROSSREF["message"], "title": ["Toy <i>State-Vector</i> Simulation at Invented Scale"],
+                          "author": [{"given": "Jane", "family": "Doe"}, {"given": "Rui", "family": "Roe"}]}}
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with(crossref=cr))
+        self.assertEqual(code, 0, out)
+        bib = json.loads(out)["bibtex"]
+        self.assertIn("title = {Toy State-Vector Simulation at Invented Scale}", bib)
+        self.assertIn("author = {Doe, Jane and Roe, Rui}", bib)
+        self.assertIn("@inproceedings{doe2030distributed,", bib)        # the key from the paper's own title
+
     def test_a_venue_without_a_known_year_is_never_paired_with_the_preprint_year(self):
         work = {**OPENALEX, "doi": "https://doi.org/10.48550/arxiv.0000.44444",
                 "primary_location": {"source": {"type": "conference", "display_name": "Invented Systems Conf"}}}
@@ -210,13 +220,55 @@ class PaperCard(unittest.TestCase):
         self.assertIn("year = {2031}", bib)
         self.assertIn("eprint = {0000.44444}", bib)
 
-    def test_a_retitled_version_by_the_same_first_author_counts_and_shows_its_title(self):
+    def test_a_retitled_version_by_the_same_first_author_is_a_candidate_never_the_bibtex(self):
+        # a close title is what a retitled camera-ready looks like — and what a follow-up
+        # looks like too: like a Crossref title-search hit, it is shown to be confirmed
         page = self.openreview("ICLR 2031 Poster", title="Distributed Toy (Almost) State-Vector Simulation")
         code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
         card = json.loads(out)
-        src = next(p["source"] for p in card["published"] if p["source"].startswith("OpenReview"))
-        self.assertIn("título publicado: «Distributed Toy (Almost) State-Vector Simulation»", src)
-        self.assertTrue(card["bibtex"].startswith("@inproceedings{"), card["bibtex"])
+        self.assertNotIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+        cand = [c for c in card.get("published_candidates") or [] if "OpenReview" in c["why"]]
+        self.assertEqual([c["title"] for c in cand], ["Distributed Toy (Almost) State-Vector Simulation"])
+        self.assertTrue(card["bibtex"].startswith("@misc{"), card["bibtex"])
+
+    def page_of(self, *notes):
+        return {"count": len(notes), "notes": [n for p in notes for n in p["notes"]]}
+
+    def test_an_exact_title_by_another_first_author_is_not_this_paper(self):
+        page = self.openreview("ICLR 2031 Poster", authors=("Rui Roe",))
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        self.assertNotIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+        self.assertTrue(card["bibtex"].startswith("@misc{"), card["bibtex"])
+
+    def test_the_exact_title_wins_over_a_close_follow_up_listed_first(self):
+        follow = self.openreview("NeurIPS 2032 Poster", title="Distributed Toy (Almost) State-Vector Simulation",
+                                 bib_year="2032")
+        page = self.page_of(follow, self.openreview("ICLR 2031 Poster"))
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        orv = [p for p in card["published"] if p["source"].startswith("OpenReview")]
+        self.assertEqual([p["year"] for p in orv], ["2031"])
+        self.assertIn("year = {2031}", card["bibtex"])
+
+    def test_a_long_title_with_the_papers_title_as_its_first_words_is_not_it(self):
+        page = self.openreview("ICLR 2031 Poster",
+                               title="Distributed Toy State-Vector Simulation of Invented Noisy Gadgets at Scale")
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        self.assertNotIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+        self.assertFalse([c for c in card.get("published_candidates") or [] if "OpenReview" in c["why"]])
+
+    def test_a_workshop_is_shown_but_never_the_published_version(self):
+        page = self.openreview("ICLR 2031 Workshop on Invented Toys")
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        ws = [p for p in card["published"] if p["source"].startswith("OpenReview")]
+        self.assertEqual(len(ws), 1)
+        self.assertTrue(ws[0].get("workshop"))
+        self.assertTrue(card["bibtex"].startswith("@misc{"), card["bibtex"])
+        self.assertNotIn("booktitle", card["bibtex"])
+        self.assertIn("workshop", pc.markdown(card))
 
     def test_a_rejected_or_differently_titled_openreview_record_is_not_a_publication(self):
         for page in (self.openreview("Submitted to ICLR 2031"),

@@ -200,7 +200,7 @@ def sweep(vault: Path, write: bool, today: str) -> list[PaperFlag]:
                 pf.citers.append(Citer(nid, kind, via, severity(status, via), sn, path))
         if write and status in ("retracted", "withdrawn"):
             r = rr.resolve_note(n, entries, lost)
-            pf.written = rr.write_result(n["path"], r, today)
+            pf.written = rr.write_result(n["path"], r, today, rr.vault_keys(vault / "Papers"))
         if write and status != "clear":
             for c in pf.citers:
                 text, nl = vn.read_text(c.path)

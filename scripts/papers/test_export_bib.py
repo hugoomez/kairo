@@ -70,6 +70,52 @@ class ExportBib(unittest.TestCase):
         self.assertIn("pages = {11--19}", bib)
         self.assertEqual(eb.csl_item({**m, "id": "P-1"}, "k")["page"], "11-19")
 
+    def test_tex_in_an_arxiv_title_is_kept_and_bare_specials_escaped(self):
+        m = {"title": r'Schr\"odinger toy cats in \emph{QAOA} over $\mathbb{Z}_p$ & 5% of #1 x_y',
+             "authors": [r"Jos\'e Inventado"], "year": "2031", "arxiv": "0000.77777"}
+        bib = eb.bibtex_entry(m, "k")
+        self.assertIn(r'Schr\"odinger', bib)
+        self.assertIn(r"\emph{{QAOA}}", bib)
+        self.assertIn(r"{$\mathbb{Z}_p$}", bib)
+        self.assertIn(r"\&", bib)
+        self.assertIn(r"5\%", bib)
+        self.assertIn(r"\#1", bib)
+        self.assertIn(r"x\_y", bib)
+        self.assertIn(r"Jos\'e Inventado", bib)
+        self.assertNotIn("textbackslash", bib)
+        # a lone backslash that is no command is still text
+        self.assertIn(r"\textbackslash{}", eb.bibtex_entry({**m, "title": "a \\ b"}, "k"))
+
+    def test_the_key_word_skips_tex_commands_and_math(self):
+        m = {"title": r"\mathbb{Z}-graded $\mathcal{Q}$ toy codes", "authors": ["Jane Doe"], "year": "2031"}
+        self.assertEqual(eb.base_key(m), "doe2031graded")
+
+    def test_the_published_version_is_cited_with_the_publishers_title(self):
+        m = {"title": "Toy decoders, preprint title", "authors": ["Jane Doe"], "year": "2031", "arxiv": "0000.88888",
+             "published_doi": "10.9999/jour.88", "published_venue": "Invented Journal", "published_year": "2032",
+             "published_title": "Invented decoders for toy codes", "venue_type": "journal-article"}
+        bib = eb.bibtex_entry(m, eb.base_key(m))
+        self.assertIn("title = {Invented decoders for toy codes}", bib)
+        self.assertNotIn("preprint title", bib)
+        self.assertEqual(eb.csl_item({**m, "id": "P-1"}, "k")["title"], "Invented decoders for toy codes")
+        # cited as the preprint (no published year), the preprint's title stays
+        pre = {**m, "published_year": ""}
+        self.assertIn("title = {Toy decoders, preprint title}", eb.bibtex_entry(pre, "k"))
+
+    def test_published_title_is_read_from_the_note(self):
+        note = NOTES["P-0201 pre.md"].replace("published_year: 2032\n",
+                                              'published_year: 2032\npublished_title: "Invented fast decoders"\n')
+        (self.vault / "Papers" / "P-0201 pre.md").write_text(note, encoding="utf-8")
+        code, bib, _ = self.run_cli("--only", "P-0201")
+        self.assertIn("title = {Invented fast decoders}", bib)
+        self.assertIn("@article{doe2032fast,", bib)                  # the key still from the note's own title
+
+    def test_a_recorded_citation_key_is_kept_and_never_suffixed(self):
+        ms = [{"authors": ["Jane Doe"], "year": "2031", "title": "Toy codes"},
+              {"authors": ["Jane Doe"], "year": "2032", "title": "Toy codes", "citation_key": "doe2031codes"}]
+        self.assertEqual(eb.keys_for(ms), ["doe2031codesa", "doe2031codes"])
+        self.assertEqual(eb.note_meta(['citation_key: "doe2030toy"'])["citation_key"], "doe2030toy")
+
     def run_cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
