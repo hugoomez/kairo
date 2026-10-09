@@ -11,6 +11,7 @@ paged, deduplicated and counted by this script, never by a model.
     lit_search.py agree      --decisions decisions.json --second sample.json
     lit_search.py show       --run <run dir> [--offset 0] [--limit 60] [--all] [--abstract-chars N]
     lit_search.py merge      --run <run dir> (--from-store | --blocks page1.txt …) [--extra mine.json] --out decisions.json
+    lit_search.py replay     --run <run dir> --out <new dir> [--vault <vault>]
 
 The model's part is the judgement around it: it writes `plan.json` (the
 facets and their synonyms, the date window, the inclusion / exclusion /
@@ -152,6 +153,11 @@ ejecutada block: criteria, verbatim queries with hits / available /
 truncation, exact PRISMA counts, the degraded-coverage warning) and
 `ranked.md` (the included list, the relevant-but-out-of-scope list).
 
+`replay` rebuilds queries.json, candidates.json and vocabulario.json in a new
+directory from a run's kept raw/ responses with the current parsers, no network:
+the identification reproduced, or a parser fix re-applied (snowball queries are
+named, not replayed).
+
 Prints one JSON object. Exit: 0 ok · 1 error · 2 refused (bad input).
 Standard library only.
 """
@@ -166,6 +172,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import textwrap
 import unicodedata
@@ -626,6 +633,15 @@ def _oa_key() -> str:
     return f"&api_key={urllib.parse.quote(k)}" if k else ""
 
 
+# `replay`: whether the original run had OPENALEX_API_KEY (its paging decisions
+# depend on it); None outside a replay, where the environment says
+_OPENALEX_KEYED: bool | None = None
+
+
+def openalex_keyed() -> bool:
+    return bool(os.environ.get("OPENALEX_API_KEY")) if _OPENALEX_KEYED is None else _OPENALEX_KEYED
+
+
 def _s2_fields(plan: dict) -> str:
     fs = plan.get("fields") or []
     return "&fieldsOfStudy=" + urllib.parse.quote(",".join(FIELDS[x][1] for x in fs)) if fs else ""
@@ -790,7 +806,7 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
         q["total"] = total
         if (q["source"] in BOOLEAN_CROSS and total and total > cap
                 and total <= plan.get("max_per_query", MAX_PER_QUERY)):
-            if q["source"] == "openalex" and not os.environ.get("OPENALEX_API_KEY"):
+            if q["source"] == "openalex" and not openalex_keyed():
                 # keyless, each page is a paid list call against a ~100-call daily budget that
                 # the enrichment, the citation checks and the watch share: read the top
                 # `per_query` and say why the rest was not read, never spend the day on one query
@@ -864,7 +880,7 @@ def run_exhaustive(q: dict, plan: dict, raw_dir: Path, fetch: Fetch, until: str)
     recs = run_query(q, plan, raw_dir, fetch)
     if not (plan.get("exhaustive") and q.get("truncated") and not q.get("error") and q["source"] in BOOLEAN_CROSS):
         return recs
-    if q["source"] == "openalex" and not os.environ.get("OPENALEX_API_KEY"):
+    if q["source"] == "openalex" and not openalex_keyed():
         # keyless, every part would be a paid list call against the ~100-call daily
         # budget: the query stays truncated and says why, the window is never split
         q["not_extended"] = (f"sin OPENALEX_API_KEY: {q['total']} resultados, leídos los primeros {q['fetched']}; "
@@ -1226,14 +1242,97 @@ def cmd_run(plan_path: Path, out: Path, vault: Path | None, fetch: Fetch, today:
     plan_sha = freeze_plan(out)
     save(out / "queries.json", queries)
     save(out / "candidates.json", cands)
+    vocab = write_vocabulary(out, cands, plan)
+    return {**summary(queries, cands, out), "plan_sha256": plan_sha,
+            "config_warnings": config_warnings(plan), "abstracts_completados": filled,
+            "sin_abstract": sum(1 for c in cands if not ws(c.get("abstract"))), **vocab}
+
+
+def write_vocabulary(out: Path, cands: list[dict], plan: dict) -> dict:
+    """vocabulario.json: per-term hits, the terms no candidate shows, the synonyms the
+    abstracts define, the acronyms seen mostly in another case; returns all but the hits."""
     hits = term_hits(cands, plan)
     vocab = {"terminos_sin_coincidencias": [f"{fid}: {t}" for fid, ts in hits.items() for t, n in ts.items() if not n],
              "sinonimos_sugeridos": suggest_synonyms(cands, plan),
              "terminos_ambiguos": ambiguous_terms(cands, plan)}
     save(out / "vocabulario.json", {"term_hits": hits, **vocab})
-    return {**summary(queries, cands, out), "plan_sha256": plan_sha,
-            "config_warnings": config_warnings(plan), "abstracts_completados": filled,
-            "sin_abstract": sum(1 for c in cands if not ws(c.get("abstract"))), **vocab}
+    return vocab
+
+
+def _replay_fetch(run: Path, items: list[dict]) -> Fetch:
+    """Serves a query's kept responses in the order they were fetched, checked
+    against their sha256; one page more than the original read is a lost page."""
+    it = iter(items)
+
+    def fetch(url: str, headers: dict) -> bytes:
+        item = next(it, None)
+        if item is None:
+            raise ValueError("replay: la ejecución original no guardó esta página (sin red no se pide)")
+        data = (run / "raw" / item["file"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != item["sha256"]:
+            raise ValueError(f"replay: raw/{item['file']} no es la respuesta guardada (sha256 distinto)")
+        return data
+    return fetch
+
+
+def cmd_replay(run: Path, out: Path, vault: Path | None = None) -> dict:
+    """Rebuild a run's identification — queries.json, candidates.json,
+    vocabulario.json — from the raw responses it kept, with the current parsers
+    and rules and no network: the run reproduced, or a parser fix applied to the
+    same responses. The plan is copied byte for byte. Each query reads its own
+    kept pages in order; the abstract lookups (`enrich`) are served from theirs.
+    The snowball's queries are not replayed (they are named: run `snowball` on
+    the new directory). Retraction and screening are later steps: run them again."""
+    global _OPENALEX_KEYED
+    if out.exists() and any(out.iterdir()):
+        raise Refused(f"{out} is not empty: a run directory is written once")
+    if not (run / "plan.json").is_file() or not (run / "queries.json").is_file():
+        raise Refused(f"{run} is not a lit_search run (no plan.json / queries.json)")
+    plan = load_plan(run / "plan.json")
+    until = plan.get("to") or plan.get("date")
+    if not until:
+        raise Refused("plan.json has no `date`: not written by `run`")
+    old = load(run / "queries.json")
+    (out / "raw").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(run / "plan.json", out / "plan.json")
+    plan_sha = freeze_plan(out)
+    queries: list[dict] = []
+    records: list[dict] = []
+    skipped = []
+    # the original run's paging followed its key: an extended / split OpenAlex query says it had one
+    _OPENALEX_KEYED = any(q.get("extended_to") or q.get("splits") for q in old if q.get("source") == "openalex")
+    try:
+        for oq in old:
+            if oq.get("pass") == "enrich":
+                continue
+            if str(oq.get("pass", "")).startswith("snowball"):
+                skipped.append(oq["id"])
+                continue
+            q = {k: oq[k] for k in ("id", "facet", "source", "pass", "query", "terms") if k in oq}
+            if not oq.get("raw"):
+                # lost in the original run, nothing kept: lost again, with its own error
+                q.update(total=None, fetched=0, raw=[], error=oq.get("error") or "sin respuesta guardada",
+                         outside_window=0, not_work=0, ranked=q["source"] in RANKED, truncated=False)
+            else:
+                records.extend(run_exhaustive(q, plan, out / "raw", _replay_fetch(run, oq["raw"]), until))
+                if oq.get("error") and q.get("error"):
+                    q["error"] = oq["error"]        # the original failure, not the replay's
+            queries.append(q)
+        cands = dedup(records)
+        kept = [r for q in old if q.get("pass") == "enrich" for r in q.get("raw") or []]
+        filled = enrich_abstracts(cands, plan, out / "raw", queries, _replay_fetch(run, kept)) \
+            if plan.get("enrich", True) and kept else 0
+    finally:
+        _OPENALEX_KEYED = None
+    mark_in_vault(cands, known_vault_keys(vault))
+    mark_prefilter(cands, plan)
+    save(out / "queries.json", queries)
+    save(out / "candidates.json", cands)
+    vocab = write_vocabulary(out, cands, plan)
+    save(out / "replay.json", {"tool": TOOL, "from": run.as_posix(), "plan_sha256": plan_sha,
+                               "snowball_no_reproducido": skipped})
+    return {**summary(queries, cands, out), "replay_of": run.as_posix(), "plan_sha256": plan_sha,
+            "abstracts_completados": filled, "snowball_no_reproducido": skipped, **vocab}
 
 
 def freeze_plan(run: Path) -> str:
@@ -2572,6 +2671,10 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
                           "against the stored reply when there is one")
     mg.add_argument("--extra", type=Path, help="the orchestrator's own decisions, e.g. a prefiltered-out include")
     mg.add_argument("--out", type=Path, required=True, help="the decisions.json to write")
+    rp = sub.add_parser("replay", help="rebuild a run's identification from its raw/ files, no network")
+    rp.add_argument("--run", type=Path, required=True)
+    rp.add_argument("--out", type=Path, required=True)
+    rp.add_argument("--vault", type=Path)
     mg.add_argument("--allow-unread", action="store_true",
                     help="accept a page with no receipt that a screener read its packet (recorded as such)")
     a = p.parse_args(argv)
@@ -2589,6 +2692,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
             out = cmd_merge(a.run, a.blocks or [], a.extra, a.out, a.allow_unread, from_store=a.from_store)
         elif a.cmd == "screen":
             out = cmd_screen(a.run, a.decisions, a.screened_by)
+        elif a.cmd == "replay":
+            out = cmd_replay(a.run, a.out, a.vault)
         else:
             out = cmd_show(a.run, a.limit, a.offset, a.all, a.abstract_chars, a.prefiltered, a.with_abstracts,
                            a.sample)

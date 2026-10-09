@@ -420,6 +420,20 @@ hypothesis's *Justificación* unchanged — never retyped), `ranked.md`, and the
 run directory path. Mention degraded coverage in the first lines of what you
 say, and how many relevant papers were set aside by scope.
 
+### Reproducing a run
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" replay --run <run dir> --out <new dir> [--vault <vault>]
+```
+
+rebuilds `queries.json`, `candidates.json` and `vocabulario.json` in a new
+directory from the run's kept `raw/` responses, with the current parsers and
+no network (the plan is copied byte for byte, `plan.sha256` with it): the
+identification reproduced, or a parser fix re-applied to the same responses.
+A query lost in the original stays lost with its error; the snowball's queries
+are listed in `snowball_no_reproducido`, not replayed. Retraction, screening
+and `screen` are later steps: run them again on the new directory.
+
 ## Patents (`producto` / `hibrido` only)
 
 PatentSearch API (`https://search.patentsview.org/api/v1/patent/`, POST JSON
