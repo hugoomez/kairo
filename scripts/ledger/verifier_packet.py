@@ -71,7 +71,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402  (single definitions)
 
-__version__ = "1.5.0"   # 1.5.0: a bare "Resumen" / "Abstract" locator; 1.4.0: Eq. (3), Tabla S1, Fig. A2, bare §A; named locators match headings only
+__version__ = "1.6.0"   # 1.6.0: supplement sections §S1, §S1.2 (verbatim_fulltext 1.6.0); 1.5.0: a bare "Resumen" / "Abstract" locator; 1.4.0: Eq. (3), Tabla S1, Fig. A2, bare §A; named locators match headings only
 TOOL_ID = f"kairo/verifier_packet@{__version__}"
 
 # --------------------------------------------------------------------------
@@ -325,6 +325,8 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
         # "§Resumen." / "§Resumen)" / "§Setup." name the section without the punctuation
         if m.group(1).strip() in romans:
             continue
+        if re.fullmatch(r"[A-Z]\d+", m.group(1).strip()):
+            continue                    # "§S1.2": a supplement section, read above as a number
         toks.append(("named", m.group(1).strip()))
     # a bare "Resumen" / "Abstract" (how the map cites an abstract-only paper)
     for m in re.finditer(r"(?<!§)\b(Resumen|Abstract)\b", s_noapp):
@@ -344,7 +346,9 @@ def token_label(tok: tuple[str, str]) -> str:
             "table": f"Tabla {v}", "eq": f"Eq. {v}", "named": f"§{v}"}[kind]
 
 
-HEADING_NUM_RE = re.compile(r"^(?:§\s*)?(\d+(?:\.\d+)*)\.?(?:\s|$)")
+# "3.2 Title", and a supplement's "S1 Title" / "S1.2 Title" (verbatim_fulltext's
+# «Material suplementario», cited as §S1)
+HEADING_NUM_RE = re.compile(r"^(?:§\s*)?(S?\d+(?:\.\d+)*)\.?(?:\s|$)")
 ROMAN_HEAD_RE = re.compile(r"^(?:§\s*)?([IVXL]+(?:\.(?:\d+|[A-Z]))*)[.:]?(?:\s|$)")
 LETTER_SUB_RE = re.compile(r"^([A-Z])[.)]\s")
 APPENDIX_HEAD_RE = re.compile(r"^(?:Appendix|Apéndice)\s+([A-Z])\b")

@@ -107,6 +107,21 @@ class Locators(unittest.TestCase):
         self.assertTrue(any(u.startswith("**Ablations.**") for u in self.units("§Ablations")))
         self.assertEqual(self.units("§Discussion"), [])
 
+    def test_a_supplement_section_resolves(self):
+        # verbatim_fulltext 1.6.0 writes a PDF supplement as «Material suplementario»
+        # with its own S1, S1.2 headings
+        note = NOTE.replace("### Appendix A Toy proof", (
+            "### Material suplementario\n\n#### S1 Toy derivations\n\nThe invented supplement starts here.\n\n"
+            "##### S1.2 More toy detail\n\nA deeper invented detail.\n\n### Appendix A Toy proof"))
+        (self.vault / "Papers" / "P-0951 toy.md").write_text(note, encoding="utf-8")
+        self.assertEqual(vp.heading_num("S1 Toy derivations"), "S1")
+        self.assertEqual(vp.heading_num("S1.2 More toy detail"), "S1.2")
+        s1 = self.units("§S1")
+        self.assertIn("The invented supplement starts here.", s1)
+        self.assertIn("A deeper invented detail.", s1)
+        self.assertEqual(self.units("§S1.2"), ["A deeper invented detail."])
+        self.assertNotIn("The invented supplement starts here.", self.units("§1"))
+
     def test_check_sota_reads_the_same_locators(self):
         for text in ("x — P-0951 Eq. (3)", "x — P-0951 Tabla S1", "x — P-0951 Fig. A2", "x — P-0951 §A"):
             m = cs.CITE.search(text)
