@@ -91,6 +91,11 @@
     queries back; papers already offered are dropped,
     never repeated. If every query failed, nothing is written and the run says
     so.
+  - One watch of a project at a time: `delta` holds `_vigilancia/.vigilancia.lock`
+    while it runs; a second one refuses (exit 5) unless the lock is older than
+    LOCK_STALE_HOURS (a run that died), which it takes over and says so
+    (`stale_lock_removed`). Each run keeps its raw responses in its own
+    `raw-<date>[-n]/`, named like its run file.
   - The watch's state is never guessed: a corrupt run file or `cursores.json`
     stops it with that file's name (exit 2). Every state file is written to a
     temporary file and then renamed over the old one, so an interrupted write
@@ -129,8 +134,9 @@ a threat. A threat decision appends one more dated line to the hypothesis.
 triaged candidate has its one-line reason and every threat has a severity and
 a verbatim sentence. Exit 3 when something is missing (listed in `missing`).
 
-Prints one JSON object. Exit codes: 0 ok · 2 refused (bad input) · 3 run
-incomplete (`check`) · 1 error.
+Prints one JSON object. Exit codes: 0 ok · 2 refused (bad input, or corrupt
+state) · 3 run incomplete (`check`) · 5 another watch of the project is running
+(`delta`) · 1 error.
 Standard library only.
 """
 
@@ -712,14 +718,70 @@ def cmd_digest(a) -> dict:
     return {"digest": md.name}
 
 
+def raw_dir_of(run_file: Path) -> Path:
+    """The run's own folder of raw responses: `raw-<date>[-n]`, beside its JSON."""
+    return run_file.with_name("raw-" + run_file.stem.removeprefix("vigilancia-"))
+
+
 def run_path(pdir: Path, today: date) -> Path:
+    """This run's file name: the first `vigilancia-<date>[-n].json` that neither a
+    run nor a run's raw responses use yet, so two runs on one day never share one."""
     folder = pdir / "_vigilancia"
     folder.mkdir(exist_ok=True)
     stem = f"vigilancia-{today.isoformat()}"
     p, n = folder / f"{stem}.json", 2
-    while p.exists():
+    while p.exists() or p.with_suffix(".md").exists() or raw_dir_of(p).exists():
         p, n = folder / f"{stem}-{n}.json", n + 1
     return p
+
+
+LOCK = ".vigilancia.lock"
+LOCK_STALE_HOURS = 6       # a lock older than this is a run that died: it is taken over, and said so
+EXIT_LOST_ALL = 4          # delta: every query lost (a page saying so is written)
+EXIT_BUSY = 5              # delta: another watch of this project is running
+
+
+class Busy(Exception):
+    pass
+
+
+def take_lock(pdir: Path, now: float | None = None) -> bool:
+    """One watch of a project at a time (`_vigilancia/.vigilancia.lock`, created
+    exclusively). A lock older than LOCK_STALE_HOURS is taken over; returns
+    whether that happened."""
+    import time
+    folder = pdir / "_vigilancia"
+    folder.mkdir(exist_ok=True)
+    lock = folder / LOCK
+    now = time.time() if now is None else now
+    stale = False
+    for _ in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = now - lock.stat().st_mtime
+            except OSError:
+                continue                               # released meanwhile: try again
+            if age < LOCK_STALE_HOURS * 3600:
+                try:
+                    held = lock.read_text(encoding="utf-8").strip()
+                except OSError:
+                    held = ""
+                raise Busy(f"otra vigilancia de este proyecto está en marcha ({held or 'sin datos'}; "
+                           f"_vigilancia/{LOCK}): espera a que termine. Si murió, el cerrojo caduca a las "
+                           f"{LOCK_STALE_HOURS} h, o bórralo a mano") from None
+            lock.unlink(missing_ok=True)
+            stale = True
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"pid": os.getpid(), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+        return stale
+    raise Busy(f"no se pudo tomar _vigilancia/{LOCK}: otra vigilancia lo acaba de tomar")
+
+
+def release_lock(pdir: Path) -> None:
+    (pdir / "_vigilancia" / LOCK).unlink(missing_ok=True)
 
 
 CURSORS = "cursores.json"
@@ -779,12 +841,11 @@ def structured_signatures(plan: dict, today: date) -> list[str]:
     return [query_signature(q) for q in lit_search.build_queries(_watch_plan(plan, today, today), today.isoformat())]
 
 
-def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: date,
+def structured_delta(plan: dict, raw: Path, starts: dict[str, date], today: date,
                      fetch: Fetch) -> tuple[list, list[dict], set[str]]:
     """Re-run a lit_search plan with lit_search's own query builders and pager
     (raw responses kept next to the run), each query over its own window."""
     import lit_search
-    raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw.mkdir(parents=True, exist_ok=True)
     results, log = [], []
 
@@ -944,14 +1005,13 @@ def citation_roots(vault: Path, pdir: Path, plan_run: str | None, fetch: Fetch,
     return roots
 
 
-def citation_delta(roots: dict[str, str], starts: dict[str, date], today: date, pdir: Path,
+def citation_delta(roots: dict[str, str], starts: dict[str, date], today: date, raw: Path,
                    fetch: Fetch) -> tuple[list, list[dict]]:
     """The works citing any root, published in each root's window: one OpenAlex
     `cites:W1|W2|…` query per group of roots sharing a start, cursor-paged up to
     MAX_RESULTS (more keeps those roots' windows open). Each citing work records
     which roots it cites (`cita_a`)."""
     import lit_search
-    raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw.mkdir(parents=True, exist_ok=True)
     by_start: dict[date, list[str]] = {}
     for wid in sorted(roots):
@@ -1102,8 +1162,21 @@ def own_papers_news(vault: Path, pdir: Path, fetch: Fetch, today: date) -> tuple
 
 def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
           citations: bool = True, own: bool = True) -> dict:
+    """One watch of the project, holding its lock (`take_lock`) while it runs."""
     if not hub_path(pdir).is_file():
         raise Refused(f"{pdir} is not a project folder (no _hub.md)")
+    stale = take_lock(pdir)
+    try:
+        res = _delta(vault, pdir, since, top, fetch, today, citations, own)
+    finally:
+        release_lock(pdir)
+    return {**res, "stale_lock_removed": stale}
+
+
+def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
+           citations: bool, own: bool) -> dict:
+    out = run_path(pdir, today)                        # this run's name, and its own raw folder
+    raw_dir = raw_dir_of(out)
     plan, plan_run = structured_plan(pdir)
     queries = [] if plan else recorded_queries(pdir)
     if not plan and not queries:
@@ -1129,7 +1202,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     by_title: dict[str, str] = {}
     log = []
     if plan:
-        results, log, facets_all = structured_delta(plan, pdir, starts, today, fetch)
+        results, log, facets_all = structured_delta(plan, raw_dir, starts, today, fetch)
     else:
         facets_all = {q["facet"] for q in queries}
         results = []
@@ -1146,7 +1219,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                 entry["error"] = net.redact(str(exc))[:200]
             log.append(entry)
     if roots:
-        cit_results, cit_log = citation_delta(roots, starts, today, pdir, fetch)
+        cit_results, cit_log = citation_delta(roots, starts, today, raw_dir, fetch)
         results += cit_results
         log += cit_log
     for q, got in results:
@@ -1169,7 +1242,6 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                 cur["sources"].append(q["source"])
     import lit_search
     enrich_log: list[dict] = []
-    raw_dir = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw_dir.mkdir(parents=True, exist_ok=True)
     # only a candidate that could be strong is worth a lookup: a credited facet, a facet
     # term in its title, or a citation of the project's papers — not a keyword source's
@@ -1277,11 +1349,12 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                                 if x in NOT_WINDOWABLE],
            "citation_roots": len(roots), "citation_root_errors": root_errors, "abstract_lookups": enrich_log,
            "queries": log, "candidates": cands, "publicadas": publicadas, "threats": [],
+           "raw_dir": raw_dir.relative_to(pdir).as_posix(),
            **({"tus_papers": own_news} if own_news is not None else {})}
-    out = None
+    written = None
     moved = False
     if not lost_all:
-        out = run_path(pdir, today)
+        written = out
         save_run(out, run)
         digest = write_digest(out, run)
         # Coverage is kept per query. One that answered — in full, or capped at
@@ -1307,8 +1380,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         text, nl = read_text(hub_path(pdir))
         write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
         moved = True
-    return {"run": out.relative_to(vault).as_posix() if out else None,
-            "digest": digest.relative_to(vault).as_posix() if out else None, "since": run["since"],
+    return {"run": written.relative_to(vault).as_posix() if written else None,
+            "digest": digest.relative_to(vault).as_posix() if written else None, "since": run["since"],
             "queried_from": run["queried_from"], "until": run["until"],
             "queries": len(log), "lost": len(lost), "lost_all": lost_all,
             "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
@@ -1583,6 +1656,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
             out = {"triage": cmd_triage, "threat": cmd_threat, "decide": cmd_decide,
                    "threat-decide": cmd_threat_decide, "check": cmd_check,
                    "judge-packet": cmd_judge_packet, "digest": cmd_digest}[a.cmd](a)
+    except Busy as exc:
+        print(json.dumps({"error": str(exc), "busy": True}, ensure_ascii=False))
+        return EXIT_BUSY
     except Refused as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 2
