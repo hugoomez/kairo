@@ -16,6 +16,8 @@ description: >-
 
 # Preregister Experiment
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check preregister-experiment`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 Writes and **freezes** a preregistration for one hypothesis, at whichever

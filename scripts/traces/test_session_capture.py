@@ -82,6 +82,38 @@ class TestSessionCapture(unittest.TestCase):
         self.assertEqual(sc.run(self.vault, self.payload()), [])
         self.assertFalse((self.vault / "Projects/demo/_trazas-agente").exists())
 
+    def test_a_literature_session_is_kept_with_its_subagent_transcripts(self):
+        """Writing the map, or running a literature script on the project, keeps the
+        transcript — and the subagents' own transcripts (the facet summaries)."""
+        sota = self.vault / "Projects" / "demo" / "Estado-del-arte.md"
+        self.write_transcript(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": "python scripts/papers/ingest_paper.py add --vault . --project PROJ-900 "
+                                      "--arxiv 0000.00001"}}]}}),
+            tool_use("Write", str(sota)))
+        subs = self.transcript.with_suffix("") / "subagents"
+        subs.mkdir(parents=True)
+        (subs / "agent-a1.jsonl").write_text('{"facet": "A"}\n', encoding="utf-8")
+        self.assertEqual(sc.run(self.vault, self.payload(), today="2026-01-02"), ["demo"])
+        base = self.vault / "Projects/demo/_trazas-agente/cli"
+        self.assertTrue((base / "2026-01-02__abcd-1234.jsonl").exists())
+        self.assertTrue((base / "2026-01-02__abcd-1234" / "subagents" / "agent-a1.jsonl").exists())
+        [e] = action_log.load(self.vault / "Projects" / "demo" / "Bitacora" / "acciones.jsonl")
+        self.assertIn("script(s) de literatura", e["summary"])
+        self.assertIn("subagentes", e["summary"])
+        status = subprocess.run(["git", "status", "--porcelain", "--", "vault"], cwd=self.root,
+                                capture_output=True, text=True).stdout
+        self.assertEqual(status.strip(), "")
+
+    def test_a_literature_script_on_another_folder_or_a_plain_command_is_not_kept(self):
+        self.write_transcript(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls Projects/demo"}},
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": "python lit_search.py run --plan p.json --out /tmp/run"}}]}}))
+        self.assertEqual(sc.run(self.vault, self.payload()), [])
+
     def test_missing_transcript_and_main_never_fail(self):
         self.assertEqual(sc.run(self.vault, {"transcript_path": str(self.root / "nope")}), [])
         import io

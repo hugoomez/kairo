@@ -52,6 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ledger"))
 from verifier_packet import find_paper, fm_scalar, read_text, resolve_citation, split_frontmatter  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402, I001  (path set by verifier_packet)
+import isolation  # noqa: E402  (scripts/security, path set by verifier_packet)
 
 TOOL = "kairo/check_quotes@1.0.0"
 NOT_FOUND = "**No está en el corpus.**"
@@ -322,7 +323,9 @@ def apply_support(report: dict, verdict: dict) -> dict:
 def render(report: dict, question: str | None, project: str | None) -> str:
     fm = ["---", "tipo: respuesta-corpus", "escrito_por: modelo", "citable: false",
           f"comprobado_por: {TOOL}", f"fecha: {date.today().isoformat()}",
-          f"estado: {report['status']}", f"apoyo_verificado: {report.get('support') or 'no comprobado'}"]
+          f"estado: {report['status']}", f"apoyo_verificado: {report.get('support') or 'no comprobado'}"
+          + (" (sin constancia de lectura del paquete por el verificador)"
+             if report.get("support") and report.get("support_packet_read") is False else "")]
     if project:
         fm.append(f"proyecto: {project}")
     if question:
@@ -362,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="write the fresh-verifier packet of the claims that passed (step 4a)")
     ap.add_argument("--support", type=Path, default=None,
                     help="the fresh verifier's JSON verdict on that packet, applied before --out")
+    ap.add_argument("--allow-unread", action="store_true",
+                    help="apply --support without a receipt that the verifier read the packet (said in the note)")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -372,11 +377,24 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--answer is required (or --list)")
     try:
         report = check(a.vault, a.answer.read_text(encoding="utf-8"), a.project)
+        packet_text = support_packet(a.vault, report)
         if a.packet:
             a.packet.parent.mkdir(parents=True, exist_ok=True)
-            a.packet.write_text(support_packet(a.vault, report), encoding="utf-8", newline="\n")
+            a.packet.write_text(packet_text, encoding="utf-8", newline="\n")
+            # the verifier reads the stored copy itself (its Read is held to the store by the hook)
+            stored = isolation.store(packet_text.encode("utf-8"))
             report["packet"], report["packet_claims"] = str(a.packet), len(report["claims"])
+            report["packet_stored"], report["packet_sha256"] = stored["path"], stored["sha256"]
         if a.support:
+            sha = isolation.store(packet_text.encode("utf-8"))["sha256"]
+            read = bool(isolation.received(sha, "fresh-verifier"))
+            if not read and not a.allow_unread:
+                print(json.dumps({"refused": f"no fresh-verifier is recorded as having read the support packet {sha} "
+                                             "of this answer — dispatch it with the stored packet path "
+                                             "(--packet prints it); --allow-unread applies the verdict "
+                                             "without that proof"}, ensure_ascii=False))
+                return 2
+            report["support_packet_read"] = read
             try:
                 report = apply_support(report, json.loads(a.support.read_text(encoding="utf-8")))
             except (ValueError, json.JSONDecodeError) as exc:

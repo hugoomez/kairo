@@ -18,6 +18,11 @@ never re-derives facet membership.
     python facet_assignment.py --vault <vault> --project PROJ-900 [--json]
         facet -> papers for the project. Exit 1 if any paper of the project has
         no facet entry for it (step 7 must stop and report it, not guess).
+    python facet_assignment.py --vault <vault> --project PROJ-900 --chunks
+        the same, plus `chunks`: the map's work with every paper read once —
+        each paper placed on one of its facets (the least loaded) and carrying
+        all its facets — cut into chunks of at most 6 (one facet-summarizer
+        each). Same exit codes.
     python facet_assignment.py --vault <vault> --add P-0901 --project PROJ-900 \\
         --facet A --matched "toy term"        (or --unrecovered "<why>")
         Append one entry to the note's frontmatter (idempotent: an entry for the
@@ -43,7 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 _KEY = re.compile(r"^([A-Za-z_][\w-]*)\s*:(.*)$")
 _PAIR = re.compile(r"""\s*([A-Za-z_]\w*)\s*:\s*("(?:[^"\\]|\\.)*"|'[^']*'|[^,]*?)\s*(?:,|$)""")
 _ID = re.compile(r"^(P-\d{4,})\b")
@@ -183,12 +188,48 @@ def assignment(vault: Path, project: str) -> dict:
     return res
 
 
+CHUNK = 6                                   # papers one facet-summarizer reads whole
+
+
+def chunks(res: dict, size: int = CHUNK) -> list[dict]:
+    """The map's work split so every paper is read by exactly one summarizer.
+
+    A paper on several facets used to be read once per facet. Here each paper
+    goes to one of its facets — the one with the fewest papers placed so far
+    (ties: the facet letter), so no facet swells — and carries the list of all
+    its facets, which that summarizer covers for it. Each facet's papers are
+    then cut into chunks of at most `size`, in P-id order."""
+    papers: dict[str, dict] = {}
+    for fid, entries in res["facets"].items():
+        for e in entries:
+            p = papers.setdefault(e["id"], {"id": e["id"], "path": e["path"], "facets": {}})
+            p["facets"][fid] = e.get("matched")
+    load: dict[str, int] = {fid: 0 for fid in res["facets"]}
+    home: dict[str, list[dict]] = {fid: [] for fid in res["facets"]}
+    for pid in sorted(papers):
+        p = papers[pid]
+        fid = min(p["facets"], key=lambda f: (load[f], f))
+        load[fid] += 1
+        home[fid].append({**p, "facets": sorted(p["facets"])})
+    out = []
+    for fid in sorted(home):
+        ps = home[fid]
+        for i in range(0, len(ps), size):
+            part = ps[i:i + size]
+            out.append({"chunk": f"{fid}{i // size + 1}", "facet": fid,
+                        "also_facets": sorted({f for p in part for f in p["facets"]} - {fid}),
+                        "papers": part})
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--vault", required=True, type=Path)
     ap.add_argument("--project", required=True)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--chunks", action="store_true",
+                    help="the map's chunks: every paper once, with all its facets (JSON)")
     ap.add_argument("--add", metavar="P-XXXX")
     ap.add_argument("--facet")
     g = ap.add_mutually_exclusive_group()
@@ -228,7 +269,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     res = assignment(a.vault, a.project)
-    if a.json:
+    if a.chunks:
+        res["chunks"] = chunks(res)
+        res["papers"] = sum(len(c["papers"]) for c in res["chunks"])
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    elif a.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
     else:
         for f, papers in res["facets"].items():

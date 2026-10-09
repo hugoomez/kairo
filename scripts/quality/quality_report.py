@@ -6,6 +6,9 @@
     quality_report.py vault  --vault <vault>
     quality_report.py all    --vault <vault> --project-dir Projects/<slug> [--run <dir> --gold <gold.json>]
                          [--log]
+    quality_report.py gold-init   --out Projects/<slug>/_eval/gold.json [--bib refs.bib] [--ids arXiv:… DOI:…]
+    quality_report.py human-sheet --run <run dir> [--n 30] --out Projects/<slug>/_eval/cribado-humano.md
+    quality_report.py human-agree --run <run dir> --sheet Projects/<slug>/_eval/cribado-humano.md
 
 search  Recall of the literature search against a gold set the researcher
         wrote by hand (the papers any competent review of the topic must
@@ -24,6 +27,17 @@ vault   Integrity of the paper library: ingest_paper.py verify (source
         paper notes.
 all     The three, plus `--log` appends one dated line to
         Projects/<slug>/_eval/historial.jsonl so a regression shows over time.
+
+gold-init    A gold file from identifiers you already trust — your own BibTeX
+             / CSL-JSON (e.g. the references of a recent survey you know is
+             good) and/or arXiv / DOI ids. Appends, never duplicates.
+human-sheet  A blind, reproducible sample of a run's screened candidates
+             (half included, half excluded) as a sheet you fill with
+             include / exclude — no model decision shown.
+human-agree  Your sheet against the screeners: agreement, Cohen's kappa, and
+             the papers you would include that the screen excluded.
+             `lit_search.py screen` also reports the gold set's recall itself
+             when the project has `_eval/gold.json`.
 
 Prints one JSON object. Exit: 0 ok · 1 error · 2 bad input. No network.
 """
@@ -109,6 +123,93 @@ def eval_search(run: Path, gold_path: Path) -> dict:
             "included_not_in_gold": (inc - len(included)) if screened.is_file() else None}
 
 
+def gold_init(bib: Path | None, ids: list[str], out: Path, note: str | None) -> dict:
+    """A gold file from identifiers the researcher already trusts: a BibTeX /
+    CSL-JSON export (DOI or arXiv id of each entry; an entry with neither keeps its
+    title) and/or `arXiv:<id>` / `DOI:<doi>` strings. Appends to an existing file,
+    never duplicating a paper. The researcher's judgement, never a model's."""
+    import import_library as il
+    rows = []
+    if bib:
+        text = bib.read_text(encoding="utf-8")
+        entries = il.from_csl(json.loads(text)) if bib.suffix.lower() == ".json" else il.parse_bibtex(text)
+        for e in entries:
+            kind, value = il.identifier(e)
+            row = {kind: value} if kind else ({"title": e.get("title")} if e.get("title") else None)
+            if row:
+                rows.append({**row, "note": note or f"de {bib.name}"})
+    for s in ids:
+        kind, _, value = s.partition(":")
+        if kind.lower() not in ("arxiv", "doi") or not value:
+            raise ValueError(f"{s}: use arXiv:<id> or DOI:<doi>")
+        rows.append({kind.lower(): value, "note": note or "a mano"})
+    gold = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else []
+    seen = set().union(*(gold_keys(g) for g in gold)) if gold else set()
+    added = 0
+    for r in rows:
+        k = gold_keys(r)
+        if k and not (k & seen):
+            gold.append(r)
+            seen |= k
+            added += 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(gold, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
+    return {"gold": out.as_posix(), "added": added, "total": len(gold)}
+
+
+def human_sheet(run: Path, n: int, out: Path) -> dict:
+    """A reproducible sample of the screened candidates for the researcher to
+    decide blind: titles and abstracts, no model decision shown. Half from the
+    includes, half from the excludes (the prefiltered-out ones count as excludes),
+    chosen by the sha256 of the plan's description and the key."""
+    import hashlib
+    cands = json.loads((run / "screened.json").read_text(encoding="utf-8"))
+    seed = json.loads((run / "plan.json").read_text(encoding="utf-8"))["description"]
+    order = lambda c: hashlib.sha256(f"{seed}\n{c['key']}".encode()).hexdigest()  # noqa: E731
+    inc = sorted((c for c in cands if (c.get("screen") or {}).get("decision") == "include"), key=order)
+    exc = sorted((c for c in cands if (c.get("screen") or {}).get("decision") != "include"), key=order)
+    take = inc[:n // 2] + exc[:n - min(len(inc), n // 2)]
+    take = sorted(take, key=order)[:n]
+    L = ["# Cribado a ciegas — muestra para medir al screener", "",
+         "Decide cada candidato con los criterios del plan, sin mirar `ranked.md`. Escribe `include` o `exclude` "
+         "en la columna *decisión* de la tabla (nada más). Después: `quality_report.py human-agree`.", "",
+         f"**Plan:** {seed}", "", "| clave | decisión |", "|---|---|"]
+    L += [f"| `{c['key']}` |  |" for c in take]
+    L += ["", "## Candidatos", ""]
+    for c in take:
+        L += [f"### `{c['key']}`", "", f"**{c.get('title')}** ({c.get('year') or 's. f.'})", "",
+              (c.get("abstract") or "*(sin abstract)*"), ""]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(L) + "\n", encoding="utf-8", newline="\n")
+    return {"sheet": out.as_posix(), "sample": len(take), "of_includes": len(inc[:n // 2]),
+            "note": "texto de terceros: el investigador lo lee en el fichero; la sesión no lo imprime"}
+
+
+def human_agree(run: Path, sheet: Path) -> dict:
+    """The researcher's blind decisions against the screeners': agreement, Cohen's
+    kappa, and — what matters most for a review — the papers the researcher would
+    include that the screen excluded (the screener's misses)."""
+    rows = re.findall(r"(?m)^\|\s*`([^`]+)`\s*\|\s*(include|exclude)?\s*\|", sheet.read_text(encoding="utf-8"))
+    human = {k: d for k, d in rows if d}
+    if not human:
+        raise ValueError("the sheet has no decision filled in")
+    cands = {c["key"]: c for c in json.loads((run / "screened.json").read_text(encoding="utf-8"))}
+    keys = sorted(k for k in human if k in cands)
+    model = {k: (cands[k].get("screen") or {}).get("decision") == "include" for k in keys}
+    hum = {k: human[k] == "include" for k in keys}
+    n = len(keys)
+    po = sum(model[k] == hum[k] for k in keys) / n
+    pm, ph = sum(model.values()) / n, sum(hum.values()) / n
+    pe = pm * ph + (1 - pm) * (1 - ph)
+    missed = [k for k in keys if hum[k] and not model[k]]
+    return {"compared": n, "unfilled": len(rows) - len(human), "agreement": round(po, 3),
+            "kappa": None if pe == 1 else round((po - pe) / (1 - pe), 4),
+            "screen_missed": missed, "screen_extra": [k for k in keys if model[k] and not hum[k]],
+            "miss_rate": round(len(missed) / max(1, sum(hum.values())), 3),
+            "reading": "kappa < 0.6: criterios ambiguos o screener poco fiable; screen_missed son los papers que "
+                       "el investigador incluiría y el cribado dejó fuera"}
+
+
 def eval_sota(vault: Path, project_dir: str, file: str) -> dict:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -174,10 +275,30 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--run", type=Path)
     al.add_argument("--gold", type=Path)
     al.add_argument("--log", action="store_true")
+    gi = sub.add_parser("gold-init", help="a gold file from identifiers you trust (.bib / CSL-JSON / ids)")
+    gi.add_argument("--out", type=Path, required=True, help="e.g. Projects/<slug>/_eval/gold.json (in the vault)")
+    gi.add_argument("--bib", type=Path)
+    gi.add_argument("--ids", nargs="*", default=[], help="arXiv:<id> / DOI:<doi>")
+    gi.add_argument("--note")
+    hs = sub.add_parser("human-sheet", help="a blind sample of screened candidates for you to decide")
+    hs.add_argument("--run", type=Path, required=True)
+    hs.add_argument("--n", type=int, default=30)
+    hs.add_argument("--out", type=Path, required=True)
+    ha = sub.add_parser("human-agree", help="your blind decisions against the screeners'")
+    ha.add_argument("--run", type=Path, required=True)
+    ha.add_argument("--sheet", type=Path, required=True)
     a = ap.parse_args(argv)
     try:
         if a.cmd == "search":
             out = eval_search(a.run, a.gold)
+        elif a.cmd == "gold-init":
+            if not a.bib and not a.ids:
+                raise ValueError("give --bib and/or --ids")
+            out = gold_init(a.bib, a.ids, a.out, a.note)
+        elif a.cmd == "human-sheet":
+            out = human_sheet(a.run, a.n, a.out)
+        elif a.cmd == "human-agree":
+            out = human_agree(a.run, a.sheet)
         elif a.cmd == "sota":
             out = eval_sota(a.vault, a.project_dir, a.file)
         elif a.cmd == "vault":

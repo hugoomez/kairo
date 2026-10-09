@@ -5,6 +5,8 @@ description: Use when a product or engineering task hits genuine technical uncer
 
 # Spawn Hypothesis (product → science)
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check spawn-hypothesis`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 A thin front-end to `hypothesis-cycle`. It takes a task that has run into a real

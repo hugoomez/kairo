@@ -7,7 +7,9 @@ was retracted, who cites it, and its BibTeX — all from public records.
 
 Sources (no model involved, each answer kept with --raw-dir):
   - arXiv: the API entry (title, authors, journal_ref, declared DOI) and the
-    abstract page's submission history — every version with its date;
+    abstract page's submission history — every version with its date; a paper
+    asked for by DOI or title whose arXiv preprint OpenAlex or Crossref names
+    gets the same arXiv record, versions and withdrawal check;
   - OpenAlex: the work (by DOI, and by the arXiv DOI 10.48550/arXiv.<id>): its
     locations (repository vs journal / conference), cited_by_count — when
     OpenAlex keeps the preprint and the published paper as two works, both are
@@ -17,9 +19,16 @@ Sources (no model involved, each answer kept with --raw-dir):
   - OpenReview: an accepted record with exactly this title (ICLR, NeurIPS,
     ICML, MLSys, TMLR — venues with no DOI) gives the venue and its year;
   - Semantic Scholar: citation count and the list of citing papers
-    (the newest first, up to --citations); a page that does not come marks
+    (the newest first, up to --citations; `--citing-order cited` lists the most
+    cited ones instead, each with its own citation count); a page that does not come marks
     the list `citing_incomplete`;
   - the shared retraction / withdrawal check (Crossref + arXiv).
+
+A preprint server or repository (Semantic Scholar files arXiv.org as a
+"journal") is never a published version. When no source names one for an
+arXiv paper, Crossref's bibliographic search by title + first author is asked:
+a close title with the same first author is listed under
+`published_candidates`, to confirm — never in the BibTeX.
 
 "Published version" lists every piece of evidence separately (arXiv
 journal_ref / declared DOI, an OpenAlex journal or conference location, a
@@ -29,7 +38,9 @@ note (P-XXXX) and prints the ingest_paper.py command otherwise.
 
 --title looks the paper up in OpenAlex: one work with exactly that title (case,
 punctuation and accents aside) is the paper; anything else lists the closest
-hits and exits 3, never guessing. The citing papers come from OpenAlex, which
+hits and exits 3, never guessing. When OpenAlex has no work with that exact
+title (a preprint indexed days late), arXiv's title search is asked the same
+question — one exact title there is the paper (`found_by` says so). The citing papers come from OpenAlex, which
 sorts them by date itself; Semantic Scholar is the fallback (it pages in its
 own order, so past 1000 the card says it is the newest of the first 1000).
 
@@ -63,8 +74,12 @@ import resolve_refs as rr  # noqa: E402
 import retraction  # noqa: E402
 from fill_abstract import from_jats  # noqa: E402
 
-TOOL = "kairo/paper_card@1.2.0"
+TOOL = "kairo/paper_card@1.4.0"
 S2 = "https://api.semanticscholar.org/graph/v1"
+# preprint servers and repositories: where a preprint is, never a published version
+REPOSITORY = re.compile(r"arxiv|biorxiv|medrxiv|chemrxiv|techrxiv|ssrn|research ?square|preprints\.org|zenodo|"
+                        r"hal\b|openreview", re.I)
+CANDIDATE_ROWS = 5
 Fetch = Callable[[str, dict], bytes]
 
 
@@ -116,28 +131,107 @@ class Card:
         return data
 
 
+def retitled_candidates(c: Card, ident: dict) -> list[dict]:
+    """A published version no source links to the preprint (a retitled
+    camera-ready): Crossref's bibliographic search by title + first author, kept
+    only when the title is close and the first author's surname matches —
+    resolve_refs' rule. A candidate for the researcher to confirm, never the
+    published version: it goes in no BibTeX."""
+    first = rr.surname_of((ident.get("authors") or [""])[0] or "")
+    if not first:
+        return []
+    raw = c.get("crossref-search.json", "https://api.crossref.org/works?query.bibliographic="
+                + urllib.parse.quote(ident["title"]) + "&query.author=" + urllib.parse.quote(first)
+                + f"&rows={CANDIDATE_ROWS}&select=DOI,title,author,container-title,issued,type",
+                {"Accept": "application/json"})
+    out = []
+    for w in ((json.loads(raw).get("message") or {}).get("items") or []) if raw else []:
+        d = retraction.normalize_doi(w.get("DOI"))
+        if not d or retraction.is_arxiv_doi(d) or (w.get("type") or "") == "posted-content":
+            continue                                    # a preprint record is not a published version
+        title = (w.get("title") or [""])[0]
+        level = rr.title_level(ident["title"], title)[0]
+        au = (w.get("author") or [{}])[0] or {}
+        if level not in ("exact", "close") or not rr.surname_matches(first, au.get("name") or "", au.get("family")):
+            continue
+        parts = ((w.get("issued") or {}).get("date-parts") or [[None]])[0] or [None]
+        out.append({"doi": d, "title": title, "venue": (w.get("container-title") or [""])[0],
+                    "year": str(parts[0] or ""),
+                    "why": f"título {'idéntico' if level == 'exact' else 'parecido'} y mismo primer autor "
+                           f"({first}) en Crossref, sin enlace declarado: confírmalo antes de citarlo así"})
+    return out
+
+
+CITING_ORDERS = ("recent", "cited")
+
+
+def openreview_search_url(title: str) -> str:
+    return ("https://api2.openreview.net/notes/search?term=" + urllib.parse.quote(title)
+            + "&type=terms&content=all&source=forum&limit=10")
+
+
+def openreview_acceptance(title: str, authors: list, raw: bytes | None) -> dict | None:
+    """The OpenReview record (from a `notes/search` answer) that shows this paper
+    accepted: exactly this title, or a close one (a retitled camera-ready) by the
+    same first author, with a venue (submitted / withdrawn / rejected are none).
+    `retitled` holds the published title's note, empty for an exact title."""
+    recs = lit_search.parse_openreview(raw)[0] if raw else []
+    first = rr.surname_of((authors or [""])[0] or "")
+
+    def same(r: dict) -> str | None:
+        level = rr.title_level(title, r.get("title") or "")[0]
+        if level == "exact":
+            return ""
+        if level == "close" and first and r.get("authors") and rr.surname_matches(first, r["authors"][0]):
+            return f"; título publicado: «{r['title']}»"
+        return None
+    for r in recs:
+        if r.get("venue"):
+            s = same(r)
+            if s is not None:
+                return {**r, "retitled": s}
+    return None
+
+
+def arxiv_record(c: Card, card: dict, arxiv: str, primary: bool) -> dict | None:
+    """The arXiv entry (identity, declared published version) and its versions.
+    `primary`: the paper was asked for by its arXiv id, so arXiv names it; a
+    preprint found later from a DOI only fills what the publisher left empty."""
+    ident = card["identity"]
+    raw = c.get("arxiv-api.xml", retraction.ARXIV_QUERY.format(urllib.parse.quote(arxiv, safe="/"), 1),
+                {"Accept": "application/atom+xml"})
+    e = retraction.parse_arxiv_feed(raw).get(arxiv) if raw else None
+    if e:
+        found = {"title": e["title"], "authors": e["authors"], "year": (e["published"] or "")[:4]}
+        for k, v in found.items():
+            if primary:
+                ident[k] = v
+            else:
+                ident.setdefault(k, v)
+        ident["arxiv"] = arxiv
+        if e.get("doi") or e.get("journal_ref"):
+            # journal_ref is free text ("Invented J. 7, 11 (2031)"): its year, when it names one
+            years = re.findall(r"\b(?:19|20)\d{2}\b", e.get("journal_ref") or "")
+            card["published"].append({"source": "arXiv (declarado por los autores)", "doi": e.get("doi") or "",
+                                      "venue": e.get("journal_ref") or "", "year": years[-1] if years else ""})
+    page = c.get("arxiv-abs.html", f"https://arxiv.org/abs/{arxiv}")
+    card["versions"] = arxiv_versions(page.decode("utf-8", "replace")) if page else []
+    return e
+
+
 def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir: Path | None,
-          vault: Path | None = None) -> dict:
+          vault: Path | None = None, order: str = "recent") -> dict:
     c = Card(fetch, raw_dir)
     arxiv_entry = None
     card: dict = {"tool": TOOL, "query": {"arxiv": arxiv, "doi": doi}, "identity": {}, "versions": [],
-                  "published": [], "retraction": None, "citations": {}, "citing": [], "errors": c.errors}
+                  "published": [], "retraction": None, "citations": {}, "citing": [], "citing_order": order,
+                  "errors": c.errors}
     ident = card["identity"]
+    asked_arxiv = arxiv
     if arxiv:
-        raw = c.get("arxiv-api.xml", retraction.ARXIV_QUERY.format(urllib.parse.quote(arxiv, safe="/"), 1),
-                    {"Accept": "application/atom+xml"})
-        e = retraction.parse_arxiv_feed(raw).get(arxiv) if raw else None
-        arxiv_entry = e
+        e = arxiv_entry = arxiv_record(c, card, arxiv, primary=True)
         if e:
-            ident.update(title=e["title"], authors=e["authors"], year=(e["published"] or "")[:4], arxiv=arxiv)
-            if e.get("doi") or e.get("journal_ref"):
-                # journal_ref is free text ("Invented J. 7, 11 (2031)"): its year, when it names one
-                years = re.findall(r"\b(?:19|20)\d{2}\b", e.get("journal_ref") or "")
-                card["published"].append({"source": "arXiv (declarado por los autores)", "doi": e.get("doi") or "",
-                                          "venue": e.get("journal_ref") or "", "year": years[-1] if years else ""})
             doi = doi or (e.get("doi") if e.get("doi") and not retraction.is_arxiv_doi(e["doi"]) else None)
-        page = c.get("arxiv-abs.html", f"https://arxiv.org/abs/{arxiv}")
-        card["versions"] = arxiv_versions(page.decode("utf-8", "replace")) if page else []
     oa_key = os.environ.get("OPENALEX_API_KEY")
     crossref_msg = None
     oa_ids = ([f"doi:{doi}"] if doi else []) + ([f"doi:10.48550/arXiv.{arxiv}"] if arxiv else [])
@@ -203,7 +297,24 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             for k in ("is-preprint-of", "has-preprint"):
                 for r in rel.get(k) or []:
                     card["published"].append({"source": f"Crossref relation {k}", "doi": r.get("id", ""), "venue": ""})
+                    rd = retraction.normalize_doi(r.get("id"))
+                    if k == "has-preprint" and not arxiv and rd and retraction.is_arxiv_doi(rd):
+                        arxiv = retraction.arxiv_from_doi(rd)       # the publisher names its arXiv preprint
+                        ident["arxiv"] = arxiv
             ident.setdefault("abstract", from_jats(msg.get("abstract")))
+    if arxiv and not asked_arxiv:
+        # asked by DOI (or title), the preprint found on the way: its versions and its
+        # withdrawal check come from arXiv like for a paper asked by its arXiv id, and
+        # the preprint's own OpenAlex work counts among the works cited
+        arxiv_entry = arxiv_record(c, card, arxiv, primary=False)
+        raw = c.get("openalex.json", "https://api.openalex.org/works/doi:10.48550/arXiv."
+                    + urllib.parse.quote(arxiv, safe="/") + (f"?api_key={urllib.parse.quote(oa_key)}" if oa_key else ""))
+        if raw:
+            w = json.loads(raw)
+            wid = (w.get("id") or "").rsplit("/", 1)[-1]
+            if wid and wid not in works:
+                works[wid] = w.get("cited_by_count")
+                card["citations"]["openalex_works"] = works
     s2_id = f"arXiv:{arxiv}" if arxiv else (f"DOI:{doi}" if doi else None)
     if s2_id:
         hdr = {"x-api-key": os.environ["SEMANTIC_SCHOLAR_API_KEY"]} if os.environ.get("SEMANTIC_SCHOLAR_API_KEY") else {}
@@ -214,16 +325,21 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             card["citations"]["semantic_scholar"] = p.get("citationCount")
             card["citations"]["semantic_scholar_influential"] = p.get("influentialCitationCount")
             pv = p.get("publicationVenue") or {}
-            if pv.get("name") and (pv.get("type") or "") in ("journal", "conference"):
+            # Semantic Scholar files a preprint server as a "journal" ("arXiv.org"): a
+            # repository is where the preprint is, never a published version
+            if pv.get("name") and (pv.get("type") or "") in ("journal", "conference") \
+                    and not REPOSITORY.search(pv["name"]):
                 card["published"].append({"source": "Semantic Scholar", "doi": "", "venue": pv["name"]})
         if n_cit and ident.get("openalex"):
             # OpenAlex sorts the citing works by date itself: the newest really are the newest;
             # `cites:W1|W2` lists the papers citing any of the paper's works, each once
             cited = "|".join(works) or ident["openalex"]
-            raw = c.get("openalex-citing.json",
+            sort = "cited_by_count:desc" if order == "cited" else "publication_date:desc"
+            raw = c.get(f"openalex-citing{'-cited' if order == 'cited' else ''}.json",
                         f"https://api.openalex.org/works?filter=cites:{cited}"
-                        f"&sort=publication_date:desc&per-page={min(max(n_cit, 1), 100)}"
-                        "&select=id,doi,title,publication_year,publication_date,authorships,primary_location,locations"
+                        f"&sort={sort}&per-page={min(max(n_cit, 1), 100)}"
+                        "&select=id,doi,title,publication_year,publication_date,authorships,primary_location,locations,"
+                        "cited_by_count"
                         + (f"&api_key={urllib.parse.quote(oa_key)}" if oa_key else ""))
             data = json.loads(raw) if raw else {}
             if data.get("results"):
@@ -239,6 +355,7 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                         "arxiv": _oa_arxiv(w) or (retraction.arxiv_from_doi(d) if d and retraction.is_arxiv_doi(d)
                                                   else None),
                         "doi": d if d and not retraction.is_arxiv_doi(d) else None,
+                        "cited_by": w.get("cited_by_count"),
                         "first_author": (((w.get("authorships") or [{}])[0] or {}).get("author") or {}).get(
                             "display_name")})
         if n_cit and not card["citing"]:
@@ -248,7 +365,7 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
             while offset < 1000:
                 raw = c.get(f"s2-citations-{offset}.json",
                             f"{S2}/paper/{urllib.parse.quote(s2_id, safe=':/')}/citations?offset={offset}&limit=100"
-                            "&fields=title,year,publicationDate,venue,externalIds,authors", hdr)
+                            "&fields=title,year,publicationDate,venue,externalIds,authors,citationCount", hdr)
                 if not raw:
                     card["citing_incomplete"] = True          # a page did not come: the list is partial
                     break
@@ -258,11 +375,15 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
                     ext = q.get("externalIds") or {}
                     citing.append({"title": q.get("title"), "year": q.get("year"), "date": q.get("publicationDate"),
                                    "venue": q.get("venue") or None, "arxiv": ext.get("ArXiv"), "doi": ext.get("DOI"),
+                                   "cited_by": q.get("citationCount"),
                                    "first_author": ((q.get("authors") or [{}])[0] or {}).get("name")})
                 if data.get("next") is None:
                     break
                 offset = data["next"]
-            citing.sort(key=lambda x: (x.get("date") or str(x.get("year") or "")), reverse=True)
+            if order == "cited":
+                citing.sort(key=lambda x: x.get("cited_by") or 0, reverse=True)
+            else:
+                citing.sort(key=lambda x: (x.get("date") or str(x.get("year") or "")), reverse=True)
             card["citing_total_listed"] = len(citing)
             # S2 pages in its own order: past 1000, "newest" means newest of the first 1000 it gave
             card["citing_truncated"] = offset >= 1000
@@ -272,25 +393,15 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
         # year. A record accepted there counts with exactly this title, or with a close one
         # (resolve_refs' rule: a retitled camera-ready) by the same first author — and the
         # card then shows the published title.
-        raw = c.get("openreview.json", "https://api2.openreview.net/notes/search?term="
-                    + urllib.parse.quote(ident["title"]) + "&type=terms&content=all&source=forum&limit=10",
-                    {"Accept": "application/json"})
-        recs = lit_search.parse_openreview(raw)[0] if raw else []
-        first = rr.surname_of((ident.get("authors") or [""])[0] or "")
-
-        def same(r: dict) -> str | None:
-            level = rr.title_level(ident["title"], r.get("title") or "")[0]
-            if level == "exact":
-                return ""
-            if level == "close" and first and r.get("authors") and rr.surname_matches(first, r["authors"][0]):
-                return f"; título publicado: «{r['title']}»"
-            return None
-        hit = next(((r, same(r)) for r in recs if r.get("venue") and same(r) is not None), None)
+        raw = c.get("openreview.json", openreview_search_url(ident["title"]), {"Accept": "application/json"})
+        hit = openreview_acceptance(ident["title"], ident.get("authors") or [], raw)
         if hit:
-            hit, retitled = hit
-            card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}{retitled})",
+            card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}{hit['retitled']})",
                                       "doi": hit.get("doi") or "", "venue": hit["venue"],
                                       "year": str(hit.get("year") or ""), "url": hit["url"]})
+    if arxiv and ident.get("title") and not [p for p in card["published"]
+                                             if p.get("venue") and "preprint en arXiv" not in p["venue"]]:
+        card["published_candidates"] = retitled_candidates(c, ident)
     if doi or arxiv:
         # the same detection rules as check_retraction.py, on the records fetched above
         checks = []
@@ -351,6 +462,10 @@ def markdown(card: dict) -> str:
     L += [f"- {p['venue'] or '—'}" + (f" · DOI {p['doi']}" if p.get("doi") else "")
           + (f" · {p['date']}" if p.get("date") else "") + f" — según {p['source']}" for p in card["published"]] \
         or ["- no consta en arXiv, OpenAlex, Crossref ni Semantic Scholar"]
+    if card.get("published_candidates"):
+        L += ["", "**Posible versión publicada (candidata, no confirmada):**", ""]
+        L += [f"- {p['title']} — {p['venue'] or '—'} ({p['year'] or 's. f.'}) · DOI {p['doi']} — {p['why']}"
+              for p in card["published_candidates"]]
     r = card["retraction"] or {}
     L += ["", "## Estado", "", f"- Retracción / retirada: **{r.get('status', 'no comprobado')}**"
           + (f" ({'; '.join(r.get('evidence') or [])})" if r.get("evidence") else "")]
@@ -367,12 +482,14 @@ def markdown(card: dict) -> str:
     if card["citing"]:
         scope = (f"entre las {card.get('citing_total_listed', 0)} primeras que devuelve Semantic Scholar"
                  if card.get("citing_truncated") else f"de {card.get('citing_total_listed', 0)}")
-        L += [f"- Las {len(card['citing'])} más recientes {scope} (fuente: {card.get('citing_source', '—')}):", ""]
+        which = "más citadas" if card.get("citing_order") == "cited" else "más recientes"
+        L += [f"- Las {len(card['citing'])} {which} {scope} (fuente: {card.get('citing_source', '—')}):", ""]
         for q in card["citing"]:
             ids = " · ".join(x for x in (f"arXiv:{q['arxiv']}" if q.get("arxiv") else "",
                                          f"DOI:{q['doi']}" if q.get("doi") else "") if x)
             L.append(f"  - {q.get('title')} — {q.get('first_author') or ''} ({q.get('date') or q.get('year') or 's. f.'})"
-                     + (f", {q['venue']}" if q.get("venue") else "") + (f" — {ids}" if ids else ""))
+                     + (f", {q['venue']}" if q.get("venue") else "") + (f" — {ids}" if ids else "")
+                     + (f" — citado {q['cited_by']} veces" if q.get("cited_by") is not None else ""))
     if card["errors"]:
         L += ["", "## ⚠️ Fuentes que fallaron", ""] + [f"- {e}" for e in card["errors"]]
     L += ["", "## BibTeX", "", "```bibtex", card["bibtex"].rstrip(), "```", ""]
@@ -394,6 +511,9 @@ def find_by_title(title: str, fetch: Fetch) -> dict:
                     + "&per-page=10&select=id,doi,title,publication_year,primary_location,locations"
                     + (f"&api_key={urllib.parse.quote(key)}" if key else ""), {})
     except net.HttpError as e:
+        arx = _arxiv_by_title(title, fetch)
+        if len(arx) == 1:
+            return {"chosen": {**arx[0], "found_by": "arXiv (OpenAlex no respondió)"}}
         return {"error": f"OpenAlex: {net.redact(str(e))[:160]}"}
     hits = []
     for w in json.loads(raw).get("results") or []:
@@ -404,9 +524,27 @@ def find_by_title(title: str, fetch: Fetch) -> dict:
     exact = [h for h in hits if _norm_title(h["title"] or "") == _norm_title(title) and (h["doi"] or h["arxiv"])]
     if len(exact) == 1:
         return {"chosen": exact[0]}
+    if not exact:
+        arx = _arxiv_by_title(title, fetch)
+        if len(arx) == 1:
+            return {"chosen": {**arx[0], "found_by": "arXiv (OpenAlex no lo tiene aún)"}}
     if not hits:
-        return {"error": "OpenAlex no encuentra ningún trabajo con ese título"}
+        return {"error": "ni OpenAlex ni arXiv tienen un trabajo con ese título exacto"}
     return {"error": "título ambiguo: elige uno y vuelve con --arxiv o --doi", "candidates": hits[:10]}
+
+
+def _arxiv_by_title(title: str, fetch: Fetch) -> list[dict]:
+    """arXiv entries whose title is exactly `title` (case, punctuation and accents aside)."""
+    q = urllib.parse.quote(f'ti:"{" ".join(_norm_title(title).split())}"', safe="")
+    try:
+        raw = fetch(f"https://export.arxiv.org/api/query?search_query={q}&max_results=10", {})
+    except net.HttpError:
+        return []
+    out = []
+    for aid, e in retraction.parse_arxiv_feed(raw).items():
+        if _norm_title(e.get("title") or "") == _norm_title(title):
+            out.append({"title": e.get("title"), "arxiv": aid, "doi": None, "year": (e.get("published") or "")[:4]})
+    return out
 
 
 def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:
@@ -422,6 +560,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:
     g.add_argument("--title", help="find the paper by its title (OpenAlex); an ambiguous title lists candidates")
     ap.add_argument("--vault", type=Path)
     ap.add_argument("--citations", type=int, default=25)
+    ap.add_argument("--citing-order", choices=CITING_ORDERS, default="recent",
+                    help="the citing papers listed: the newest (default) or the most cited")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--raw-dir", type=Path)
     a = ap.parse_args(argv)
@@ -438,7 +578,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch) -> int:
         return 2
     if doi and retraction.is_arxiv_doi(doi):
         arxiv, doi = retraction.arxiv_from_doi(doi), None
-    card = build(arxiv, doi, a.citations, fetch, a.raw_dir, a.vault)
+    card = build(arxiv, doi, a.citations, fetch, a.raw_dir, a.vault, order=a.citing_order)
     if not card["identity"].get("title"):
         print(json.dumps({"tool": TOOL, "error": "no source knows this paper", "errors": card["errors"]},
                          ensure_ascii=False))

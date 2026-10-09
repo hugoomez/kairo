@@ -44,11 +44,38 @@ The project brief. Minimum to proceed: **Propósito** (central goal/question) an
 **Alcance** (Dentro / Fuera). If either is missing, ask the user for it and stop
 until you have both.
 
+**An existing library** (a Zotero / Better BibTeX `.bib`, or CSL-JSON) the
+researcher wants in the project goes in through
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/import_library.py" --vault <vault> --project <PROJ-XXX> --bib <file> [--zotero-keys] [--title-lookup] [--pdf-dir <dir>]`
+(after step 2; `--dry-run` first, to show the plan and the entries with no
+arXiv id or DOI): it takes only identifiers from the file and ingests each paper
+as step 6 does, so the old library's titles and authors never become vault
+facts. **The researcher's own PDFs** give a paywalled paper (SC, IPDPS, ISC,
+QCE…) its full text: a Better BibTeX / Zotero export's `file` field is read
+(export with files), or `--pdf-dir` holds `<citation key>.pdf`; a DOI entry
+with a PDF is ingested from it (`--pdf-text`, the published text it will be
+cited as), an arXiv entry keeps arXiv's open text. `--title-lookup` looks an
+entry with neither identifier up by its exact title (OpenAlex, then arXiv);
+an ambiguous or missing title stays listed, never guessed. Then run step 6.9's `resolve_refs.py` on the new P-ids, and pass the
+imported ids as snowball seeds if the researcher wants their neighbourhood.
+
 Everything else in `${CLAUDE_PLUGIN_ROOT}/templates/project-template.md` is optional but improves later
 stages — especially **Vocabulario conocido** and **Papers semilla** (feed the
 literature search, step 4) and **type** + **autonomy_defaults** (gate steps 4–5).
 
 ## Prerequisites
+
+- **The profile.** Run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check-template <template>`
+  once the template is known (step 1). Exit 3 means `KAIRO_PROFILE=literatura`:
+  only `ligero`, `corpus` and `revision` exist in this profile — offer them
+  (say which fits the brief) instead of the one asked for, and never run step 8.
+
+- **The session's model.** This skill orchestrates on the session's own
+  model; only the subagents have theirs fixed (`config/models.toml`). Compare
+  your model id with the policy's tier for task `create_project`: on a model
+  below that tier (e.g. a Haiku session), say so before step 4 — the
+  orchestration of the heavy passes was written for it — and offer to go on
+  or to switch with `/model`.
 
 - The `literature-search` skill is available.
 - Smart Connections MCP available and indexed (`mcp__smart-connections__*`). An
@@ -79,7 +106,12 @@ Frontmatter: set `name`, `created` (today), `status: active`, `type`
 (`ciencia | producto | hibrido`), and `autonomy_defaults.*`. Leave
 `related_projects: []` — step 3 fills it. Leave `id` for step 2.
 
-**Creation template.** The brief may name a template. A template only fills
+**Creation template.** The brief may name a template. When it names none,
+pick by what the brief asks: a question about the literature ("state of the
+art on X", "compare A and B", "what exists on Y") → **`ligero`** (minutes; the
+researcher can deepen it to `corpus` / `revision` later); a goal to test or
+build → `ciencia` (or `producto` / `aplicado`). Say which you chose and why in
+one line, before step 4. A template only fills
 existing fields — never a new `type` value:
 
 | template | `type` | also set | scaffolded in step 2 |
@@ -87,8 +119,10 @@ existing fields — never a new `type` value:
 | `teorico` (paper) | `ciencia` | `paper_thread: <slug of the paper's working title>`, `default_linea_publicacion: true` | `Claims/`, `Manuscritos/` with the outline + manuscript skeleton |
 | `aplicado` (code) | `hibrido` | `code_repo`, `code_remote: none`, `code_visibility: private` | the repository link + its pre-push guard (see "Applied projects: the code repository") |
 | `producto` | `producto` | — | as today |
-| `ciencia` (default) | `ciencia` | — | as today |
+| `ciencia` (a goal to test) | `ciencia` | — | as today |
 | `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
+| `corpus` (search and ingest only) | `ciencia` | `seed_hypotheses: false`, `sota_map: false` | as today; steps 3, 7 and 8 are skipped |
+| `ligero` (search and abstract cards) | `ciencia` | `seed_hypotheses: false`, `sota_map: false`, `fulltext: false` | as today; steps 3, 7 and 8 are skipped |
 
 **`revision`** is the light path for a question like "state of the art on X,
 last two years" or "compare A, B and C": Propósito is the question itself and
@@ -97,6 +131,23 @@ search → screening → ingestion → the map (with a *Tabla comparativa* when 
 question compares things, see step 7) and stops there: no related-projects
 pass, no seed hypotheses. Say in the report that hypotheses can be generated
 later from the gaps.
+
+**`corpus`** is the cheapest path: a traceable, screened, ingested library
+(`Papers/` notes with their verbatim text, `busqueda.md`, a BibTeX export) and
+no synthesis at all — for a researcher who will read the papers themselves.
+It runs steps 1, 2, 4, 5, 6 and 9–10, then exports the project's references
+(`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/export_bib.py" --vault <vault>
+--project <PROJ-XXX> --out Projects/<slug>/referencias.bib`). The map can be
+built later by running step 7 alone.
+
+**`ligero`** is the daily-use path, in minutes rather than hours: the same
+search, screening and BibTeX as `corpus`, but each paper is ingested
+**abstract-only** (`ingest_paper.py add … --no-fulltext`: verified metadata,
+the verbatim abstract, the published version and the reference check — no
+full text, no figures). Estimate it with `estimate_run.py --planned-papers N
+--abstract-only`. A paper the researcher then wants to read in depth gets its
+text with `ingest_paper.py rebuild --vault <vault> --only <P-id>`; the map
+needs full text, so step 7 is never run on a `ligero` project as it stands.
 
 Set `template:` to the one used. For `teorico`, tell the researcher once, in
 your report: `default_linea_publicacion: true` means every experiment that
@@ -152,6 +203,21 @@ relevance) + any recency the brief states (the plan's `from`).
 Include the **patent search only if `type` is `producto` or `hibrido`** —
 otherwise omit it entirely (matches that skill's own gate).
 
+**Cost before the heavy passes — an estimate, then the researcher's go-ahead.**
+The screening (one `screener` per page), the map (one `facet-summarizer` per
+≤ 6 papers), the reduce and the verification (one `fresh-verifier` per section
+part) are where a project's time and usage go. Before dispatching the
+screeners, and again before step 7, run
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --run <run dir>                       # before screening
+python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --vault <vault> --papers <P-ids …>    # before step 7
+```
+and show its per-stage subagents, models, tokens and minutes in a few lines.
+With `paper_ingestion: manual`, wait for the researcher's go-ahead (they may
+narrow the plan, pick fewer papers, or switch to the `corpus` template); with
+`autonomo`, say it and go on. It is an estimate from sizes on disk, never a
+measurement — say so.
+
 What steps 5–7 consume, all written by `lit_search.py`: `ranked.md` (the
 screened, justified list), `screened.json` (each candidate's ids and its
 **`facets`** record — per facet, the term that matched it; step 6 persists it
@@ -202,7 +268,11 @@ records, **never typed or pasted by the model**. For each confirmed paper:
      `published_venue`, `published_year`, `journal_ref`) from arXiv's
      declaration and the publisher's Crossref record;
    - keeps every fetched byte in `Papers/_fuentes/<P-id>/` with a manifest
-     (`fuentes.json`: URL, sha256, date, converter version).
+     (`fuentes.json`: URL, sha256, date, converter version);
+   - runs what a note written by hand would fire through the vault hook — the
+     Smart Connections re-index and the SOTA staleness check (`sota_stale` in
+     its output) — since a note a script writes never passes the Write tool.
+   With `fulltext: false` (the `ligero` template) add `--no-fulltext`.
    Exit 2 = refused (read the reason); exit 1 = a source could not be reached
    (re-run later). `--dry-run` shows what would be written. A `texto_sospechoso`
    warning means the full text holds hidden text (kept inside `[texto oculto en
@@ -216,9 +286,15 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    the DOI is kept as `published_doi` — `--keep-doi-anchor` prevents it), and
    otherwise the open-access PDF OpenAlex names is fetched and converted when
    the server hands a script a real PDF (a landing page, a 403 or a bot check
-   is a no, never worked around). When neither works but the researcher has
-   the PDF, run `pdftotext -enc UTF-8 <pdf> <txt>` and ingest with
-   `--doi <doi> --pdf-text <txt> --source-url <pdf url>`. **A paper with no
+   is a no, never worked around). When neither works, the researcher's own
+   access is the way: `ingest_paper.py gaps --vault <vault> --project
+   <PROJ-XXX>` lists every abstract-only paper with its DOI link and the file
+   names to save its PDF as (`P-XXXX.pdf`, or the DOI); once they have saved
+   the PDFs in a folder, `ingest_paper.py attach-pdf --vault <vault> --pdf-dir
+   <folder>` gives each its full text (matched by P-id or DOI in the file name,
+   or the DOI printed in the PDF — never by title), converted and kept like any
+   PDF, so `verify` checks it. Offer this in the end-of-run message whenever
+   papers stayed abstract-only. **A paper with no
    DOI and no arXiv id** (many USENIX / workshop papers) is ingested from its
    OpenAlex work: `--openalex W…` (the candidate's `url` in `screened.json`
    holds it when OpenAlex found it). No open full text at all → the script
@@ -227,18 +303,18 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    source returned stays `No disponible — ningún abstract recuperado (…)`.
    Ingestion takes a per-vault lock, so papers may be ingested one after the
    other or in parallel calls: they never share a P-id.
-4. **Zotero (optional).** When Zotero is reachable (see the plugin README →
-   "Zotero"), add the item from the script's own `csl` output (never from
-   anything you wrote): Better BibTeX `item.search` by DOI / arXiv id / title
-   first (reuse an existing item and tag it `PROJ-XXX`), else `POST
-   /connector/saveItems` with `itemType` (`preprint` / `journalArticle` /
-   `conferencePaper`), title, creators, date, DOI, url, abstractNote and the
-   tag. Read back `item.citationkey` and record it with
-   `ingest_paper.py zotero-key --vault <vault> --id <P-id> --key <citekey>`.
-   Zotero unreachable → say so once ("⚠️ Zotero unavailable — P-00NN ingested
-   without a Zotero record") and go on; `zotero_key` stays absent so a later
-   pass can find these notes. The vault exports BibTeX itself
-   (`scripts/papers/export_bib.py`), so nothing depends on Zotero.
+4. **Zotero (optional).** When Zotero is running (see the plugin README →
+   "Zotero"), add the ingested papers and record their citation keys with one
+   command — never by hand-made HTTP calls:
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/zotero_sync.py" --vault <vault> <P-ids …>
+   ```
+   It reuses an existing item (Better BibTeX search by arXiv URL / DOI / title),
+   creates a missing one from the note's fetched metadata only (tagged
+   `PROJ-XXX`), and writes `zotero_key`. `unreachable` → say once ("⚠️ Zotero
+   unavailable — P-00NN ingested without a Zotero record") and go on;
+   `zotero_key` stays absent so a later run finds these notes. The vault exports
+   BibTeX itself (`scripts/papers/export_bib.py`), so nothing depends on Zotero.
 5. **Verify.** After the last paper:
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" verify --vault <vault> --only <P-ids>`
    must report every note `ok` (exit 0). A note whose sections no longer match
@@ -246,6 +322,13 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    — `ingest_paper.py rebuild --only <P-id>` regenerates it. The fresh
    verifier, `check_quotes.py`, `check_review.py` and `check_sota.py` run the
    same comparison and treat a mismatch as text that is not the paper's.
+   Then extract each paper's own bibliography from the same kept bytes (no
+   network; the note is not touched):
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_refs.py" extract --vault <vault> --only <P-ids>`.
+   `paper_refs.py corpus --project <PROJ-XXX>` then lists the works the
+   project's papers cite (with an identifier their references state) that the
+   vault lacks, most cited first — show the top ones to the researcher with the
+   `snowball_seeds` line it prints, for a later `lit_search.py snowball --seeds`.
 6. **No model-written text in the paper note at all.** A reading aid, if you
    write one, goes in `Papers/_notas/<P-id>.md` (see Paper note format), never
    in the paper note. No locator may point there; no skill or agent reads it
@@ -331,20 +414,35 @@ records, **never typed or pasted by the model**. For each confirmed paper:
 
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
 
-**Map — `facet-summarizer` subagents, in parallel.** Read the assignment from
+*(Skipped for the `corpus` template: `sota_map: false`.)*
+
+**Cards first — each paper read once, ever.** `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ficha.py" status --vault <vault> --project <PROJ-XXX>`
+lists `to_card`: the papers with no reading card or a stale one (the note was
+rebuilt). Dispatch one `paper-carder` per such paper, all in the same turn (one
+at a time if the prompt says memory is low), each given its note path only.
+Save each reply unchanged to a file and run
+`ficha.py write --vault <vault> --id <P-id> --reply <file> --model <paper-carder's model, config/models.toml>`:
+it keeps only the items whose quote is the paper's own text under their
+locator (the rest are listed in the card as dropped). A card is reused by every
+later map and project that holds the paper — the estimate (`estimate_run.py`)
+shows how many are reused. Papers with `vigente` cards need nothing.
+
+**Map — `facet-summarizer` subagents, in parallel.** Read the work split from
 the notes: `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/facet_assignment.py"
---vault <vault> --project <PROJ-XXX> --json` gives, per facet, the papers whose
-`facets:` entry (step 6) names it. **Do not re-derive facet membership.** A
+--vault <vault> --project <PROJ-XXX> --chunks` gives `chunks`: every paper
+**once** (a paper on several facets is placed on one of them — the least
+loaded — and carries the list of all its facets), at most 6 papers a chunk.
+**Do not re-derive facet membership and do not re-split.** A
 paper listed under `sin_facetas` (exit 1) has no record: do not guess one —
 leave it out of the map and list it in the end-of-run message as `importante`
 (`P-XXXX sin faceta registrada — no entra en el Estado del arte`), so the
 researcher can add the entry with `--add`. Then **dispatch one `facet-summarizer` subagent per
-facet, all launched together in the same turn** (exception: if the prompt says memory is low and subagents go **one at a time**, launch each and wait for its answer before the next), each given its facet + the
-explicit list of `Papers/P-XXXX ….md` note paths assigned to it + the project
-`type` (+ the hub's `comparison_fields`, when set). **A facet with more than 6 papers is split:** one `facet-summarizer` per
-chunk of at most 6 of its papers (same facet, disjoint lists), so every paper
-is actually read within one subagent's turns; the Reduce pass merges chunks of
-a facet like any two contributions. **Never assign a `send: never` note** (check the candidate list with
+chunk, all launched together in the same turn** (exception: if the prompt says memory is low and subagents go **one at a time**, launch each and wait for its answer before the next), each given its chunk's facet, the
+facet terms of every facet its papers carry (`also_facets`), the explicit list
+of `Papers/P-XXXX ….md` note paths with each paper's facets, the project
+`type` (+ the hub's `comparison_fields`, when set). A paper is read by one
+summarizer only, which covers every facet it carries; the Reduce pass merges
+the chunks of a facet like any two contributions. **Never assign a `send: never` note** (check the candidate list with
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py" check <paths…>`;
 exit 3 names the flagged ones): it stays in `Papers/` but contributes nothing to
 the map, and the end-of-run message lists it as `menor` (`P-XXXX omitida del
@@ -381,7 +479,7 @@ establecido"), **do not re-derive the citation independently for the second
 occurrence.** Look up the locator already used the first time and reuse it
 verbatim. If the two occurrences disagree on the section number, that
 disagreement is itself the signal that one of them is wrong — stop and
-re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
+have `paper-reader` re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
 before writing either one; do not resolve the conflict by just picking
 whichever number was written down first. Never let the same fact carry two
 different section citations in the finished document.
@@ -397,9 +495,11 @@ It resolves every `P-XXXX <locator>` with the fresh-verifier's resolver and
 checks every number in a cited sentence — and in every table: a row that
 cites, and each cell of a table whose header names papers (the *Matriz de
 conceptos*) against its column's paper — against the text the locators point
-at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: for each one, re-open the cited
-heading in the paper note and either fix the locator / figure to what the
-paper says or drop the sentence; then run it again. If a problem cannot be
+at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: send them all to one `paper-reader`
+subagent as `check` requests (paper path, locator, the sentence) — this session
+never reads a paper note (the vault hook refuses it) — and either fix the
+locator / figure to what it returns (its `better_locator`, the verbatim `text`)
+or drop the sentence; then run it again. If a problem cannot be
 resolved (the paper does not say it anywhere you can find), drop the
 sentence — never leave a figure the cited text does not contain. Only as a
 last resort, `--write` marks the remaining ones «⚠ …» in place, and the
@@ -418,12 +518,29 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/check_sota.py" --vault <vault> --pr
 
 A large section is split: the JSON lists every part in `packets`
 (`sota-<n>.md`, `sota-<n>-2.md`, …) — dispatch one `fresh-verifier` per part.
-Pass each verifier its packet file's content and nothing else. Every
-`errors_found` finding names an `Afirmación`: re-open its source and fix the
-sentence to what the text says, or drop it, then re-run `check_sota.py`. A
+Each verifier's whole prompt is its part's store path (`stored[i].path`) —
+never the packet's text: its `Read` is held to that file by the vault hook,
+and the read leaves the receipt `verifications.py append --packet-sha256
+<stored[i].sha256>` requires. Every
+`errors_found` finding names an `Afirmación`: have `paper-reader` check its
+source and fix the sentence to what the text says, or drop it, then re-run
+`check_sota.py`. A
 `cannot_assess` is listed in the end-of-run message as `importante`. Record
 the verdicts in the frontmatter's `verifications:` list (one entry per section,
 `scope: section:<heading>`).
+
+**Optional: a second model family on the same packets.** `fresh-verifier` is
+independent of this conversation, not of the model family that wrote the
+map. When the second critic is on (`python "${CLAUDE_PLUGIN_ROOT}/scripts/second_critic/status.py"`
+says `available` — `KAIRO_SECOND_CRITIC=on` and `DEEPINFRA_TOKEN`), offer it
+once with the cost `--dry-run` prints for each part, and on the researcher's
+yes run, per part:
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/second_critic/cross_verify.py" --packet <stored[i].path> --fresh-verdict <that part's verdict> --out Projects/<slug>/_verificacion-cruzada/<date>-<n>.json`.
+Its findings are handled exactly like the fresh-verifier's (paper-reader
+checks the source; fix or drop the sentence). A disagreement between the two
+verdicts is listed in the end-of-run message — never averaged, never resolved
+by picking one. It sends the packets (the map's sentences and the cited
+papers' text) to DeepInfra: say so when offering it.
 
 **The Búsqueda ejecutada block** is the run's `busqueda.md`, appended
 unchanged (never retyped). **If it starts with `## ⚠️ Cobertura degradada`**
@@ -458,11 +575,20 @@ genuinely competing schools exist; include **§9 only if** `type` is
 8. Orden de lectura recomendado
 9. Panorama competitivo y de propiedad intelectual *(producto/hibrido only)*
 
+Then, always, **`## Cobertura de lectura`** (written by the Reduce pass): how
+many papers the map covers and every `no leído: P-XXXX §… (motivo)` line a
+summarizer returned, verbatim — or that every citable section was read.
+`check_sota.py` reports it as `cobertura_lectura` (a warning when the section
+is missing; its lines are never checked as citations). List each unread
+section in the end-of-run message as `importante`: a gap of the kind «no
+aparece en el corpus» is only as good as what was actually read.
+
 **Every claim cites a specific paper id + section/table/figure** where possible
 (e.g. `P-0007 §4.2`, `P-0012 Tabla 3`). A claim with no citable source does not
 go in. **Before writing (or copying forward from a subagent's contribution) any
-such locator, re-open that exact heading in the source `Papers/P-XXXX.md` note
-and confirm the sentence paraphrases what's under it — not the paper in
+such locator, have that exact heading in the source `Papers/P-XXXX.md` note
+checked (the Map and Reduce subagents read it themselves; anything this session
+adds goes through `paper-reader`) and confirm the sentence paraphrases what's under it — not the paper in
 general, and not a similar-looking citation used earlier in this document.**
 This applies to §4 and §8, which the Reduce pass drafts itself, exactly as it
 applies to merging subagent contributions.
@@ -485,8 +611,10 @@ cell is a figure or short phrase **taken from the paper** (a number exactly as
 it appears, with its unit), and the row's `fuente` cell holds the locators that
 row's cells come from (`P-0007 Tabla 3; P-0007 §5.2`); a field the paper does
 not report is `no consta`, never estimated or converted; one it shows only in
-a plot is `en figura: Figura N (no extraído)` — never read off the plot, so a
-scaling curve is named, not invented. The values come from
+a plot is `≈<value> (leído de la Figura N, no literal)` when the note links the
+figure's image (the summarizer looks at it), else `en figura: Figura N (no
+extraído)` — a plot reading is always marked as one, so a scaling curve is
+read approximately and said so, never passed off as a printed figure. The values come from
 the facet summarizers' `(comparativa)` lines (they are given the fields),
 never from memory. `check_sota.py` checks every number in a cited row against
 the cited text, and the row goes into the fresh-verifier packet like any cited
@@ -745,7 +873,7 @@ When a paper is already ingested for another project, only append this project's
   location. Drop it or find the source.
 - **Citing a section from memory of a similar earlier citation instead of
   re-reading it.** A cited-but-wrong locator is worse than an obviously
-  missing one — it looks verified and isn't. Re-open the exact heading every
+  missing one — it looks verified and isn't. Have the exact heading read (`paper-reader`) every
   time, even for a paper you just cited two paragraphs ago.
 - **The same fact carrying two different section numbers in one document.**
   If a fact restates something already cited elsewhere in this
@@ -785,7 +913,8 @@ When a paper is already ingested for another project, only append this project's
   `resolution_*` come only from the script; `resolved: true` without an OpenAlex
   id breaks the contract other skills rely on.
 
-## Not in v1
+## Not in this skill
 
-- Automatic Zotero sync (create Obsidian notes directly; Zotero is a fast-follow).
 - Promotion / experiment scaffolding (separate skills).
+- Zotero is optional, never required: step 6.4 adds the papers when Zotero is
+  running (`zotero_sync.py`), and `export_bib.py` exports BibTeX without it.

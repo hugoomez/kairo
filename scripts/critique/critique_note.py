@@ -18,6 +18,12 @@
 
 A ``send: never`` note and the model-written ``Papers/_notas/`` are refused.
 
+``packet`` also puts the packet in the packet store (scripts/security/isolation.py)
+and prints its path: the agent's only tool is ``Read``, held by the vault hook
+to that store, so it reads the packet itself — never retyped into a prompt.
+``write`` refuses a result unless a ``devils-advocate`` is recorded as having
+read that packet (``--allow-unread`` writes it anyway, ``packet_read: false``).
+
 ``write`` validates the agent's JSON, assigns the next ``CR-XXXX`` (vault-wide),
 and writes ``Projects/<slug>/Criticas/CR-XXXX.md`` — marked
 ``escrito_por: modelo`` / ``citable: false``. A critique is never evidence: it
@@ -43,6 +49,9 @@ sys.path.insert(0, str(HERE.parent / "ledger"))
 sys.path.insert(0, str(HERE.parent / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 from verifier_packet import body_sections, split_frontmatter  # noqa: E402
+
+sys.path.insert(0, str(HERE.parent / "security"))
+import isolation  # noqa: E402
 
 __version__ = "1.1.0"
 CRITIC = "kairo/devils-advocate@1.0.0"
@@ -169,7 +178,7 @@ def _second_critic_label() -> str:
 
 
 def write_note(vault: Path, target: str, packet: Path, result: dict, model: str | None,
-               project: str | None = None) -> Path:
+               project: str | None = None, packet_read: bool | None = None) -> Path:
     validate_result(result)
     if project:
         if not (vault / "Projects" / project / "_hub.md").is_file():
@@ -189,6 +198,7 @@ def write_note(vault: Path, target: str, packet: Path, result: dict, model: str 
         f"critic: {CRITIC}",
         f"model: {model or 'desconocido'}",
         f"packet_sha256: {sha}",
+        *([f"packet_read: {'true' if packet_read else 'false'}"] if packet_read is not None else []),
         f"second_critic: {_second_critic_label()}",
         "escrito_por: modelo",
         "citable: false",
@@ -246,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--result", required=True, type=Path)
     w.add_argument("--model")
     w.add_argument("--project", help="project folder slug (required when the target is a decision)")
+    w.add_argument("--allow-unread", action="store_true",
+                   help="write it without a receipt that the critic read the packet (packet_read: false)")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -254,10 +266,17 @@ def main(argv: list[str] | None = None) -> int:
             text = build_packet(args.vault, args.target, args.section, args.text_file)
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(text, encoding="utf-8", newline="\n")
-            print(json.dumps({"out": str(args.out), "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}))
+            stored = isolation.store(text)
+            print(json.dumps({"out": str(args.out), "sha256": stored["sha256"], "packet": stored["path"]}))
             return 0
+        sha = hashlib.sha256(args.packet.read_bytes()).hexdigest()
+        read = bool(isolation.received(sha, "devils-advocate"))
+        if not read and not args.allow_unread:
+            raise Refused(f"no devils-advocate is recorded as having read packet {sha} — hand the agent the "
+                          "packet path `packet` printed (it reads the file itself); --allow-unread writes the "
+                          "critique without that proof")
         result = parse_result(args.result.read_text(encoding="utf-8"))
-        out = write_note(args.vault, args.target, args.packet, result, args.model, args.project)
+        out = write_note(args.vault, args.target, args.packet, result, args.model, args.project, read)
         print(json.dumps({"id": out.stem, "path": str(out)}, ensure_ascii=False))
         return 0
     except Refused as exc:

@@ -920,6 +920,9 @@ def main(argv=None) -> int:
     p.add_argument("--section", help="scope section:<heading> -- include only "
                    "this ## section of --note")
     p.add_argument("--out", help="write the packet here (UTF-8, LF)")
+    p.add_argument("--store", action="store_true",
+                   help="also put the packet in Kairo's packet store and print JSON with its path: the "
+                        "verifier reads that file itself (scripts/security/isolation.py)")
     p.add_argument("--manifest", help="write the manifest JSON here")
     p.add_argument("--json", action="store_true",
                    help="print {out, sha256, manifest} as JSON on stdout")
@@ -952,7 +955,12 @@ def main(argv=None) -> int:
             json.dump(manifest, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
     print(manifest_text(manifest), file=sys.stderr)
-    if a.json:
+    if a.store:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "security"))
+        import isolation
+        stored = isolation.store(packet.encode("utf-8"))
+        print(json.dumps({"out": a.out, "sha256": stored["sha256"], "packet": stored["path"]}, ensure_ascii=False))
+    elif a.json:
         print(json.dumps({"out": a.out, "sha256": manifest["sha256"],
                           "manifest": manifest}, ensure_ascii=False))
     elif a.out:

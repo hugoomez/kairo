@@ -344,6 +344,34 @@ class Beyond(Base):
         self.assertEqual((code, out["fulltext"]), (0, "abstract-only"))
         self.assertTrue(any("no se fuerza" in w for w in out["warnings"]), out["warnings"])
 
+    def test_a_paywalled_paper_gets_its_full_text_from_the_researchers_pdf(self):
+        work = {**OPENALEX, "best_oa_location": {"pdf_url": "https://example.invalid/paper.pdf"}}
+        self.add("--doi", "10.0000/toy.2031.7",
+                 fetch=self.fetch_with(work, pdf=b"<!doctype html><title>Paywall</title>"))
+        code, gaps = self.run_cli("gaps", "--vault", str(self.vault))
+        self.assertEqual((code, gaps["abstract_only"]), (0, 1), gaps)
+        self.assertEqual(gaps["papers"][0]["open"], "https://doi.org/10.0000/toy.2031.7")
+        self.assertIn("P-0001.pdf", gaps["papers"][0]["save_as"])
+        pdfs = Path(tempfile.mkdtemp(prefix="kairo-pdfs-"))
+        self.addCleanup(shutil.rmtree, pdfs, True)
+        (pdfs / "unrelated.pdf").write_bytes(b"%PDF-1.4 another")
+        orig = ip.vf.pdftotext_available
+        ip.vf.pdftotext_available = lambda: True
+        try:
+            code, out = self.run_cli("attach-pdf", "--vault", str(self.vault), "--pdf-dir", str(pdfs))
+            self.assertEqual(out["notes"][0]["status"], "no_pdf")           # never matched by title or by chance
+            (pdfs / "10.0000_toy.2031.7.pdf").write_bytes(b"%PDF-1.4 the paper")
+            code, out = self.run_cli("attach-pdf", "--vault", str(self.vault), "--pdf-dir", str(pdfs))
+        finally:
+            ip.vf.pdftotext_available = orig
+        self.assertEqual((code, out["attached"]), (0, 1), out)
+        self.assertEqual(out["notes"][0]["matched_by"], "nombre (DOI)")
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("fulltext: full", text)
+        self.assertIn("invented threshold of 1.7%", text)
+        self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
+        self.assertEqual(self.run_cli("gaps", "--vault", str(self.vault))[1]["abstract_only"], 0)
+
     def test_a_doi_with_an_arxiv_preprint_is_anchored_on_the_preprint(self):
         work = {**OPENALEX, "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.11111"}]}
         code, out = self.add("--doi", "10.0000/toy.2031.7", fetch=self.fetch_with(work))
@@ -400,6 +428,90 @@ class FillAbstract(Base):
                                                             ip.NO_ABSTRACT + " (x)."), encoding="utf-8")
         r = fill_abstract.process(p, True, "2031-06-02", fetcher=lambda label, url: "word " * 40)
         self.assertEqual(r["status"], "ingested_by_script")
+
+
+
+class TestDerivedViews(unittest.TestCase):
+    """A note written by this script fires what a Write of it would have fired:
+    the SOTA staleness check and the Smart Connections re-index."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp(prefix="kairo-derived-"))
+        self.env = mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")})
+        self.env.start()
+        self.vault = self.tmp / "vault"
+        proj = self.vault / "Projects" / "demo"
+        proj.mkdir(parents=True)
+        (self.vault / "Papers").mkdir()
+        (proj / "_hub.md").write_text("---\nid: PROJ-971\n---\n", encoding="utf-8")
+        (proj / "Estado-del-arte.md").write_text("---\ngenerated: 2030-01-01\n---\n\n## X\n", encoding="utf-8")
+        self.paths = []
+        for i in range(5):
+            p = self.vault / "Papers" / f"P-097{i} invented {i}.md"
+            p.write_text(f"---\nid: P-097{i}\nprojects: [PROJ-971]\nadded: 2031-0{i + 1}-01\n---\n", encoding="utf-8")
+            self.paths.append(p)
+
+    def tearDown(self):
+        self.env.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_staleness_is_reported_and_the_hook_log_records_it(self):
+        got = ip.derived_views(self.vault, [self.paths[-1]])
+        self.assertIn("PROJ-971", got["sota_stale"])
+        log = (self.tmp / "state" / "hook-events.jsonl").read_text(encoding="utf-8")
+        self.assertIn("sota_staleness", log)
+
+    def test_outside_a_vault_nothing_runs(self):
+        other = self.tmp / "elsewhere" / "Papers"
+        other.mkdir(parents=True)
+        p = other / "P-0001 x.md"
+        p.write_text("---\nid: P-0001\n---\n", encoding="utf-8")
+        self.assertEqual(ip.derived_views(self.tmp / "elsewhere", [p]), {"sota_stale": None})
+
+
+
+class Figures(Base):
+    """A figure's image is kept beside the source bytes and linked under its caption."""
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"invented image bytes"
+
+    def fetch_with_images(self, missing=()):
+        base = make_fetch()
+
+        def fetch(url, headers):
+            if url.startswith("https://arxiv.org/html/") and url.endswith(".png"):
+                if any(url.endswith(m) for m in missing):
+                    raise ip.net.HttpError(url, 404, "not found")
+                return self.PNG
+            return base(url, headers)
+        return fetch
+
+    @staticmethod
+    def fig_arxiv(aid, version="", pause=0):
+        v = version or "v2"
+        return {"kind": "arxiv-html", "url": f"https://arxiv.org/html/{aid}{v}", "version": v,
+                "bytes": tvf.FIG_HTML.encode("utf-8")}
+
+    def test_images_are_kept_linked_and_verified(self):
+        code, out = self.add("--arxiv", "0000.11111", fetch=self.fetch_with_images(), fetch_arxiv=self.fig_arxiv)
+        self.assertEqual(code, 0, out)
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("![Figure 3](_fuentes/P-0001/fig/x3.png)", text)
+        self.assertEqual((self.vault / "Papers" / "_fuentes" / "P-0001" / "fig" / "x3.png").read_bytes(), self.PNG)
+        self.assertEqual(out["figures"], {"kept": 2, "missing": []})
+        code, res = self.run_cli("verify", "--vault", str(self.vault))
+        self.assertEqual((code, res["notes"][0]["status"]), (0, "ok"), res)
+
+    def test_an_image_that_cannot_be_fetched_is_named_never_invented(self):
+        code, out = self.add("--arxiv", "0000.11111", fetch=self.fetch_with_images(missing=("plot.png",)),
+                             fetch_arxiv=self.fig_arxiv)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["figures"]["missing"], ["extracted_99_figs_plot.png"])
+        self.assertTrue(any("figura" in w for w in out["warnings"]))
+        code, res = self.run_cli("verify", "--vault", str(self.vault))
+        self.assertEqual(res["notes"][0]["status"], "ok", res)
 
 
 if __name__ == "__main__":

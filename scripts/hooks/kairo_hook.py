@@ -5,6 +5,7 @@
     kairo_hook.py post-write    PostToolUse Write | Edit
     kairo_hook.py post-shell    PostToolUse Bash | PowerShell
     kairo_hook.py session-end   SessionEnd
+    kairo_hook.py subagent-stop SubagentStop
 
 Reads the hook's JSON on stdin and routes it:
 
@@ -14,8 +15,13 @@ Reads the hook's JSON on stdin and routes it:
                  Papers/**              Smart Connections re-index + SOTA staleness check
                  Projects/*/Hipotesis/  _digest.md + _ledger.md
                  Projects/*/Claims/     _ledger.md
-  post-shell   Bitácora: log a `git commit` the shell call just made.
+  post-shell   Bitácora: log a `git commit` the shell call just made (not under
+               KAIRO_PROFILE=literatura: the notebook serves the programme).
   session-end  keep the transcript of a session that wrote research notes.
+  subagent-stop  keep an isolated agent's final answer (screener, fresh-verifier,
+               …) tied to the packet it read, so the script that records its
+               verdict can check the orchestrator saved it unchanged. Works in
+               any folder: the store is outside the vault.
 
 The vault is found, in order, from:
   - the written or read path (the nearest ancestor holding both Papers/ and
@@ -151,10 +157,29 @@ def rel(p: Path, vault: Path) -> str:
 # --------------------------------------------------------------------------
 
 def pre_tool(payload: dict) -> int:
+    import isolation
     import send_guard
     tin = payload.get("tool_input") or {}
     vault = find_vault(payload, tin.get("file_path") or tin.get("path") or tin.get("notePath"))
     tool = str(payload.get("tool_name") or "")
+    # isolated agents (fresh-verifier, screener, …) read their packet and nothing else — fail closed
+    try:
+        applies, reason, receipt = isolation.check_isolated(payload)
+    except Exception as exc:
+        applies = isolation.agent_name(payload) in isolation.ISOLATED_AGENTS
+        reason, receipt = f"comprobación de aislamiento fallida ({exc!r})", None
+    if applies:
+        if reason:
+            record("PreToolUse", "isolation", vault, "blocked", f"{isolation.agent_name(payload)} {tool}")
+            print(f"Kairo: {reason}", file=sys.stderr)
+            return 2
+        try:
+            isolation.record_receipt(receipt)
+        except OSError as exc:
+            print(f"Kairo: no se pudo registrar la lectura del paquete ({exc!r})", file=sys.stderr)
+            return 2
+        record("PreToolUse", "isolated_read", vault, "ok", f"{receipt['agent_type']} {receipt['sha256']}")
+        return 0
     # Outside a vault only the path-based checks (Read, Grep) make sense; the
     # shell check scans the vault for flagged notes and needs one.
     if vault is None and tool in ("Bash", "PowerShell"):
@@ -168,6 +193,15 @@ def pre_tool(payload: dict) -> int:
     if reason:
         record("PreToolUse", "send_guard", vault, "blocked", tool)
         print(f"send_guard (Kairo): {reason}", file=sys.stderr)
+        return 2
+    try:
+        reason = isolation.main_paper_read(payload)
+    except Exception as exc:  # fail open, loudly (as send_guard)
+        reason = None
+        record("PreToolUse", "main_paper_read", vault, "error", repr(exc))
+    if reason:
+        record("PreToolUse", "main_paper_read", vault, "blocked", tool)
+        print(f"Kairo: {reason}", file=sys.stderr)
         return 2
     if vault is not None:
         record("PreToolUse", "send_guard", vault, "allowed", tool)
@@ -220,6 +254,8 @@ def post_shell(payload: dict) -> int:
     cmd = str((payload.get("tool_input") or {}).get("command") or "")
     if "commit" not in cmd:  # cheap prefilter; commit_hook decides for real
         return 0
+    if (os.environ.get("KAIRO_PROFILE") or "").strip().lower() == "literatura":
+        return 0             # the lab notebook serves the research programme, not the literature profile
     vault = find_vault(payload)
     if vault is None:
         return 0
@@ -245,7 +281,21 @@ def session_end(payload: dict) -> int:
     return 0
 
 
-EVENTS = {"pre-tool": pre_tool, "post-write": post_write, "post-shell": post_shell, "session-end": session_end}
+def subagent_stop(payload: dict) -> int:
+    import isolation
+    if isolation.agent_name(payload) not in isolation.ISOLATED_AGENTS:
+        return 0
+    try:
+        rec = isolation.capture_reply(payload)
+        record("SubagentStop", "agent_reply", find_vault(payload), "ok" if rec else "empty",
+               f"{isolation.agent_name(payload)} {(rec or {}).get('reply_sha256', '')}")
+    except Exception as exc:
+        record("SubagentStop", "agent_reply", None, "error", repr(exc))
+    return 0
+
+
+EVENTS = {"pre-tool": pre_tool, "post-write": post_write, "post-shell": post_shell, "session-end": session_end,
+          "subagent-stop": subagent_stop}
 
 
 def main(argv: list[str] | None = None) -> int:

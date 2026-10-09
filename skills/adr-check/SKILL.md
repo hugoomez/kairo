@@ -5,6 +5,8 @@ description: Use when displaying, reviewing, quoting, or reusing an ADR that cit
 
 # ADR Staleness Check
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check adr-check`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 An ADR's rationale can rot silently: a hypothesis it cites as support may later

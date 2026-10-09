@@ -18,6 +18,8 @@ description: >-
 
 # Paper to Tool
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check paper-to-tool`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 When an experiment has to reproduce a specific paper's method, Kairo's
@@ -119,7 +121,8 @@ Binding rules:
 1. If the paper note has `send: never` (`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/send_guard.py"
    check <note>` exits 3), stop: this skill must read the note and query its
    repo, and the note is marked not-to-send. Tell the researcher (`importante`).
-   Otherwise read the paper note: `code_repo:`, `code_repo_evidence:`. If the evidence
+   Otherwise read its `code_repo:` and `code_repo_evidence:` with
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_meta.py" --vault <vault> P-XXXX …` `--fields code_repo code_repo_evidence` (never the note itself). If the evidence
    is weak (no author statement), say so — `importante`.
 2. Check `Tools/P-XXXX/` for an existing tool for this method (see "When not
    to use").
@@ -203,7 +206,7 @@ In order of preference:
 2. **outputs shipped with the repo** (saved runs, checkpoints, result files)
    that the method's code produced;
 3. **results reported in the paper itself** that the code can reproduce at
-   small scale (cite `P-XXXX §…`, re-reading the section, never from memory).
+   small scale (cite `P-XXXX §…`, the section read by `paper-reader`, never from memory).
 
 Record which one and why. If nothing qualifies, stop: the tool cannot be
 validated → record it `rejected` ("no reference output") — don't invent one.

@@ -1,9 +1,17 @@
 ---
 name: theorem
-description: Use when a Kairo project needs a lemma or theorem stated, proved, verified or checked — "demuestra que…", "añade el lema…", "verifica la demostración de C-0004", "escribe la comprobación numérica de C-0007". Creates the Claims/ node (kind lema | teorema) with depends_on, drafts the proof, writes the numerical sanity check, and runs the fresh verifier on the proof. Never signs off and never marks anything probado on its own: the rigor gate needs the researcher's sign-off on the statement and the proof.
+description: >-
+  Use when a Kairo project needs a lemma or theorem stated, proved, verified or checked —
+  "demuestra que…", "añade el lema…", "verifica la demostración de C-0004", "escribe la
+  comprobación numérica de C-0007". Creates the Claims/ node (kind lema | teorema) with
+  depends_on, drafts the proof, writes the numerical sanity check, and runs the fresh
+  verifier on the proof. Never signs off and never marks anything probado on its own: the
+  rigor gate needs the researcher's sign-off on the statement and the proof.
 ---
 
 # theorem — lemmas and theorems under the rigor gate
+
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check theorem`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
 
 ## Overview
 
@@ -81,10 +89,11 @@ and sign off the reason.
 
 ```
 python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py" \
-  --vault <vault> --note Projects/<slug>/Claims/<C-XXXX>.md --json --out <tmp>/packet.md
+  --vault <vault> --note Projects/<slug>/Claims/<C-XXXX>.md --out <tmp>/packet.md --store
 ```
 
-Dispatch `fresh-verifier` with the packet text only. Record its verdict with
+Dispatch `fresh-verifier` with the stored packet's path (`packet`) as its whole
+prompt — never the packet's text; its `Read` is held to that file by the hook. Record its verdict with
 the report and the packet's sha256 — the gate matches that sha256 against the
 packet of the current text:
 
@@ -92,7 +101,7 @@ packet of the current text:
 python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py" append \
   --note Projects/<slug>/Claims/<C-XXXX>.md --verifier kairo/fresh-verifier@<v> \
   --model <model> --verdict <verdict> --scope note --report <tmp>/report.md \
-  --packet-sha256 <sha256 from --json>
+  --packet-sha256 <sha256 --store printed>
 ```
 
 `errors_found`: fix the proof (or the statement, with the researcher), and

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -16,10 +17,14 @@ import urllib.parse
 from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import lit_watch  # noqa: E402
+
+sys.path.insert(0, str(HERE.parent / "security"))
+import isolation  # noqa: E402
 
 TODAY = date(2031, 3, 1)
 
@@ -92,6 +97,9 @@ class FakeNet:
 class TestLitWatch(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="kairo-watch-"))
+        self.env = mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")})
+        self.env.start()
+        os.environ.pop("KAIRO_PACKETS_DIR", None)
         self.vault = self.tmp / "vault"
         self.p = self.vault / "Projects" / "vigilancia-demo"
         (self.p / "Hipotesis").mkdir(parents=True)
@@ -109,6 +117,7 @@ class TestLitWatch(unittest.TestCase):
             encoding="utf-8")
 
     def tearDown(self):
+        self.env.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def cli(self, *args, fetch=None):
@@ -116,6 +125,15 @@ class TestLitWatch(unittest.TestCase):
         with redirect_stdout(buf):
             code = lit_watch.main(list(args), fetch=fetch or FakeNet(), today=TODAY)
         return code, json.loads(buf.getvalue())
+
+    def judged(self, run: str, key: str = "arxiv:2031.00002", hid: str = "H-0961", read: bool = True) -> str:
+        """The judge's packet for (hypothesis, candidate), read by a novelty-judge (the hook's receipt)."""
+        code, out = self.cli("judge-packet", "--vault", str(self.vault), "--project-dir", str(self.p),
+                             "--run", run, "--key", key, "--hypothesis", hid)
+        self.assertEqual(code, 0, out)
+        if read:
+            isolation.record_receipt({"sha256": out["sha256"], "agent_type": "novelty-judge", "agent_id": "j-1"})
+        return out["sha256"]
 
     def delta(self, fetch=None):
         return self.cli("delta", "--vault", str(self.vault), "--project-dir", str(self.p), fetch=fetch)
@@ -233,7 +251,7 @@ class TestLitWatch(unittest.TestCase):
         run = str(self.run_file(res))
         base = ["threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
                 "--key", "arxiv:2031.00002", "--hypothesis", "H-0961", "--judgement", "Mismo resultado, ya publicado.",
-                "--severity", "crítico"]
+                "--severity", "crítico", "--packet-sha256", self.judged(run)]
         code, out = self.cli(*base, "--sentence", "fictional blue widgets are known to rotate faster than red")
         self.assertEqual(code, 2)
         self.assertIn("not verbatim", out["error"])
@@ -278,7 +296,38 @@ class TestLitWatch(unittest.TestCase):
     def threat(self, run: str, sentence: str, severity: str = "importante", key: str = "arxiv:2031.00002"):
         return self.cli("threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
                         "--key", key, "--hypothesis", "H-0961", "--judgement", "Juicio inventado.",
-                        "--sentence", sentence, "--severity", severity)
+                        "--sentence", sentence, "--severity", severity, "--allow-unread")
+
+    def test_judge_packet_holds_the_claim_and_the_abstract_only(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        code, out = self.cli("judge-packet", "--vault", str(self.vault), "--project-dir", str(self.p),
+                             "--run", run, "--key", "arxiv:2031.00002", "--hypothesis", "H-0961")
+        self.assertEqual(code, 0, out)
+        text = Path(out["packet"]).read_text(encoding="utf-8")
+        self.assertIn("Fictional blue widgets rotate faster than red widgets under synthetic spin.", text)
+        self.assertIn(ABSTRACT, text)
+        self.assertNotIn("status:", text)
+
+    def test_threat_needs_proof_the_judge_read_that_pair(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        args = ["threat", "--vault", str(self.vault), "--project-dir", str(self.p), "--run", run,
+                "--key", "arxiv:2031.00002", "--hypothesis", "H-0961", "--judgement", "Juicio inventado.",
+                "--sentence", "fictional blue widgets rotate faster than red widgets", "--severity", "menor"]
+        code, out = self.cli(*args)
+        self.assertEqual(code, 2)
+        self.assertIn("novelty-judge", out["error"])
+        unread = self.judged(run, read=False)
+        code, out = self.cli(*args, "--packet-sha256", unread)
+        self.assertEqual(code, 2)
+        code, out = self.cli(*args, "--packet-sha256", "f" * 64)
+        self.assertEqual(code, 2)
+        self.assertIn("not the packet", out["error"])
+        code, out = self.cli(*args, "--packet-sha256", self.judged(run))
+        self.assertEqual(code, 0, out)
+        data = json.loads(Path(run).read_text(encoding="utf-8"))
+        self.assertTrue(data["threats"][0]["packet_read"])
 
     def test_threat_severity_is_required_and_recorded(self):
         _, res = self.delta()
@@ -317,6 +366,29 @@ class TestLitWatch(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn(status, out["error"])
             self.assertNotIn("Revisión de vigencia", h.read_text(encoding="utf-8"))
+
+    def test_delta_writes_a_readable_digest_next_to_the_run(self):
+        _, res = self.delta()
+        md = self.run_file(res).with_suffix(".md")
+        self.assertEqual(res["digest"], md.relative_to(self.vault).as_posix())
+        text = md.read_text(encoding="utf-8")
+        self.assertIn("# Vigilancia de literatura", text)
+        self.assertIn("Blue widgets spin faster", text)              # the strong candidate, by title
+        self.assertIn("arxiv:2031.00002", text)
+        self.assertIn("Cobertura por relevancia", text)              # S2 / Crossref: not a full window
+
+    def test_the_digest_is_refreshed_with_triage_and_threats(self):
+        _, res = self.delta()
+        run = str(self.run_file(res))
+        self.cli("triage", "--project-dir", str(self.p), "--run", run, "--key", "arxiv:2031.00002",
+                 "--why", "Mide lo mismo que H-0961.")
+        self.threat(run, "fictional blue widgets rotate faster than red widgets")
+        code, out = self.cli("digest", "--project-dir", str(self.p), "--run", run)
+        self.assertEqual(code, 0, out)
+        text = Path(run).with_suffix(".md").read_text(encoding="utf-8")
+        self.assertIn("Mide lo mismo que H-0961.", text)
+        self.assertIn("H-0961", text)
+        self.assertIn("«fictional blue widgets rotate faster than red widgets»", text)
 
     def test_no_abstract_no_threat(self):
         _, res = self.delta()
@@ -390,7 +462,7 @@ class TestQueriesAndCoverage(TestLitWatch):
         net = Busy()
         code, res = self.delta(net)
         self.assertEqual(code, 0, res)
-        self.assertEqual(sum(1 for u in net.urls if "arxiv" in u), 5)    # 5 pages of 100 = MAX_RESULTS
+        self.assertEqual(sum(1 for u in net.urls if "arxiv" in u and "search_query" in u), 5)  # 5 pages = MAX_RESULTS
         self.assertTrue(res["truncated"])
         # capped at MAX_RESULTS: reported as truncated and never counted as covered —
         # the arXiv query keeps its window open; the query read whole moves on
@@ -430,7 +502,8 @@ class TestQueriesAndCoverage(TestLitWatch):
         net = FakeNet()
         code, res = self.delta(net)
         self.assertEqual(code, 0, res)
-        self.assertFalse(any("openreview" in u for u in net.urls))
+        # the plan's queries never go to OpenReview (the own-papers check asks it by one title)
+        self.assertFalse(any("openreview" in u and "widgets" in u for u in net.urls))
         self.assertEqual(res["sources_left_out"], ["openreview"])
         data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         self.assertIn("openreview", data["sources_left_out"][0])
@@ -514,6 +587,51 @@ class TestSeniorAuditCoverage(TestLitWatch):
         self.assertTrue(all(v == "2031-03-01" for v in lit_watch.load_cursors(self.p).values()))
         data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
         self.assertTrue(all(x["splits"] >= 1 for x in data["queries"]))
+
+    class DenseOpenAlex(FakeNet):
+        """An OpenAlex search with 50 matches a day in whatever window it is asked for."""
+        def __call__(self, url, headers):
+            if "api.openalex.org/works?search=" not in url:
+                return super().__call__(url, headers)
+            self.urls.append(url)
+            flt = urllib.parse.unquote(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["filter"][0])
+            a = date.fromisoformat(re.search(r"from_publication_date:([\d-]+)", flt).group(1))
+            b = date.fromisoformat(re.search(r"to_publication_date:([\d-]+)", flt).group(1))
+            page = int(re.search(r"&page=(\d+)", url).group(1))
+            total = 50 * ((b - a).days + 1)
+            n = max(0, min(100, total - (page - 1) * 100))
+            return json.dumps({"meta": {"count": total}, "results": [
+                {"id": f"https://openalex.org/W{a.toordinal()}{page:03d}{i:03d}", "title": f"Widget work {a} {page} {i}",
+                 "publication_date": a.isoformat(), "publication_year": a.year, "authorships": [], "locations": [],
+                 "abstract_inverted_index": {"Fictional": [0], "widgets.": [1]}} for i in range(n)]}).encode()
+
+    def openalex_searches(self, net) -> list[str]:
+        return [u for u in net.urls if "api.openalex.org/works?search=" in u]
+
+    def test_keyless_openalex_reads_one_page_per_query_and_says_so(self):
+        self.plan(sources=("openalex",))
+        os.environ.pop("OPENALEX_API_KEY", None)
+        net = self.DenseOpenAlex()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(len(self.openalex_searches(net)), 2)        # one call per facet query, no split
+        self.assertEqual(res["truncated"], [])
+        self.assertEqual(res["open_windows"], [])                     # read by relevance, not held open
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertTrue(all(q.get("sin_clave") and q["splits"] == 0 for q in data["queries"]))
+        page = (self.run_file(res).with_suffix(".md")).read_text(encoding="utf-8")
+        self.assertIn("OpenAlex sin `OPENALEX_API_KEY`", page)
+        self.assertIn("(sin clave)", page)
+
+    def test_with_a_key_openalex_windows_are_still_read_whole(self):
+        self.plan(sources=("openalex",))
+        os.environ["OPENALEX_API_KEY"] = "invented-key"
+        net = self.DenseOpenAlex()
+        code, res = self.delta(net)
+        self.assertEqual(code, 0, res)
+        self.assertGreater(len(self.openalex_searches(net)), 2)
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        self.assertTrue(all(q["splits"] >= 1 and not q.get("sin_clave") for q in data["queries"]))
 
     def test_only_unwindowable_sources_is_refused_not_an_outage(self):
         self.plan(sources=("openreview",))
@@ -791,6 +909,8 @@ class TestCitationsAndIndexedWindows(TestLitWatch):
         keys = [c["key"] for c in json.loads(self.run_file(res).read_text(encoding="utf-8"))["candidates"]]
         self.assertIn("doi:10.9999/late.1", keys)              # published before the window, registered in it
         self.assertNotIn("doi:10.9999/ancient.1", keys)        # before the project's own start
+
+
 
 
 if __name__ == "__main__":

@@ -87,6 +87,42 @@ class PaperCard(unittest.TestCase):
         self.assertIn("eprint = {0000.44444}", card["bibtex"])
         self.assertIn("pages = {1--12}", card["bibtex"])           # from the publisher's record
 
+    def test_a_paper_asked_by_doi_gets_its_preprints_versions_from_crossref_relation(self):
+        # Crossref's has-preprint names the arXiv preprint: arXiv itself is then asked
+        code, out = self.run_cli("--doi", "10.0000/sc.444", "--json")
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual(card["identity"]["arxiv"], "0000.44444")
+        self.assertEqual([v["version"] for v in card["versions"]], ["v1", "v2", "v3"])
+        self.assertEqual(card["retraction"]["status"], "clear")
+        self.assertEqual(card["identity"]["title"], "Distributed Toy State-Vector Simulation")
+
+    def test_a_paper_asked_by_doi_gets_its_preprint_found_in_openalex(self):
+        work = {**OPENALEX, "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.44444",
+                                           "source": {"type": "repository", "display_name": "arXiv"}}]}
+        cr = {"message": {**CROSSREF["message"], "relation": {}}}
+        code, out = self.run_cli("--doi", "10.0000/sc.444", "--json", fetch=self._with(work, cr))
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual([v["version"] for v in card["versions"]], ["v1", "v2", "v3"])
+        self.assertEqual(card["retraction"]["status"], "clear")
+        self.assertNotIn("no respondió", " ".join(card["retraction"]["evidence"]))
+        self.assertIn("eprint = {0000.44444}", card["bibtex"])
+        self.assertIn("year = {2030}", card["bibtex"])          # the publisher's year, not the preprint's
+
+    def test_a_preprint_found_from_a_doi_and_kept_by_openalex_as_its_own_work_is_counted(self):
+        pre = {**OPENALEX, "id": "https://openalex.org/W555", "cited_by_count": 7, "locations": [],
+               "doi": "https://doi.org/10.48550/arxiv.0000.44444", "primary_location": {}}
+        pub = {**OPENALEX, "locations": [{"landing_page_url": "https://arxiv.org/abs/0000.44444"}]}
+
+        def fetch(url, headers):
+            if "api.openalex.org/works/doi:10.48550" in url:
+                return json.dumps(pre).encode()
+            return self._with(pub)(url, headers)
+        code, out = self.run_cli("--doi", "10.0000/sc.444", "--json", "--citations", "0", fetch=fetch)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["citations"]["openalex_works"], {"W444": 31, "W555": 7})
+
     def test_markdown_names_a_failed_source(self):
         code, out = self.run_cli("--arxiv", "0000.44444", fetch=web(fail=("api.crossref.org",)))
         self.assertEqual(code, 0)
@@ -219,6 +255,41 @@ class PaperCard(unittest.TestCase):
         self.assertEqual(card["citing_source"], "OpenAlex")
         self.assertEqual(card["citing"][0]["title"], "Newest citing toy paper")
 
+    def test_the_most_cited_citing_papers_on_request(self):
+        """`--citing-order cited` asks OpenAlex to sort by citations and shows each count."""
+        cites = [{"id": "https://openalex.org/W7", "title": "Influential citing toy paper", "publication_year": 2031,
+                  "cited_by_count": 120, "authorships": []}]
+        seen = []
+        base = self._with(lists={"sort=cited_by_count:desc": cites})
+
+        def fetch(url, headers):
+            seen.append(urllib.parse.unquote(url))
+            return base(url, headers)
+        code, out = self.run_cli("--arxiv", "0000.44444", "--citing-order", "cited", fetch=fetch)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(any("cites:W444" in u and "sort=cited_by_count:desc" in u for u in seen))
+        self.assertIn("más citadas", out)
+        self.assertIn("citado 120 veces", out)
+
+    def test_the_semantic_scholar_fallback_sorts_by_citations_too(self):
+        page = {"data": [
+            {"citingPaper": {"title": "Rarely cited", "year": 2033, "publicationDate": "2033-01-01",
+                             "citationCount": 1, "externalIds": {}, "authors": []}},
+            {"citingPaper": {"title": "Often cited", "year": 2031, "publicationDate": "2031-01-01",
+                             "citationCount": 50, "externalIds": {}, "authors": []}}]}
+        base = self._with(lists={})
+
+        def fetch(url, headers):
+            if "/citations" in url:
+                return json.dumps(page).encode()
+            if "api.semanticscholar.org" in url:
+                return json.dumps({"paperId": "S1", "citationCount": 2}).encode()
+            return base(url, headers)
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", "--citing-order", "cited", fetch=fetch)
+        self.assertEqual(code, 0, out)
+        card = json.loads(out)
+        self.assertEqual([c["title"] for c in card["citing"]][:2], ["Often cited", "Rarely cited"])
+
     def test_citations_of_the_preprint_and_the_published_work_are_both_counted(self):
         """OpenAlex may keep the arXiv preprint and the published paper as two works:
         the citing papers of both are one list."""
@@ -264,6 +335,36 @@ class PaperCard(unittest.TestCase):
             raise pc.net.HttpError(url, 404, "not found")
         code, out = self.run_cli("--doi", "10.0000/none", fetch=nothing)
         self.assertEqual(code, 1)
+
+
+
+class TitleFallback(unittest.TestCase):
+    """A preprint from this week is not in OpenAlex yet: its title is looked up on arXiv."""
+
+    ATOM = ('<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/0000.55555v1</id>'
+            "<title>Brand New Toy\n  Decoders</title><summary>x</summary></entry>"
+            "<entry><id>http://arxiv.org/abs/0000.55556v1</id><title>Brand new toy decoders, revisited</title>"
+            "<summary>x</summary></entry></feed>").encode()
+
+    def fetch(self, url, headers):
+        if "api.openalex.org" in url:
+            return json.dumps({"results": []}).encode()
+        if "export.arxiv.org" in url:
+            self.assertIn('ti:"brand new toy decoders"', urllib.parse.unquote(url).lower())
+            return self.ATOM
+        raise AssertionError(url)
+
+    def test_an_exact_arxiv_title_is_the_paper(self):
+        got = pc.find_by_title("Brand new toy decoders", self.fetch)
+        self.assertEqual(got["chosen"]["arxiv"], "0000.55555")
+        self.assertEqual(got["chosen"]["found_by"], "arXiv (OpenAlex no lo tiene aún)")
+
+    def test_no_exact_title_anywhere_is_not_found(self):
+        def fetch(url, headers):
+            if "api.openalex.org" in url:
+                return json.dumps({"results": []}).encode()
+            return b'<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+        self.assertIn("error", pc.find_by_title("Nothing like it", fetch))
 
 
 if __name__ == "__main__":

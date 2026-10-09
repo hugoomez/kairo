@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -11,10 +12,14 @@ import tempfile
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import lit_search as ls  # noqa: E402
+
+sys.path.insert(0, str(HERE.parent / "security"))
+import isolation  # noqa: E402
 
 PLAN = {"description": "Toy decoders for invented codes, last two years",
         "facets": [{"id": "A", "term": "toy code", "synonyms": ["invented code"]},
@@ -99,6 +104,9 @@ class FakeWeb:
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        self.env = mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.tmp / "state")})
+        self.env.start()
+        os.environ.pop("KAIRO_PACKETS_DIR", None)
         self.plan = self.tmp / "plan.json"
         self.plan.write_text(json.dumps(PLAN), encoding="utf-8")
         self.run_dir = self.tmp / "run"
@@ -112,6 +120,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         ls.check_retraction.run = self.orig_check
+        self.env.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def cli(self, *args, web=None):
@@ -129,6 +138,9 @@ class Run(Base):
         web = FakeWeb()
         code, out = self.run_search(web)
         self.assertEqual(code, 0, out)
+        self.assertIn("sinonimos_sugeridos", out)
+        self.assertIn("terminos_sin_coincidencias", out)
+        self.assertTrue((self.run_dir / "vocabulario.json").is_file())
         qs = json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
         s2 = [q["query"] for q in qs if q["source"] == "s2" and q["pass"] == "relevance"]
         self.assertEqual(s2, ["toy code", "invented code", "toy decoder"])     # plain keywords, one per term
@@ -502,7 +514,9 @@ class CrossAndPrefilter(Base):
     def test_prefiltered_candidates_are_excluded_mechanically_and_never_shown(self):
         web = self.Noisy()
         _, out = self.run_search(web)
-        self.assertEqual(out["prefiltered_out"], 1)
+        # only.a, and qce.7 ("A toy decoder."): Crossref returned it for facet A's query on
+        # a loose word match, which is no longer credit for facet A — its text shows only B
+        self.assertEqual(out["prefiltered_out"], 2)
         cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
         only_a = next(c for c in cands if c.get("doi") == "10.0000/only.a")
         self.assertFalse(only_a["prefilter"]["pass"])
@@ -513,15 +527,15 @@ class CrossAndPrefilter(Base):
         self.assertTrue(flagged["sospechoso"])                 # instruction-like abstract is marked
         # the retraction check skips it, and the screen excludes it without a decision
         _, r = self.cli("retraction", "--run", str(self.run_dir))
-        self.assertEqual(r["not_checked_prefiltered_out"], 1)
+        self.assertEqual(r["not_checked_prefiltered_out"], 2)
         d = {c["key"]: {"decision": "include", "relevance": "media", "why": "Reports a toy decoder on toy codes."}
              for c in cands if c["prefilter"]["pass"] and c.get("doi") != "10.0000/sc.1"}
         p = self.tmp / "d.json"
         p.write_text(json.dumps(d), encoding="utf-8")
         code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(p))
         self.assertEqual(code, 0, res)
-        self.assertEqual(res["counts"]["prefiltro"], 1)
-        self.assertEqual(res["counts"]["tras_prefiltro"], len(cands) - 1)
+        self.assertEqual(res["counts"]["prefiltro"], 2)
+        self.assertEqual(res["counts"]["tras_prefiltro"], len(cands) - 2)
         self.assertIn("prefiltro mecánico", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
         # including it needs its own retraction check first
         p.write_text(json.dumps({**d, only_a["key"]: {"decision": "include", "relevance": "baja",
@@ -725,6 +739,28 @@ class SeniorAuditFixes(Base):
         self.assertEqual(sum(1 for c in cands if c.get("arxiv") == "0000.12345"), 1)
         self.assertEqual(len(cands), 2)
 
+    def test_a_group_with_two_dois_is_keyed_by_a_stated_rule(self):
+        """One arXiv id joins two DOIs: the key is the DOI most records carry, then the
+        earliest year — never whichever string sorts first."""
+        base = {"facet": "A", "matched": "toy code", "date": None, "authors": [], "abstract": "",
+                "citations": None, "url": None, "anchor": False, "venue": None, "arxiv": "0000.22222"}
+        recs = [{**base, "title": "Toy codes I", "doi": "10.0000/zzz.late", "source": "crossref", "rank": 1,
+                 "year": 2031, "query": "Q1"},
+                {**base, "title": "Toy codes I", "doi": "10.0000/zzz.late", "source": "openalex", "rank": 2,
+                 "year": 2031, "query": "Q2"},
+                {**base, "title": "Toy codes I", "doi": "10.0000/aaa.early", "source": "s2", "rank": 3,
+                 "year": 2030, "query": "Q3"}]
+        [c] = ls.dedup(recs)
+        self.assertEqual(c["doi"], "10.0000/zzz.late")          # two records agree on it
+        self.assertEqual(c["other_ids"]["doi"], ["10.0000/aaa.early"])
+        self.assertIn("doi_choice", c)
+        recs[1]["doi"] = "10.0000/aaa.early"                      # one each: the earliest year wins
+        recs[1]["year"] = 2030
+        recs[2]["doi"] = "10.0000/mmm.other"
+        recs[2]["year"] = 2032
+        [c] = ls.dedup(recs)
+        self.assertEqual(c["doi"], "10.0000/aaa.early")
+
     def test_the_snowball_falls_back_to_openalex_when_semantic_scholar_is_lost(self):
         class S2Down(FakeWeb):
             def __call__(self, url, headers):
@@ -842,12 +878,15 @@ class ScreeningProvenance(Base):
     """The screener reads the whole abstract, and decisions.json is assembled by a
     script from the screeners' own replies, never retyped by the orchestrator."""
 
-    def ready(self):
+    def ready(self, read=True):
         self.run_search()
         self.cli("retraction", "--run", str(self.run_dir))
         pages, off = [], 0
         while off is not None:
             _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "40", "--offset", str(off))
+            if read:      # the screener read its page packet: the hook leaves this receipt
+                isolation.record_receipt({"sha256": shown["packet"]["sha256"], "agent_type": "screener",
+                                          "agent_id": f"s-{off}"})
             pages.append(shown)
             off = shown["next_offset"]
         return pages
@@ -865,12 +904,22 @@ class ScreeningProvenance(Base):
         cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
         cands[0]["abstract"] = "We study a toy code. " * 90 + "Our toy decoder reaches the invented bound."
         (self.run_dir / "candidates.json").write_text(json.dumps(cands), encoding="utf-8")
-        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all")
+        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all", "--with-abstracts")
         self.assertTrue(shown["candidates"][0]["abstract"].endswith("invented bound."))
         self.assertNotIn("abstract_recortado", shown["candidates"][0])
-        _, cut = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all", "--abstract-chars", "100")
+        _, cut = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all", "--abstract-chars", "100",
+                          "--with-abstracts")
         self.assertEqual(len(cut["candidates"][0]["abstract"]), 100)
         self.assertIn("abstract_recortado", cut["candidates"][0])
+
+    def test_the_session_gets_no_abstracts_the_screeners_packet_has_them_whole(self):
+        self.run_search()
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        cands[0]["abstract"] = "We study a toy code. " * 90 + "Our toy decoder reaches the invented bound."
+        (self.run_dir / "candidates.json").write_text(json.dumps(cands), encoding="utf-8")
+        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "1", "--all")
+        self.assertNotIn("abstract", shown["candidates"][0])
+        self.assertIn("invented bound.", Path(shown["packet"]["path"]).read_text(encoding="utf-8"))
 
     def test_merge_assembles_the_blocks_and_screen_records_who_decided(self):
         pages = self.ready()
@@ -884,6 +933,55 @@ class ScreeningProvenance(Base):
         self.assertEqual(code, 0, res)
         md = (self.run_dir / "busqueda.md").read_text(encoding="utf-8")
         self.assertIn("de screeners aislados", md)
+
+    def stop(self, page, off, decisions=None):
+        """What Kairo's SubagentStop hook does when the screener of `page` finishes."""
+        d = decisions or {c["key"]: {"decision": "include", "relevance": "media",
+                                     "why": "Reports a toy decoder on a toy code."} for c in page["candidates"]}
+        return isolation.capture_reply({"agent_type": "kairo:screener", "agent_id": f"s-{off}",
+                                        "last_assistant_message": f"Done.\n```json\n{json.dumps(d)}\n```"})
+
+    def test_merge_from_the_store_takes_the_screeners_own_replies(self):
+        pages = self.ready()
+        offs = [0] + [p["next_offset"] for p in pages[:-1]]
+        for p, off in zip(pages, offs):
+            self.assertIsNotNone(self.stop(p, off))
+        out = self.tmp / "decisions.json"
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--from-store", "--out", str(out))
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["blocks"], res["replies_verified"]), (len(pages), len(pages)))
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out))
+        self.assertEqual(code, 0, res)
+        self.assertIn("comprobados contra la respuesta", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
+    def test_a_retyped_block_that_differs_from_the_screeners_reply_is_refused(self):
+        pages = self.ready()
+        offs = [0] + [p["next_offset"] for p in pages[:-1]]
+        for p, off in zip(pages, offs):
+            self.stop(p, off)
+        blocks = [self.block(p, f"b{i}.txt") for i, p in enumerate(pages)]
+        out = self.tmp / "decisions.json"
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks), "--out", str(out))
+        self.assertEqual(code, 0, res)                                       # saved unchanged: verified
+        self.assertEqual(res["replies_verified"], len(pages))
+        tampered = json.loads(blocks[0].read_text(encoding="utf-8").split("```json\n")[1].split("\n```")[0])
+        k = next(iter(tampered))
+        tampered[k] = {"decision": "exclude", "reason": "relevancia baja", "why": "changed by the orchestrator"}
+        blocks[0].write_text(json.dumps(tampered), encoding="utf-8")
+        shutil.rmtree(self.run_dir / "screening")
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks), "--out", str(out))
+        self.assertEqual(code, 2)
+        self.assertIn("differs from what the screener answered", res["refused"])
+
+    def test_without_stored_replies_a_block_is_recorded_unverified(self):
+        pages = self.ready()
+        blocks = [self.block(p, f"b{i}.txt") for i, p in enumerate(pages)]
+        out = self.tmp / "decisions.json"
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks), "--out", str(out))
+        self.assertEqual((code, res["replies_unverified"]), (0, len(pages)))
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--from-store", "--out", str(out))
+        self.assertEqual(code, 2)
+        self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out))
 
     def test_screen_refuses_decisions_changed_after_the_merge(self):
         pages = self.ready()
@@ -921,6 +1019,35 @@ class ScreeningProvenance(Base):
         self.assertEqual(code, 2)
         self.assertIn("may not overrule", res["refused"])
 
+    def test_show_hands_each_page_as_a_packet_in_the_store(self):
+        self.run_search()
+        self.cli("retraction", "--run", str(self.run_dir))
+        _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "5")
+        p = Path(shown["packet"]["path"])
+        self.assertEqual(p.parent, self.tmp / "state" / "packets")
+        self.assertEqual(hashlib.sha256(p.read_bytes()).hexdigest(), shown["packet"]["sha256"])
+        text = p.read_text(encoding="utf-8")
+        self.assertIn(PLAN["description"], text)
+        self.assertIn("hardware papers", text)                          # scope_out, verbatim
+        for c in shown["candidates"]:
+            self.assertIn(c["key"], text)
+        pages = json.loads((self.run_dir / "pages.json").read_text(encoding="utf-8"))
+        self.assertEqual(pages[shown["page"]]["packet_sha256"], shown["packet"]["sha256"])
+
+    def test_merge_refuses_a_page_no_screener_read(self):
+        pages = self.ready(read=False)
+        blocks = [self.block(p, f"b{i}.txt") for i, p in enumerate(pages)]
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks),
+                             "--out", str(self.tmp / "d.json"))
+        self.assertEqual(code, 2)
+        self.assertIn("no screener read", res["refused"])
+        code, res = self.cli("merge", "--run", str(self.run_dir), "--blocks", *map(str, blocks),
+                             "--out", str(self.tmp / "d.json"), "--allow-unread")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["unread_pages"], len(pages))
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(self.tmp / "d.json"))
+        self.assertIn("sin constancia de lectura", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
     def test_screen_without_merge_says_provenance_is_unknown(self):
         pages = self.ready()
         d = {}
@@ -932,6 +1059,163 @@ class ScreeningProvenance(Base):
         code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out))
         self.assertEqual(code, 0, res)
         self.assertIn("no consta", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
+
+
+
+class ThirdAuditFixes(Base):
+    """Recall and record fixes from the 2026-10-07 audit (invented papers)."""
+
+    def test_min_facets_one_reads_papers_on_a_single_facet(self):
+        plan = ls.load_plan_dict({**PLAN, "min_facets": 1})
+        c = {"title": "A toy code construction", "abstract": "We build a toy code.", "facets": {"A": "toy code"}}
+        ls.mark_prefilter([c], plan)
+        self.assertTrue(c["prefilter"]["pass"])
+        ls.mark_prefilter([c], ls.load_plan_dict(PLAN))
+        self.assertFalse(c["prefilter"]["pass"])
+        for bad in (0, 3, "two"):
+            with self.assertRaises(ls.Refused):
+                ls.load_plan_dict({**PLAN, "min_facets": bad})
+
+    def test_a_query_whose_total_fits_is_read_whole(self):
+        class Pages(FakeWeb):
+            def __init__(self, total):
+                super().__init__()
+                self.total = total
+
+            def __call__(self, url, headers):
+                if "export.arxiv.org" in url:
+                    self.urls.append(url)
+                    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                    start, size = int(qs["start"][0]), int(qs["max_results"][0])
+                    n = max(0, min(size, self.total - start))
+                    return atom([(f"0001.{start + i:05d}", f"Toy code paper {start + i} with toy decoder",
+                                  "toy code toy decoder", "2030-06-01") for i in range(n)], self.total)
+                return super().__call__(url, headers)
+        self.plan.write_text(json.dumps({**PLAN, "sources": ["arxiv"], "per_query": 100}), encoding="utf-8")
+        self.run_search(Pages(250))
+        a = next(q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+                 if q["facet"] == "A")
+        self.assertEqual((a["fetched"], a["truncated"], a.get("extended_to")), (250, False, 250))
+        shutil.rmtree(self.run_dir)
+        self.plan.write_text(json.dumps({**PLAN, "sources": ["arxiv"], "per_query": 100, "max_per_query": 200}),
+                             encoding="utf-8")
+        self.run_search(Pages(250))
+        a = next(q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+                 if q["facet"] == "A")
+        self.assertEqual((a["fetched"], a["truncated"]), (100, True))
+
+    def test_keyless_openalex_is_never_extended_past_per_query(self):
+        """Each OpenAlex page costs a keyless list call: without a key a query reads its
+        top `per_query` and says why; with a key it is read whole as before."""
+        class OAPages(FakeWeb):
+            def __call__(self, url, headers):
+                if "api.openalex.org/works?search=" in url:
+                    self.urls.append(url)
+                    page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["page"][0])
+                    res = [{"id": f"https://openalex.org/W{page}{i:03d}", "title": f"Toy code paper {page}-{i}",
+                            "publication_date": "2030-06-01", "publication_year": 2030, "authorships": [],
+                            "abstract_inverted_index": {"toy": [0], "code": [1], "decoder": [2]}}
+                           for i in range(100)]
+                    return json.dumps({"meta": {"count": 250}, "results": res if page <= 3 else []}).encode()
+                return super().__call__(url, headers)
+        for key, fetched, extended in ((None, 100, False), ("k", 250, True)):
+            env = {"OPENALEX_API_KEY": key} if key else {}
+            with mock.patch.dict(os.environ, env, clear=False):
+                if not key:
+                    os.environ.pop("OPENALEX_API_KEY", None)
+                self.plan.write_text(json.dumps({**PLAN, "sources": ["openalex"], "per_query": 100, "cross": False}),
+                                     encoding="utf-8")
+                code, out = self.run_search(OAPages())
+            self.assertEqual(code, 0, out)
+            self.assertIn("openalex_list_calls", out)
+            a = next(q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+                     if q["facet"] == "A")
+            self.assertEqual(a["fetched"], fetched)
+            self.assertEqual("extended_to" in a, extended)
+            self.assertEqual("not_extended" in a, not extended)
+            shutil.rmtree(self.run_dir)
+
+    def test_a_retitled_published_version_joins_its_preprint(self):
+        base = {"facet": "A", "matched": "toy code", "date": None, "abstract": "", "citations": None, "url": None,
+                "anchor": False}
+        recs = [{**base, "title": "Fast toy decoders for invented codes", "doi": None, "arxiv": "0000.11111",
+                 "authors": ["Jane Doe", "Rui Roe"], "source": "arxiv", "rank": 1, "year": 2030, "venue": None,
+                 "query": "Q1"},
+                {**base, "title": "Fast toy decoders for invented quantum codes", "doi": "10.0000/j.1",
+                 "arxiv": None, "authors": ["Doe, Jane"], "source": "crossref", "rank": 2, "year": 2031,
+                 "venue": "Invented Journal", "query": "Q2"},
+                {**base, "title": "Fast toy decoders for invented quantum codes", "doi": "10.0000/other",
+                 "arxiv": None, "authors": ["Li Wu"], "source": "openalex", "rank": 3, "year": 2031,
+                 "venue": "Other Journal", "query": "Q3"}]
+        cands = ls.dedup(recs)
+        self.assertEqual(len(cands), 2)
+        joined = next(c for c in cands if c.get("arxiv") == "0000.11111")
+        self.assertEqual(joined["doi"], "10.0000/j.1")
+        self.assertEqual(joined["years"], [2030, 2031])
+        self.assertIn("Invented Journal", joined["venues"])
+        self.assertIn("título aproximado", joined["merged_by"])
+
+    def test_a_capped_citation_snowball_is_completed_inside_the_window_by_openalex(self):
+        class Capped(FakeWeb):
+            def __call__(self, url, headers):
+                u = urllib.parse.unquote(url)
+                if "/citations" in url:
+                    self.urls.append(url)
+                    off = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["offset"][0])
+                    data = [{"citingPaper": {"paperId": f"o{off + i}", "title": f"Old unrelated note {off + i}",
+                                             "abstract": "nothing", "year": 2010, "externalIds": {},
+                                             "authors": []}} for i in range(ls.SNOWBALL_PAGE)]
+                    return json.dumps({"offset": off, "next": off + ls.SNOWBALL_PAGE, "data": data}).encode()
+                if "api.openalex.org/works/doi:" in u:
+                    self.urls.append(url)
+                    return json.dumps({"id": "https://openalex.org/W90"}).encode()
+                if "api.openalex.org/works?" in url and "cites:W90" in u:
+                    self.urls.append(url)
+                    return json.dumps({"meta": {"count": 1, "next_cursor": None}, "results": [
+                        {"id": "https://openalex.org/W91", "doi": "https://doi.org/10.0000/recent.citer",
+                         "title": "A recent toy code paper with a toy decoder", "publication_date": "2031-03-03",
+                         "publication_year": 2031, "authorships": [],
+                         "abstract_inverted_index": {"toy": [0], "code": [1], "decoder": [2]}}]}).encode()
+                return super().__call__(url, headers)
+        web = Capped()
+        self.run_search(web)
+        code, out = self.cli("snowball", "--run", str(self.run_dir), "--seeds", "DOI:10.0000/famous",
+                             "--direction", "citations", web=web)
+        self.assertEqual(code, 0, out)
+        cands = json.loads((self.run_dir / "candidates.json").read_text(encoding="utf-8"))
+        self.assertIn("10.0000/recent.citer", [c.get("doi") for c in cands])
+        qs = [q for q in json.loads((self.run_dir / "queries.json").read_text(encoding="utf-8"))
+              if q["pass"] == "snowball-citations"]
+        self.assertEqual([(q["source"], q.get("truncated")) for q in qs], [("s2", True), ("openalex", False)])
+        self.assertTrue(qs[1].get("complement_for"))
+        self.assertTrue(any("from_publication_date:2030-01-01" in urllib.parse.unquote(u)
+                            for u in web.urls if "cites:W90" in urllib.parse.unquote(u)))
+
+    def test_the_screening_model_comes_from_the_policy(self):
+        pages, off = [], 0
+        self.run_search()
+        self.cli("retraction", "--run", str(self.run_dir))
+        while off is not None:
+            _, shown = self.cli("show", "--run", str(self.run_dir), "--limit", "40", "--offset", str(off))
+            isolation.record_receipt({"sha256": shown["packet"]["sha256"], "agent_type": "screener", "agent_id": "s"})
+            pages.append(shown)
+            off = shown["next_offset"]
+        blocks = []
+        for i, p in enumerate(pages):
+            f = self.tmp / f"b{i}.txt"
+            f.write_text(json.dumps({c["key"]: {"decision": "exclude", "reason": "relevancia baja",
+                                                "why": "Invented, not relevant here."} for c in p["candidates"]}),
+                         encoding="utf-8")
+            blocks.append(str(f))
+        out = self.tmp / "d.json"
+        self.cli("merge", "--run", str(self.run_dir), "--blocks", *blocks, "--out", str(out))
+        policy = re.search(r"^model:\s*(\S+)", (HERE.parent.parent / "agents" / "screener.md")
+                           .read_text(encoding="utf-8"), re.M).group(1)
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out))
+        self.assertEqual((code, res["screened_by"]), (0, policy))
+        code, res = self.cli("screen", "--run", str(self.run_dir), "--decisions", str(out),
+                             "--screened-by", "claude-other-1")
+        self.assertIn("difiere", (self.run_dir / "busqueda.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

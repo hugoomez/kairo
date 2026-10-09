@@ -5,6 +5,8 @@ description: Use when a researcher wants to search for a better PROGRAM (a heuri
 
 # Evolve Program (evaluator-first)
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check evolve-program`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 An AlphaEvolve-style search, built on [OpenEvolve](https://github.com/algorithmicsuperintelligence/openevolve)

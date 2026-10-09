@@ -35,7 +35,6 @@ This module is imported, not run. Standard library only.
 from __future__ import annotations
 
 import contextlib
-import gzip
 import os
 import re
 import shutil
@@ -44,9 +43,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from pathlib import Path
 
-__version__ = "1.2.0"   # 1.2.0: a busy shared lock waits the full spacing; 1.1.0: shared across processes
+__version__ = "1.3.0"   # 1.3.0: the size limit holds after gzip decompression; 1.2.0: a busy shared lock waits the full spacing; 1.1.0: shared across processes
 
 PROJECT_URL = "https://github.com/hugoomez/kairo"
 
@@ -210,6 +210,19 @@ def _curl(url: str, headers: dict[str, str], timeout: float, max_bytes: int) -> 
     return p.stdout if p.returncode == 0 and p.stdout else None
 
 
+def gunzip_bounded(data: bytes, max_bytes: int, url: str = "") -> bytes:
+    """Decompress a gzip body, refusing one that inflates past `max_bytes`: the
+    limit holds for what the caller keeps, not only for what crossed the wire."""
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        out = d.decompress(data, max_bytes + 1)
+    except zlib.error as e:
+        raise HttpError(url, None, f"bad gzip body: {e}") from None
+    if len(out) > max_bytes or d.unconsumed_tail:
+        raise HttpError(url, None, f"response larger than {max_bytes} bytes once decompressed")
+    return out
+
+
 def get(url: str, headers: dict[str, str] | None = None, timeout: float = 30.0,
         retry: bool = True, max_bytes: int = DEFAULT_MAX_BYTES) -> bytes:
     """GET `url` and return the body. Raises HttpError on a final failure."""
@@ -225,7 +238,7 @@ def get(url: str, headers: dict[str, str] | None = None, timeout: float = 30.0,
                 if len(data) > max_bytes:
                     raise HttpError(url, None, f"response larger than {max_bytes} bytes")
                 if (r.headers.get("Content-Encoding") or "").lower() == "gzip":
-                    data = gzip.decompress(data)
+                    data = gunzip_bounded(data, max_bytes, url)
                 return data
         except urllib.error.HTTPError as e:
             transient = e.code in RETRYABLE or e.code >= 500

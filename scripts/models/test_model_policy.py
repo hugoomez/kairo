@@ -10,6 +10,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "security"))
 import model_policy as mp  # noqa: E402
 
 ROOT = HERE.parents[1]
@@ -34,10 +35,18 @@ class TestPolicy(unittest.TestCase):
 
     def test_agents_that_see_untrusted_paper_text_alone_are_isolated(self):
         raw = mp.load()["tasks"]
-        for k in ("fresh_verifier", "devils_advocate", "novelty_judge"):
+        for k in ("fresh_verifier", "devils_advocate", "novelty_judge", "screener"):
             self.assertIs(raw[k].get("isolated"), True, k)
             tools = mp._frontmatter_tools((ROOT / raw[k]["file"]).read_text(encoding="utf-8"))
-            self.assertTrue(tools and set(tools) <= mp.ISOLATED_TOOLS, k)
+            self.assertEqual(tools, ["Read"], k)
+
+    def test_the_hook_holds_exactly_the_isolated_agents(self):
+        # isolated agents read their packet through the vault hook (scripts/security/isolation.py),
+        # which must know every one of them, or one would read the whole vault with its Read tool
+        import isolation
+        raw = mp.load()["tasks"]
+        names = {Path(t["file"]).stem for t in raw.values() if t.get("isolated")}
+        self.assertEqual(names, set(isolation.ISOLATED_AGENTS))
 
     def test_no_kairo_component_uses_haiku(self):
         for t in self.r["tasks"].values():
@@ -117,10 +126,10 @@ class TestSetTier(unittest.TestCase):
         self.assertTrue(any("facet_summarizer" in p and "inherits every tool" in p for p in mp.check(self.root)))
 
     def test_an_isolated_agent_with_a_file_or_shell_tool_fails_the_check(self):
-        for tools in ("CronList, Read", "Bash", "TaskList, WebFetch"):
+        for tools in ("Read, Grep", "Bash", "Read, WebFetch"):
             f = self.root / "agents/fresh-verifier.md"
             text = (ROOT / "agents/fresh-verifier.md").read_text(encoding="utf-8")
-            f.write_text(text.replace("tools: CronList, TaskList", f"tools: {tools}"), encoding="utf-8")
+            f.write_text(text.replace("tools: Read\n", f"tools: {tools}\n"), encoding="utf-8")
             self.assertTrue(any("fresh_verifier" in p and "isolated" in p for p in mp.check(self.root)), tools)
 
     def test_isolated_is_an_agent_flag(self):

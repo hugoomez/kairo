@@ -311,9 +311,11 @@ def fetch_crossref(doi: str, mailto: str | None = None) -> tuple[dict | None, Ch
     return msg, crossref_flags(msg, doi)
 
 
-def fetch_arxiv(ids: list[str]) -> tuple[dict[str, dict], dict[str, str]]:
+def fetch_arxiv(ids: list[str], get=None) -> tuple[dict[str, dict], dict[str, str]]:
     """Batched arXiv lookup. Returns ({id: entry}, {id: error} for ids whose batch
-    was LOST). Ids missing from both maps were answered but not found."""
+    was LOST). Ids missing from both maps were answered but not found. `get(url,
+    headers)` replaces net.get (a caller's own fetch, e.g. a test's)."""
+    get = get or (lambda url, headers: net.get(url, headers=headers))
     ids = [i for i in dict.fromkeys(normalize_arxiv(x) for x in ids) if i]
     found: dict[str, dict] = {}
     lost: dict[str, str] = {}
@@ -321,7 +323,7 @@ def fetch_arxiv(ids: list[str]) -> tuple[dict[str, dict], dict[str, str]]:
         chunk = ids[k:k + ARXIV_BATCH]
         url = ARXIV_QUERY.format(",".join(urllib.parse.quote(i, safe="/") for i in chunk), len(chunk))
         try:
-            found.update(parse_arxiv_feed(net.get(url, headers={"Accept": "application/atom+xml"})))
+            found.update(parse_arxiv_feed(get(url, {"Accept": "application/atom+xml"})))
         except (net.HttpError, ET.ParseError) as e:
             for i in chunk:
                 lost[i] = str(e)

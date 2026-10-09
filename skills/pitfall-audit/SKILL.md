@@ -5,6 +5,8 @@ description: Use before any evidence-based hypothesis status transition — upda
 
 # Pitfall audit
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check pitfall-audit`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 Luo, Kasirzadeh & Shah, *The More You Automate, the Less You See: Hidden

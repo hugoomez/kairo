@@ -40,10 +40,19 @@ locators and figures are real. `--packet FILE [--section "<heading>"]` writes
 the fresh-verifier packet for that: every cited sentence (or row) of the
 document, or of one `##` section, as an `Afirmación` followed by the verbatim
 text its locators point at, built by the verifier's own renderer. The
-fresh-verifier then hunts the sentences the source does not support. A packet
+fresh-verifier then hunts the sentences the source does not support. Each
+part is also put in the packet store (`stored`: path + sha256): the verifier
+gets that path and reads the file itself, never a retyped copy. A packet
 larger than `--max-chars` (default 150,000) is split into parts — FILE,
 FILE-2, … — each with its own header and "Parte: i de n", so every verifier
 reads its part whole.
+
+A value read off a plot is never literal: it is written `≈0.8 (leído de la
+Figura 3, no literal)`, is not looked for in the text, and its sentence must
+cite that figure (`P-0007 Figura 3`) — else it is a problem. A small count with
+a unit (`8 GPUs`, `4 pipeline stages`, `7 qubits`) is checked like any figure.
+The support packet ends with where, in the cited text, each figure of each
+sentence appears, so the verifier sees whether it belongs to the same quantity.
 
 A figure with a unit glued to it (`530B`, `80GB`, `1.2k`) is checked whatever
 its size, against the same figure and unit (or its spelled-out word) in the
@@ -67,6 +76,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "ledger"))
 from check_quotes import paper_projects  # noqa: E402
+sys.path.insert(0, str(HERE.parent / "security"))
+import isolation  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402, I001  (path set by verifier_packet)
 from verifier_packet import (  # noqa: E402
     TOOL_ID as VERIFIER_PACKET_ID,
@@ -79,7 +90,7 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.4.0"
+TOOL = "kairo/check_sota@1.5.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
@@ -92,24 +103,50 @@ MULT = re.compile(r"\s*[×x]$")
 SUFFIX = re.compile(r"\s?(" + UNIT + r")$")
 UNIT_WORDS = {"k": "thousand|mil", "m": "million|millones", "b": "billion|mil millones", "t": "trillion|billones"}
 HEADER_PAPER = re.compile(r"^\[{0,2}(P-\d{4,5})\]{0,2}$")
+# a value read off a plot: never literal, always tied to its figure
+PLOT = re.compile(r"≈\s*[-−]?\d[^()\n]{0,40}?\(\s*le[ií]do de la Figura\s*(\d+)[^)]*\)", re.I)
+COUNT_UNITS = r"(?:GPU|TPU|node|qubit|layer|stage|expert|core|device|bit|head|round|replica|accelerator|socket)"
+COUNT = re.compile(r"(?<![\w.,])([1-9])\s+((?:[A-Za-z-]+\s+)?" + COUNT_UNITS + r"s?)\b", re.I)
+FIG_CITE = re.compile(r"\b(?:Figura|Figure|Fig\.?)\s*(\d+)", re.I)
 BAD_STATUS = {"mismatch": "referencia en conflicto (resolution_status: mismatch)",
               "retracted": "paper retractado", "withdrawn": "paper retirado"}
+
+
+COVERAGE_HEADING = "Cobertura de lectura"
 
 
 def blocks(text: str) -> list[tuple[int, int, str]]:
     """(start, end, text) of each bullet or paragraph, frontmatter excluded."""
     m = re.match(r"^---\n.*?\n---\n", text, re.S)
     off = m.end() if m else 0
+    # `## Cobertura de lectura` names sections nobody read: its P-XXXX § lines are
+    # not claims, so they are never checked as citations
+    cov = re.search(r"(?m)^## " + re.escape(COVERAGE_HEADING) + r"\s*$", text)
+    cov_end = (cov.end() + (re.search(r"(?m)^## ", text[cov.end():]) or re.search(r"\Z", text[cov.end():])).start()
+               if cov else -1)
     out = []
     for mm in re.finditer(r"(?:^[ \t]*[-*] .*(?:\n(?![ \t]*[-*] |\s*\n|#).*)*|^(?![ \t]*[-*] |#|\|).+(?:\n(?![ \t]*[-*] |\s*\n|#).+)*)",
                           text[off:], re.M):
+        if cov and cov.start() <= off + mm.start() < cov_end:
+            continue
         out.append((off + mm.start(), off + mm.end(), mm.group(0)))
     return out
 
 
+def plot_readings(sentence: str) -> list[str]:
+    """The figure numbers whose plots a sentence reads values off."""
+    return [m.group(1) for m in PLOT.finditer(sentence)]
+
+
+def cited_figures(sentence: str) -> set[str]:
+    """The figure numbers a sentence's citations point at."""
+    return {f for m in CITE.finditer(sentence) for f in FIG_CITE.findall(m.group(2))}
+
+
 def numbers(sentence: str) -> list[str]:
     """Numbers worth checking in a sentence, with citations, ids and dates removed."""
-    s = CITE.sub(" ", sentence)
+    s = PLOT.sub(" ", sentence)
+    s = CITE.sub(" ", s)
     s = re.sub(r"\b(?:H|E|C|PROJ|ADR|F)-\d+\b", " ", s)
     s = re.sub(r"\d{4}-\d{2}-\d{2}", " ", s)
     s = re.sub(r"§\s*[\w.]+", " ", s)
@@ -117,6 +154,9 @@ def numbers(sentence: str) -> list[str]:
     s = re.sub(r"\b(?:Tablas?|Tables?|Figuras?|Figures?|Figs?\.?|Ec\.?|Eqs?\.?|Ecuaci[oó]n|Equation|"
                r"Ap[eé]ndice|Appendix|Secci[oó]n|Section|Sec\.)\s*\(?[A-Z]?\d+(?:\.\d+)*\)?", " ", s)
     out = []
+    for m in COUNT.finditer(s):
+        out.append(f"{m.group(1)} {m.group(2)}")      # "8 GPUs": a small count with its unit is a result
+    s = COUNT.sub(" ", s)
     for m in NUMBER.finditer(s):
         tok = m.group(0).strip().rstrip(".,")
         digits = re.sub(r"[^\d.]", "", re.split(r"[×x]", tok)[0]).strip(".")
@@ -157,6 +197,12 @@ def _sci_values(text: str) -> list[float]:
 
 
 def number_in(tok: str, texts: list[str]) -> bool:
+    cm = COUNT.fullmatch(tok)
+    if cm:
+        words = cm.group(2).split()
+        unit = re.sub(r"s$", "", words[-1], flags=re.I)
+        rx = re.compile(rf"(?<![\w.,]){cm.group(1)}\s*-?\s*(?:[A-Za-z-]+\s+)?{re.escape(unit)}s?\b", re.I)
+        return any(rx.search(t) for t in texts)
     sci = _SCI_TOK.match(_canon(tok))
     if sci:
         # one value, however it is written: the sentence's 1e-7 is the paper's $10^{-7}$
@@ -372,10 +418,34 @@ def check_tables(vault: str, project: str | None, text: str, report: dict) -> No
             check_numbers(cell, src, f"{pid} (columna)", t["end"], report)
 
 
+def number_contexts(tokens: list[str], units: list[str]) -> dict[str, str | None]:
+    """Each figure → the first sentence of the cited text it appears in (None: in none)."""
+    out: dict[str, str | None] = {}
+    for tok in tokens:
+        out[tok] = None
+        for u in units:
+            for sm in _SENTENCE.finditer(u):
+                sent = " ".join(sm.group(0).split())
+                if sent and number_in(tok, [sent]):
+                    out[tok] = sent
+                    break
+            if out[tok]:
+                break
+    return out
+
+
 def check(vault: str, project: str | None, text: str) -> dict:
     report = {"tool": TOOL, "citations": 0, "without_locator": [], "problems": [], "numbers_checked": 0,
-              "table_rows_checked": 0}
+              "table_rows_checked": 0,
+              # values read off a plot: never checkable against text — say how many there are
+              "plot_readings": len(PLOT.findall(text))}
     for start, end, block in blocks(text):
+        for fig in plot_readings(block):
+            if fig not in cited_figures(block):
+                report["problems"].append({"citation": None, "offset": end, "severity": "importante",
+                                           "number": f"≈ (Figura {fig})",
+                                           "reason": f"valor leído de la Figura {fig} sin citar esa figura "
+                                                     "(P-XXXX Figura " + fig + ")"})
         if not CITE.search(block):
             continue
         per: list = []
@@ -383,6 +453,18 @@ def check(vault: str, project: str | None, text: str) -> dict:
         check_attributed(block, per, end, report)
     check_tables(vault, project, text, report)
     report["without_locator"] = sorted(set(report["without_locator"]))
+    # what the map's summarizers said they did not read: the reader must see it
+    try:
+        cov = section_text(text, COVERAGE_HEADING)
+    except ValueError:
+        cov = ""
+    report["cobertura_lectura"] = ("ausente" if not cov.strip() else
+                                   f"{len(re.findall(r'(?m)^- .*no leído', cov))} secciones no leídas declaradas")
+    if not cov.strip():
+        # a warning, not a problem: maps written before the section existed stay valid
+        report.setdefault("warnings", []).append(
+            f"falta la sección `## {COVERAGE_HEADING}` (lo que el map no leyó): el sota-synthesizer la escribe "
+            "siempre; sin ella el lector no sabe qué secciones quedaron sin leer")
     return report
 
 
@@ -448,6 +530,23 @@ def support_packet(vault: str, text: str, label: str, heading: str | None,
            f"## Nota: {label}", "", "### Justificación (evidencia citada)", ""]
     text_claims = "\n".join("- " + c.lstrip("-* ").strip() for c in claims)
     out += render_justification(vault, text_claims, manifest) if claims else ["(ninguna frase citada)", ""]
+    ctx_lines = []
+    for i, c in enumerate(claims, 1):
+        toks = numbers(c)
+        if not toks:
+            continue
+        units: list[str] = []
+        for m in CITE.finditer(c):
+            units += [u.removeprefix("[## Resumen]\n")
+                      for u in resolve_citation(vault, m.group(1), (m.group(2) or "").strip(" ,;"))["units"]]
+        for tok, sent in number_contexts(toks, units).items():
+            ctx_lines.append(f"- Afirmación {i}: «{tok}» → «{sent}»" if sent
+                             else f"- Afirmación {i}: «{tok}» → no aparece en el texto citado")
+    if ctx_lines:
+        out += ["## Dónde aparece cada cifra en el texto citado", "",
+                "(Mecánico: la primera frase del texto citado que contiene cada cifra de la afirmación. "
+                "Comprueba que mide lo mismo que la afirmación dice: misma magnitud, misma condición, misma fila.)",
+                "", *ctx_lines, ""]
     manifest["assertions"] = len(claims)
     return "\n".join(out).rstrip() + "\n", manifest
 
@@ -490,9 +589,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         first = Path(a.packet)
         paths = [first] + [first.with_name(f"{first.stem}-{i}{first.suffix}") for i in range(2, len(parts) + 1)]
+        stored = []
         for path, (packet, _) in zip(paths, parts):
             path.write_text(packet, encoding="utf-8", newline="\n")
-        print(json.dumps({"tool": TOOL, "packet": a.packet, "packets": [str(p) for p in paths],
+            # the verifier reads the stored copy itself (its Read is held to the store by the hook)
+            stored.append(isolation.store(packet.encode("utf-8")))
+        print(json.dumps({"tool": TOOL, "packet": a.packet, "packets": [str(p) for p in paths], "stored": stored,
                           "assertions": sum(m["assertions"] for _, m in parts),
                           "citations": sum(len(m["citations"]) for _, m in parts)}, ensure_ascii=False, indent=2))
         return 0

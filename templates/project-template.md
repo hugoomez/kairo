@@ -11,10 +11,20 @@ type: <ciencia | producto | hibrido>
 #   producto — type producto: pure engineering, no scientific questions
 #   ciencia  — type ciencia, no paper skeleton
 #   revision — type ciencia, state of the art only: no seed hypotheses
-template: <teorico | aplicado | producto | ciencia | revision>
+#   corpus   — type ciencia, search + screening + ingestion only: no map, no hypotheses
+#   ligero   — type ciencia, search + screening + abstract-only cards + BibTeX:
+#              no full text, figures, map or hypotheses (minutes, not hours)
+template: <teorico | aplicado | producto | ciencia | revision | corpus | ligero>
 # seed_hypotheses — whether create-project seeds hypotheses from the gaps
-# (revision: false). Hypotheses can always be generated later.
+# (revision, corpus: false). Hypotheses can always be generated later.
 seed_hypotheses: true
+# sota_map — whether create-project builds Estado-del-arte.md (corpus: false;
+# step 7 can be run alone later).
+sota_map: true
+# fulltext — whether ingestion fetches each paper's full text and figures
+# (ligero: false — abstract-only notes; `ingest_paper.py rebuild` adds the text
+# of a chosen paper later).
+fulltext: true
 # comparison_fields — optional: the fields of the Estado-del-arte's
 # "Tabla comparativa" (e.g. [hardware, escala, throughput, MFU]); each cell is
 # a figure or phrase from the paper with its locator, checked by check_sota.py.

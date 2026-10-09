@@ -5,6 +5,8 @@ description: Use when a hypothesis's status must change — a prereg was frozen,
 
 # Update Confidence
 
+> **Profile.** Before anything else run `python "${CLAUDE_PLUGIN_ROOT}/scripts/models/kairo_profile.py" check update-confidence`; exit 3 means the `literatura` profile is active (`KAIRO_PROFILE`): give the researcher its one-line message and stop.
+
 ## Overview
 
 This skill owns every hypothesis `status` transition after a hypothesis is first
@@ -225,7 +227,8 @@ write. No other edge is gated.
 
 0. **Cited papers still citable (contract §3b).** For every `P-XXXX` in the
    hypothesis's `linked_papers` and `## Justificación`, read the paper note's
-   `resolution_status` (never `resolved` alone). `retracted`, `withdrawn` or
+   `resolution_status` with `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/paper_meta.py" --vault <vault> P-XXXX …` `--fields resolution_status`
+   (never `resolved` alone; this session never opens the paper note itself). `retracted`, `withdrawn` or
    `mismatch` → **stop, no transition**: name the paper and status, and tell the
    researcher the claim must be re-argued without it (or the note fixed, for a
    `mismatch`). `unresolved` or absent → proceed, but list it as `importante`
@@ -240,7 +243,7 @@ write. No other edge is gated.
      --vault <vault root> --note <H-XXXX.md> \
      --experiment <E-first.md> --experiment <E-second.md> \
      --analysis-output <tmp>/combine.txt \
-     --out <tmp>/packet.md --manifest <tmp>/manifest.json
+     --out <tmp>/packet.md --store --manifest <tmp>/manifest.json
    ```
    By allow-list it carries the claim, the cited evidence with its source text,
    each experiment's frozen `## Predicción` / `## Variables` / `## Diseño` /
@@ -253,15 +256,17 @@ write. No other edge is gated.
    verified without sending it to a model; tell the researcher, who either unmarks
    the note or records a human override in `history` by hand. Never drop the
    flagged experiment from the packet to make it build.
-3. **Dispatch `fresh-verifier`** with the packet file's text as the entire
-   prompt, verbatim, nothing added.
+3. **Dispatch `fresh-verifier`** with the packet's **store path** (`packet` in the JSON `--store` prints) as the
+   **entire** prompt — never the packet's text, nothing added. Its only tool is
+   `Read`, which the vault hook holds to that file; the read leaves a receipt,
+   and `verifications.py append` refuses the verdict without it.
 4. **Record it** on the hypothesis note, whatever the verdict (agent output
    saved to `<tmp>/report.txt`):
    ```
    python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py append \
      --note <H-XXXX.md> --verifier kairo/fresh-verifier@1.1.0 \
      --model <model id the agent reported> --verdict <verdict> --scope note \
-     --report <tmp>/report.txt --packet-sha256 <sha256 from the manifest>
+     --report <tmp>/report.txt --packet-sha256 <sha256 --store printed>
    ```
    Any verdict other than `no_errors_found` also sets `verification_reviewed:
    false`. The script does it, never through `needs_human_review`, which is for
@@ -470,7 +475,7 @@ note).
 - **Letting a verification finding move status.** The verifier only blocks
   `apoyada`; it never makes a hypothesis `refutada` (or anything else) —
   experiments decide status, not the verifier.
-- **Giving `fresh-verifier` more than the packet.** The packet file's text,
+- **Giving `fresh-verifier` more than the packet path.** The stored packet's path,
   verbatim, is its whole prompt — no history, no reasoning, no hints.
 - **Deciding an evidence edge without the pitfall audit, or through a crítico.**
   Every eligible experiment is audited first. Exit 3 or exit 1 means no

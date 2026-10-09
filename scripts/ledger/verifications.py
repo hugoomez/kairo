@@ -28,6 +28,13 @@ and the sha256 of the exact packet the verifier received go in an append-only
 body section `## Verificación independiente` (one dated entry per run), written
 when `--report` is given.
 
+The packet is handed over by file (scripts/security/isolation.py): the
+verifier's only tool is `Read`, held by the vault hook to the packet store,
+and every read leaves a receipt. `append` on the command line refuses a
+`kairo/fresh-verifier` entry unless `--packet-sha256` names a packet a
+fresh-verifier is recorded as having read; `--allow-unread` writes it anyway
+and says «sin constancia de lectura» in the body entry.
+
 Subcommands:
     append  --note N --verifier V --model M --verdict X --scope S [--date D]
             [--report agent_output.txt] [--packet-sha256 H]
@@ -56,6 +63,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
+import isolation  # noqa: E402
 from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
 
 __version__ = "1.2.0"
@@ -259,13 +267,39 @@ def parse_report(path: str) -> dict:
     return rep
 
 
+def _report_from_store(packet_sha: str | None, verdict: str, report: str | None) -> str | None:
+    """The fresh-verifier's own answer, as Kairo's SubagentStop hook stored it, decides
+    what may be recorded: the verdict (and the --report, when one is given) must be
+    one the verifier gave for this packet. With no --report, the stored answer is
+    the report. No stored answer (a session without Kairo's hooks): unchanged."""
+    if not packet_sha:
+        return report
+    stored = isolation.replies(packet_sha, "fresh-verifier")
+    if not stored:
+        return report
+    objs = [(r, isolation.json_of(r["text"])) for r in stored]
+    if report:
+        given = parse_report(report)
+        if not any(o == given for _, o in objs):
+            raise InputError("--report differs from every answer a fresh-verifier gave for packet "
+                             f"{packet_sha} (stored by the SubagentStop hook): pass the answer unchanged, "
+                             "or leave --report out to use the stored one")
+        return report
+    match = [r for r, o in objs if isinstance(o, dict) and o.get("verdict") == verdict]
+    if not match:
+        raise InputError(f"--verdict {verdict} is not what the fresh-verifier answered for packet {packet_sha} "
+                         f"({', '.join(str((o or {}).get('verdict')) for _, o in objs)})")
+    return str(isolation.replies_dir() / f"{match[-1]['reply_sha256']}.txt")
+
+
 # --------------------------------------------------------------------------
 # Writing
 # --------------------------------------------------------------------------
 
 def append(path: str, verifier: str, model: str, verdict: str, scope: str,
            date: str | None, report: str | None = None,
-           packet_sha: str | None = None, flag_review: bool = False) -> dict:
+           packet_sha: str | None = None, flag_review: bool = False,
+           packet_read: bool | None = None) -> dict:
     if verdict not in VERDICTS:
         raise InputError(f"verdict must be one of {VERDICTS}, got {verdict!r}")
     if not VERIFIER_RE.match(verifier):
@@ -324,7 +358,7 @@ def append(path: str, verifier: str, model: str, verdict: str, scope: str,
     if flag_review:
         _set_scalar(lines, "needs_human_review", "true", nl)
     if rep is not None:
-        lines = _append_body_entry(lines, nl, entry, rep, packet_sha)
+        lines = _append_body_entry(lines, nl, entry, rep, packet_sha, packet_read)
     write_raw(path, "".join(lines))
     return entry
 
@@ -360,12 +394,14 @@ def _entry_lines(e: dict, indent: str, nl: str) -> list[str]:
 
 
 def _append_body_entry(lines: list[str], nl: str, entry: dict, rep: dict,
-                       packet_sha: str | None) -> list[str]:
+                       packet_sha: str | None, packet_read: bool | None = None) -> list[str]:
     block = [f"### {entry['date']} — {entry['verifier']} ({entry['scope']})", "",
              f"- modelo: {entry['model']}",
              f"- veredicto: {entry['verdict']}",
              f"- alcance: {entry['scope']}",
-             f"- paquete sha256: {packet_sha or 'no registrado'}"]
+             f"- paquete sha256: {packet_sha or 'no registrado'}"
+             + {True: " (leído por el verificador: constancia del hook)",
+                False: " (sin constancia de lectura por el verificador: --allow-unread)"}.get(packet_read, "")]
     findings = rep.get("findings") or []
     if findings:
         block.append("- hallazgos:")
@@ -429,6 +465,8 @@ def main(argv=None) -> int:
     a.add_argument("--report", help="fresh-verifier output; its findings go to "
                    "## Verificación independiente")
     a.add_argument("--packet-sha256", dest="packet_sha")
+    a.add_argument("--allow-unread", action="store_true",
+                   help="write the entry without a receipt that the verifier read the packet (recorded)")
     a.add_argument("--flag-human-review", action="store_true",
                    help="also set needs_human_review: true")
     for name in ("latest", "list", "gate"):
@@ -440,9 +478,18 @@ def main(argv=None) -> int:
 
     try:
         if args.cmd == "append":
+            read = None
+            if "fresh-verifier" in args.verifier:
+                read = bool(args.packet_sha and isolation.received(args.packet_sha, "fresh-verifier"))
+                if not read and not args.allow_unread:
+                    raise InputError("no fresh-verifier is recorded as having read packet "
+                                     f"{args.packet_sha or '(none named: --packet-sha256)'} — store the packet "
+                                     "with scripts/security/isolation.py store, hand the verifier its path, and "
+                                     "pass its sha256; --allow-unread records the entry without that proof")
+                args.report = _report_from_store(args.packet_sha, args.verdict, args.report)
             e = append(args.note, args.verifier, args.model, args.verdict,
                        args.scope, args.date, args.report, args.packet_sha,
-                       args.flag_human_review)
+                       args.flag_human_review, read)
             print(json.dumps(e, ensure_ascii=False))
             return 0
         _, lines, _, lo, hi, entries = load(args.note)
