@@ -318,8 +318,12 @@ the first):
    python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" merge --run <run dir> \
      --from-store [--extra <run dir>/mine.json] --out <run dir>/decisions.json
    ```
-   In a session without Kairo's hooks (`--from-store` says the store is
-   empty), save each reply **verbatim**, one file per page
+   `--from-store` takes, per page, the latest stored reply that decides
+   exactly that page's keys (a screener re-dispatched after a bad answer
+   wins) — so run `merge` before the double screening of step 5, whose
+   second screener answers the same packets. Every block it cannot read is
+   named in one refusal. In a session without Kairo's hooks (`--from-store`
+   says the store is empty), save each reply **verbatim**, one file per page
    (`<run dir>/blocks/<page id>.txt` — its ```json fence may stay), and pass
    `--blocks <run dir>/blocks/*.txt` instead: a block is checked against the
    stored answer whenever there is one (a block that differs is refused) and
@@ -369,7 +373,12 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" screen --run <run di
 ```
 
 `--screened-by` goes into `busqueda.md` («Cribado por»): the decisions are a
-model's judgement, and the record says whose.
+model's judgement, and the record says whose — next to it, the model each
+stored screener reply says answered it, when Kairo's hook recorded one
+(«modelo observado en las respuestas guardadas», flagged when it differs).
+That record lives in `screen.json`: `run` writes the plan's sha256 to
+`plan.sha256`, nothing rewrites `plan.json` afterwards, and `screen` refuses
+a run whose `plan.json` changed.
 
 It refuses a file that leaves a candidate that passed the prefilter undecided,
 uses an unknown reason, includes without a sentence (or without a retraction
@@ -430,8 +439,9 @@ not part of the script's PRISMA counts. Never for `ciencia` projects.
 - **Typing a count, an id or a query string the script did not produce.**
   Counts come from `screen`, ids from the candidate list, queries from
   `queries.json`. If a number is missing, run the step that produces it.
-- **Changing the criteria after reading candidates.** The plan is frozen; a
-  new criterion means a new plan and a new run.
+- **Changing the criteria after reading candidates.** The plan is frozen
+  (`screen` refuses a `plan.json` whose sha256 is not the one `run` recorded);
+  a new criterion means a new plan and a new run.
 - **OR-groups for Semantic Scholar.** Its search takes plain keywords; the
   script already splits them — don't hand-craft S2 queries.
 - **Burying degraded coverage.** Lost or truncated queries go first, in

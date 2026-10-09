@@ -1223,6 +1223,7 @@ def cmd_run(plan_path: Path, out: Path, vault: Path | None, fetch: Fetch, today:
     mark_in_vault(cands, known_vault_keys(vault))
     mark_prefilter(cands, plan)
     save(out / "plan.json", {**plan, "tool": TOOL, "date": today})
+    plan_sha = freeze_plan(out)
     save(out / "queries.json", queries)
     save(out / "candidates.json", cands)
     hits = term_hits(cands, plan)
@@ -1230,8 +1231,27 @@ def cmd_run(plan_path: Path, out: Path, vault: Path | None, fetch: Fetch, today:
              "sinonimos_sugeridos": suggest_synonyms(cands, plan),
              "terminos_ambiguos": ambiguous_terms(cands, plan)}
     save(out / "vocabulario.json", {"term_hits": hits, **vocab})
-    return {**summary(queries, cands, out), "config_warnings": config_warnings(plan), "abstracts_completados": filled,
+    return {**summary(queries, cands, out), "plan_sha256": plan_sha,
+            "config_warnings": config_warnings(plan), "abstracts_completados": filled,
             "sin_abstract": sum(1 for c in cands if not ws(c.get("abstract"))), **vocab}
+
+
+def freeze_plan(run: Path) -> str:
+    """Record the frozen plan's sha256 (`plan.sha256`, in `sha256sum` format): `screen`
+    refuses a plan.json that changed after `run`, and nothing rewrites it."""
+    sha = hashlib.sha256((run / "plan.json").read_bytes()).hexdigest()
+    (run / "plan.sha256").write_text(f"{sha}  plan.json\n", encoding="utf-8", newline="\n")
+    return sha
+
+
+def check_frozen_plan(run: Path) -> None:
+    f = run / "plan.sha256"
+    if not f.is_file():
+        return                                  # a run from before the record, or a watch's plan
+    want = f.read_text(encoding="utf-8").split()[0]
+    if hashlib.sha256((run / "plan.json").read_bytes()).hexdigest() != want:
+        raise Refused("plan.json changed after `run` (its sha256 is not the one in plan.sha256): the plan is "
+                      "frozen — a new criterion is a new plan and a new run")
 
 
 def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
@@ -1837,6 +1857,7 @@ def validate(cands: list[dict], decisions: dict, plan: dict) -> list[str]:
 
 
 def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) -> dict:
+    check_frozen_plan(run)
     plan, queries, cands = load(run / "plan.json"), load(run / "queries.json"), load(run / "candidates.json")
     if not (run / "retraction.json").is_file():
         raise Refused("run `retraction` before `screen`: a retracted paper must never be screened in")
@@ -1917,19 +1938,25 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
     # decisions came from screeners; a different --screened-by is recorded as such
     policy = screener_model()
     given = ws(screened_by) or None
+    meta: dict = {"tool": TOOL}
     if merged.is_file():
-        plan["screened_by"] = given or policy
-        plan["screened_by_note"] = (f"difiere del modelo de agents/screener.md ({policy})"
+        meta["screened_by"] = given or policy
+        meta["screened_by_note"] = (f"difiere del modelo de agents/screener.md ({policy})"
                                     if given and policy and given != policy else None)
+        # the model each stored reply says answered it (Kairo's SubagentStop hook records it when it can)
+        meta["screened_by_observed"] = sorted({b["model"] for b in load(merged)["blocks"] if b.get("model")}) or None
     else:
-        plan["screened_by"], plan["screened_by_note"] = given, None
-    save(run / "plan.json", plan)
+        meta["screened_by"], meta["screened_by_note"], meta["screened_by_observed"] = given, None, None
+    # the plan is frozen: who screened goes beside it, never into it
+    save(run / "screen.json", meta)
+    plan = {**plan, **meta}
     gold = gold_recall(run)
     (run / "busqueda.md").write_text(busqueda_md(plan, queries, counts, provenance_line(run))
                                      + (gold_md(gold) if gold else ""), encoding="utf-8", newline="\n")
     (run / "ranked.md").write_text(ranked_md(cands, plan), encoding="utf-8", newline="\n")
     (run / "prefiltrados.md").write_text(prefiltered_md(cands), encoding="utf-8", newline="\n")
     return {"tool": TOOL, "counts": counts, "screened_by": plan["screened_by"],
+            "screened_by_observed": plan["screened_by_observed"],
             "busqueda": (run / "busqueda.md").as_posix(),
             "ranked": (run / "ranked.md").as_posix(), **({"gold_recall": gold} if gold else {})}
 
@@ -2064,6 +2091,11 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
           "**Fechas:** arXiv = envío de la v1; Semantic Scholar, OpenAlex y Crossref = fecha de publicación.",
           "**Cribado por:** " + (plan.get("screened_by") or "no consta")
           + (f" — {plan['screened_by_note']}" if plan.get("screened_by_note") else "")
+          + ("; modelo observado en las respuestas guardadas: " + (", ".join(plan["screened_by_observed"])
+                                                                   if plan.get("screened_by_observed") else "no consta")
+             + (" ⚠️ difiere del declarado" if plan.get("screened_by_observed") and plan.get("screened_by")
+                and plan["screened_by_observed"] != [plan["screened_by"]] else "")
+             if "screened_by_observed" in plan else "")
           + f" ({screener_record()}; el modelo que decidió cada candidato; los conteos son del script)",
           *([provenance] if provenance else []),
           "**Criterios de inclusión:** " + ("; ".join(plan["include"]) or "—"),
@@ -2327,15 +2359,31 @@ def canonical(decisions: dict) -> str:
     return json.dumps(decisions, ensure_ascii=False, sort_keys=True)
 
 
-def _store_blocks(pages: dict) -> list[tuple[str, bytes]]:
-    """Each page's screener reply as the SubagentStop hook stored it (the first, when
-    a page was screened twice — the second is for `agree`)."""
+def _decides_page(text: str, page: dict) -> bool:
+    obj = isolation.json_of(text)
+    return isinstance(obj, dict) and set(obj) == set(page.get("keys") or [])
+
+
+def _store_blocks(pages: dict) -> list[tuple[str, bytes, str | None]]:
+    """Each page's screener reply as the SubagentStop hook stored it: the latest one
+    that decides exactly that page's keys (a screener re-dispatched after a bad
+    answer wins), else the latest one, whose error `merge` then reports. With it,
+    the model the store says answered (None when the hook did not record one)."""
     out = []
     for pid, page in pages.items():
         got = isolation.replies(page.get("packet_sha256") or "", "screener") if page.get("packet_sha256") else []
         if got:
-            out.append((f"almacén:{got[0]['reply_sha256'][:12]} ({pid})", got[0]["text"].encode("utf-8")))
+            r = next((x for x in reversed(got) if _decides_page(x["text"], page)), got[-1])
+            out.append((f"almacén:{r['reply_sha256'][:12]} ({pid})", r["text"].encode("utf-8"), r.get("model")))
     return out
+
+
+def _reply_model(psha: str | None, obj: dict) -> str | None:
+    """The model of the stored reply a hand-saved block matches, when the store has it."""
+    for r in reversed(isolation.replies(psha, "screener") if psha else []):
+        if isolation.json_of(r["text"]) == obj:
+            return r.get("model")
+    return None
 
 
 def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allow_unread: bool = False,
@@ -2365,18 +2413,19 @@ def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allo
     record = []
     errs = []
     (run / "screening").mkdir(exist_ok=True)
-    sources: list[tuple[str, bytes | Path]] = ([(n, raw) for n, raw in _store_blocks(pages)] if from_store
-                                               else [(b.name, b) for b in blocks])
+    sources: list[tuple[str, bytes | Path, str | None]] = (_store_blocks(pages) if from_store
+                                                            else [(b.name, b, None) for b in blocks])
     if from_store and not sources:
         raise Refused("no screener reply in the store: Kairo's SubagentStop hook did not run (a session without "
                       "the plugin's hooks?) — save each reply in blocks/ and pass --blocks")
-    for name, src in sources:
+    for name, src, model in sources:
         b = Path(name)
         try:
             raw = src if isinstance(src, bytes) else src.read_bytes()
             obj = _json_block(raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as e:
-            raise Refused(f"{name}: cannot read the block ({e})") from None
+            errs.append(f"{name}: cannot read the block ({e})")     # every bad block named at once
+            continue
         pid = by_keys.get(frozenset(obj))
         if not pid:
             best = max(pages.items(), key=lambda kv: len(set(kv[1]["keys"]) & set(obj)), default=(None, {"keys": []}))
@@ -2406,16 +2455,20 @@ def cmd_merge(run: Path, blocks: list[Path], extra: Path | None, out: Path, allo
         decisions.update(obj)
         provenance.update({k: f"screener:{pid}" for k in obj})
         record.append({"file": b.name, "page": pid, "sha256": sha, "keys": len(obj),
-                       "packet_sha256": psha, "packet_read": read, "reply_verified": verified})
+                       "packet_sha256": psha, "packet_read": read, "reply_verified": verified,
+                       "model": model if from_store else _reply_model(psha, obj)})
     extra_rec = None
     if extra:
         try:
             raw = extra.read_bytes()
             obj = _json_block(raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as e:
-            raise Refused(f"{extra.name}: cannot read the extra decisions ({e})") from None
-        over = sorted(set(obj) & set(decisions))
-        if over:
+            errs.append(f"{extra.name}: cannot read the extra decisions ({e})")
+            obj = None
+        over = sorted(set(obj or {}) & set(decisions))
+        if obj is None:
+            pass
+        elif over:
             errs.append(f"--extra may not overrule a screener: {over[:10]}")
         else:
             decisions.update(obj)
