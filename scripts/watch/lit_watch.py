@@ -91,6 +91,10 @@
     queries back; papers already offered are dropped,
     never repeated. If every query failed, nothing is written and the run says
     so.
+  - The watch's state is never guessed: a corrupt run file or `cursores.json`
+    stops it with that file's name (exit 2). Every state file is written to a
+    temporary file and then renamed over the old one, so an interrupted write
+    leaves the old file whole.
 
 `threat` records a novelty threat, which is a model's judgement and not
 evidence:
@@ -162,7 +166,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.11.0"
+TOOL = "kairo/lit_watch@1.12.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -247,12 +251,38 @@ def hub_field(pdir: Path, key: str) -> str | None:
     return fm_get(parts[0], key) if parts else None
 
 
+def atomic_write(path: Path, text: str) -> None:
+    """Write `text` to a temporary file beside `path`, then replace `path` with it:
+    an interrupted write leaves the old file whole, never half a file."""
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def load_state(path: Path):
+    """A state file of the watch (a run, the cursors). A corrupt one stops the
+    watch with its name: the watch never guesses what an earlier run offered or
+    covered."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise Refused(f"{path.parent.name}/{path.name} está corrupto ({e}): la vigilancia no adivina su estado — "
+                      "restáuralo (git) o arréglalo a mano y vuelve a lanzarla") from None
+
+
 def load_run(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    run = load_state(path)
+    if not isinstance(run, dict):
+        raise Refused(f"{path.parent.name}/{path.name} no es una ejecución de la vigilancia (no es un objeto JSON)")
+    return run
 
 
 def save_run(path: Path, run: dict) -> None:
-    path.write_text(json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    atomic_write(path, json.dumps(run, ensure_ascii=False, indent=2) + "\n")
 
 
 def find_candidate(run: dict, key: str) -> dict:
@@ -517,12 +547,9 @@ def earlier_works(pdir: Path) -> list[dict]:
     """Every candidate an earlier watch of this project listed, as a work."""
     out = []
     for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json")):
-        try:
-            for c in load_run(f).get("candidates", []):
-                out.append(_work(c["key"], c.get("title") or "", c.get("authors") or [], c.get("arxiv"),
-                                 c.get("doi"), f.name))
-        except (OSError, json.JSONDecodeError, KeyError):
-            continue
+        for c in load_run(f).get("candidates", []):
+            out.append(_work(c["key"], c.get("title") or "", c.get("authors") or [], c.get("arxiv"),
+                             c.get("doi"), f.name))
     return out
 
 
@@ -559,14 +586,11 @@ def earlier_keys(pdir: Path) -> tuple[dict[str, bool], dict[str, tuple[str, dict
     offered: dict[str, bool] = {}
     pending: dict[str, tuple[str, dict]] = {}
     for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json"), key=lambda f: f.stat().st_mtime):
-        try:
-            for c in load_run(f).get("candidates", []):
-                full = bool(c.get("triage") or c.get("decision")) or "strong" not in c
-                offered[c["key"]] = offered.get(c["key"], False) or full
-                if c.get("strong") and not full:
-                    pending.setdefault(c["key"], (c.get("pendiente_desde") or f.name, c))
-        except (OSError, json.JSONDecodeError, KeyError):
-            continue
+        for c in load_run(f).get("candidates", []):
+            full = bool(c.get("triage") or c.get("decision")) or "strong" not in c
+            offered[c["key"]] = offered.get(c["key"], False) or full
+            if c.get("strong") and not full:
+                pending.setdefault(c["key"], (c.get("pendiente_desde") or f.name, c))
     return offered, {k: v for k, v in pending.items() if not offered[k]}
 
 
@@ -679,7 +703,7 @@ def digest_md(run: dict) -> str:
 
 def write_digest(run_file: Path, run: dict) -> Path:
     md = run_file.with_suffix(".md")
-    md.write_text(digest_md(run), encoding="utf-8", newline="\n")
+    atomic_write(md, digest_md(run))
     return md
 
 
@@ -704,17 +728,20 @@ CURSORS = "cursores.json"
 def load_cursors(pdir: Path) -> dict[str, str]:
     """Per query: the last date up to which it answered (`_vigilancia/cursores.json`)."""
     f = pdir / "_vigilancia" / CURSORS
-    try:
-        return dict(json.loads(f.read_text(encoding="utf-8")).get("queries") or {})
-    except (OSError, json.JSONDecodeError, AttributeError):
+    if not f.is_file():
         return {}
+    data = load_state(f)
+    if not isinstance(data, dict) or not isinstance(data.get("queries") or {}, dict):
+        raise Refused(f"_vigilancia/{CURSORS} no tiene la forma esperada ({{\"queries\": {{…}}}}): la vigilancia no "
+                      "adivina su estado — restáuralo (git) o arréglalo a mano")
+    return dict(data.get("queries") or {})
 
 
 def save_cursors(pdir: Path, cursors: dict[str, str]) -> None:
     f = pdir / "_vigilancia" / CURSORS
     f.parent.mkdir(exist_ok=True)
-    f.write_text(json.dumps({"tool": TOOL, "queries": dict(sorted(cursors.items()))}, ensure_ascii=False, indent=2)
-                 + "\n", encoding="utf-8", newline="\n")
+    atomic_write(f, json.dumps({"tool": TOOL, "queries": dict(sorted(cursors.items()))}, ensure_ascii=False,
+                               indent=2) + "\n")
 
 
 def query_signature(q: dict) -> str:
@@ -913,8 +940,7 @@ def citation_roots(vault: Path, pdir: Path, plan_run: str | None, fetch: Fetch,
             roots.setdefault(entry["w"], seed)
     if changed:
         cache_f.parent.mkdir(exist_ok=True)
-        cache_f.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                           encoding="utf-8", newline="\n")
+        atomic_write(cache_f, json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     return roots
 
 
@@ -1088,6 +1114,7 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         lw = (hub_field(pdir, "last_watch") or "").strip()
         since = date.fromisoformat(lw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lw) else today - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     cursors = load_cursors(pdir)
+    seen_before, backlog = earlier_keys(pdir)          # a corrupt run stops the watch before any request
     sigs = structured_signatures(plan, today) if plan else [query_signature(q) for q in queries]
     if not sigs:
         raise Refused("no query of the plan can be watched: its sources ("
@@ -1098,7 +1125,6 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     starts.update({f"citas|{w}": query_start(f"citas|{w}", cursors, since, explicit) for w in roots})
     query_from = min(starts.values())
     arx, dois, titles = known_papers(vault)
-    seen_before, backlog = earlier_keys(pdir)
     merged: dict[str, dict] = {}
     by_title: dict[str, str] = {}
     log = []
@@ -1276,8 +1302,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                     cursors[sig] = today.isoformat()
         save_cursors(pdir, cursors)
         if asked is not None:
-            (pdir / "_vigilancia" / "openreview.json").write_text(
-                json.dumps(asked, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+            atomic_write(pdir / "_vigilancia" / "openreview.json",
+                         json.dumps(asked, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
         text, nl = read_text(hub_path(pdir))
         write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
         moved = True
