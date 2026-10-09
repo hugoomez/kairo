@@ -64,7 +64,9 @@ fetched is named in the output (`figures.missing`), never replaced.
 
 A preprint that arXiv or OpenAlex says was published (journal_ref, DOI,
 a journal / proceedings location) gets `published_doi`, `published_venue`,
-`published_year` — the note stays anchored on the text it holds.
+`published_year` — the note stays anchored on the text it holds. When the
+publisher's Crossref record titles it differently (a retitled camera-ready),
+its title is kept verbatim as `published_title`; absent otherwise.
 
 Prints one JSON object. Exit codes: 0 ok · 1 error · 2 refused (bad input,
 send: never, nothing fetchable) · 3 verify found an integrity problem.
@@ -99,7 +101,7 @@ import verbatim_fulltext as vf  # noqa: E402
 from fill_abstract import from_inverted_index, from_jats  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/ingest_paper@1.1.1"
+TOOL = "kairo/ingest_paper@1.2.0"   # 1.2.0: published_title for a retitled published version
 FUENTES_DIR = "_fuentes"
 NO_ABSTRACT = "No disponible — ningún abstract recuperado"
 NO_FULLTEXT = "No disponible — solo abstract."
@@ -435,8 +437,11 @@ def _oa(url_path: str) -> str:
     return f"https://api.openalex.org/{url_path}" + (("?api_key=" + urllib.parse.quote(key)) if key else "")
 
 
-def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "") -> tuple[dict, list[str]]:
-    """Fetch the metadata records into `store`; return (meta, warnings)."""
+def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "",
+           published_doi: str = "") -> tuple[dict, list[str]]:
+    """Fetch the metadata records into `store`; return (meta, warnings).
+    `published_doi`: the DOI a preprint was reached from (the anchor switch), whose
+    Crossref record gives the published version's venue, year and title."""
     warn: list[str] = []
     meta: dict = {}
     if openalex and not arxiv and not doi:
@@ -463,6 +468,7 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "")
             raise Refused(f"arXiv has no entry for {arxiv}")
         store.keep("metadata-arxiv.xml", "metadata", url, raw, parser="arxiv")
         meta = {**rec, "doi": ""}
+        meta["published_doi"] = meta.get("published_doi") or published_doi
         meta["abstract_url"], meta["abstract_file"] = f"https://arxiv.org/abs/{arxiv}", "metadata-arxiv.xml"
     elif doi:
         url = retraction.CROSSREF_WORK.format(urllib.parse.quote(doi, safe="/:;()"))
@@ -511,6 +517,9 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "")
                 meta["published_year"] = pub.get("year") or ""
                 for k in ("venue_type", "volume", "issue", "pages"):
                     meta[k] = pub.get(k) or ""
+                # a retitled camera-ready: the publisher's own title, as its record holds it
+                if pub.get("title") and norm_title(pub["title"]) != norm_title(meta.get("title") or ""):
+                    meta["published_title"] = pub["title"]
         except (net.HttpError, ValueError) as e:
             warn.append(f"Crossref no dio el registro de la versión publicada {pdoi} ({net.redact(str(e))[:80]})")
     if arxiv and (pdoi or meta.get("journal_ref")):
@@ -669,7 +678,7 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
             switched, arxiv, doi = doi, pre, ""
     pid = next_id(vault)
     store = Store(vault, pid, date)
-    meta, warn = gather(store, arxiv, doi, fetch, openalex)
+    meta, warn = gather(store, arxiv, doi, fetch, openalex, published_doi=switched)
     if switched:
         meta["published_doi"] = meta.get("published_doi") or switched
         warn.append(f"el DOI {switched} tiene preprint en arXiv ({arxiv}) según OpenAlex: la nota se ancla en el "
@@ -728,6 +737,8 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
                    ("published_venue", meta.get("published_venue") or ""),
                    ("published_year", meta.get("published_year") or ""),
                    ("journal_ref", meta.get("journal_ref") or "")]
+        if meta.get("published_title"):
+            fields.append(("published_title", meta["published_title"]))
     # the published version's kind and place (Crossref / OpenAlex), for the bibliography
     fields += [(k, meta.get(k)) for k in ("venue_type", "volume", "issue", "pages") if meta.get(k)]
     fields += [("ingested_by", TOOL), ("fuentes", f"{store.rel}/fuentes.json")]
@@ -924,7 +935,9 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
         new = set_suspicious(new, block)
         new = vn.set_fields(new, {"fulltext": "full" if block else "abstract-only", "ingested_by": TOOL,
                                   "fuentes": f"{store.rel}/fuentes.json",
-                                  **({"arxiv_version": meta_r["version"]} if arxiv else {})})
+                                  **({"arxiv_version": meta_r["version"]} if arxiv else {}),
+                                  **({"published_title": meta["published_title"]}
+                                     if meta.get("published_title") else {})})
         if not a.dry_run:
             store.write()
             path.write_text(new, encoding="utf-8", newline="\n")
