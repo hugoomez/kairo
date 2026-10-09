@@ -16,7 +16,9 @@
 the DOI link to open with your own access and the file names `attach-pdf`
 recognises; `attach-pdf` gives each the full text of the PDF you saved — named
 by its P-id or DOI, or any name when the PDF prints its DOI (never matched by
-title) — converted and kept like any PDF, so `verify` checks it.
+title) — converted and kept like any PDF, so `verify` checks it. Like `add`,
+`attach-pdf`, `rebuild` and `reconvert` fire the derived views (SOTA staleness
+check, Smart Connections re-index) for every note whose text they changed.
 
 A paper note's source fields — the frontmatter metadata, `## Referencia`,
 `## Resumen`, `## Texto completo` — are never typed by a model. `add` fetches
@@ -62,7 +64,14 @@ fetched is named in the output (`figures.missing`), never replaced.
 
 A preprint that arXiv or OpenAlex says was published (journal_ref, DOI,
 a journal / proceedings location) gets `published_doi`, `published_venue`,
-`published_year` — the note stays anchored on the text it holds.
+`published_year` — the note stays anchored on the text it holds. When the
+publisher's Crossref record titles it differently (a retitled camera-ready),
+its title is kept verbatim as `published_title`; absent otherwise.
+
+Every note, manifest and kept file is written atomically (a temporary file,
+then os.replace). A fetched record that cannot be parsed is a refusal when it
+is the paper's own record and a lost source (a warning) otherwise; `verify`
+reports an unreadable kept record or manifest as an integrity problem.
 
 Prints one JSON object. Exit codes: 0 ok · 1 error · 2 refused (bad input,
 send: never, nothing fetchable) · 3 verify found an integrity problem.
@@ -97,7 +106,7 @@ import verbatim_fulltext as vf  # noqa: E402
 from fill_abstract import from_inverted_index, from_jats  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/ingest_paper@1.1.1"
+TOOL = "kairo/ingest_paper@1.2.0"   # 1.2.0: published_title for a retitled published version
 FUENTES_DIR = "_fuentes"
 NO_ABSTRACT = "No disponible — ningún abstract recuperado"
 NO_FULLTEXT = "No disponible — solo abstract."
@@ -123,6 +132,23 @@ def sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def atomic_write(path: Path, data: str | bytes) -> None:
+    """Write a note, a manifest or a kept source all at once: to a temporary file
+    beside it, then os.replace — an interrupted run never leaves half a file."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_bytes(data.encode("utf-8") if isinstance(data, str) else data)
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            tmp.unlink()
+
+
+def write_manifest(path: Path, manifest: dict) -> None:
+    atomic_write(path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+
+
 def ws(s: str) -> str:
     return " ".join((s or "").split())
 
@@ -136,6 +162,31 @@ def norm_title(t: str) -> str:
 # Records: raw bytes → metadata (pure; verify re-runs these on the kept bytes)
 # --------------------------------------------------------------------------
 
+def _record(parse):
+    """A parser of a fetched record: anything malformed (bad JSON / XML, a list
+    where an object belongs) is a ValueError saying the record is unreadable —
+    a refusal or a lost source for the caller, never a traceback."""
+    import functools
+
+    @functools.wraps(parse)
+    def wrapped(raw, *args):
+        try:
+            return parse(raw, *args)
+        except ValueError as e:
+            raise ValueError(f"registro ilegible ({str(e)[:80]})") from None
+        except (AttributeError, TypeError, KeyError, IndexError, SyntaxError) as e:   # SyntaxError: XML
+            raise ValueError(f"registro ilegible ({type(e).__name__}: {str(e)[:80]})") from None
+    return wrapped
+
+
+def _json_object(raw: bytes) -> dict:
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"se esperaba un objeto JSON, llegó {type(data).__name__}")
+    return data
+
+
+@_record
 def from_arxiv_feed(raw: bytes, aid: str) -> dict | None:
     entries = retraction.parse_arxiv_feed(raw)
     e = entries.get(retraction.normalize_arxiv(aid) or "")
@@ -147,8 +198,9 @@ def from_arxiv_feed(raw: bytes, aid: str) -> dict | None:
             "published_doi": e.get("doi") or "", "journal_ref": e.get("journal_ref") or ""}
 
 
+@_record
 def from_crossref(raw: bytes) -> dict | None:
-    msg = (json.loads(raw) or {}).get("message") or {}
+    msg = _json_object(raw).get("message") or {}
     if not msg:
         return None
     year = None
@@ -168,8 +220,9 @@ def from_crossref(raw: bytes) -> dict | None:
             "issue": str(msg.get("issue") or ""), "pages": str(msg.get("page") or "").replace("-", "--")}
 
 
+@_record
 def from_openalex(raw: bytes) -> dict | None:
-    w = json.loads(raw) or {}
+    w = _json_object(raw)
     if not w.get("id"):
         return None
     published = None
@@ -417,10 +470,8 @@ class Store:
         self.dir.mkdir(parents=True, exist_ok=True)
         for name, data in self.blobs.items():
             (self.dir / name).parent.mkdir(parents=True, exist_ok=True)
-            (self.dir / name).write_bytes(data)
-        manifest = {"tool": TOOL, "converter": vf.TOOL_ID, "files": self.files}
-        (self.dir / "fuentes.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-                                               encoding="utf-8", newline="\n")
+            atomic_write(self.dir / name, data)
+        write_manifest(self.dir / "fuentes.json", {"tool": TOOL, "converter": vf.TOOL_ID, "files": self.files})
         return f"{self.rel}/fuentes.json"
 
 
@@ -433,8 +484,19 @@ def _oa(url_path: str) -> str:
     return f"https://api.openalex.org/{url_path}" + (("?api_key=" + urllib.parse.quote(key)) if key else "")
 
 
-def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "") -> tuple[dict, list[str]]:
-    """Fetch the metadata records into `store`; return (meta, warnings)."""
+def _primary(parse, raw: bytes, source: str, *args) -> dict | None:
+    """The paper's own metadata record: unreadable is a refusal, nothing is written."""
+    try:
+        return parse(raw, *args)
+    except ValueError as e:
+        raise Refused(f"{source} devolvió un {e}: no se ingiere") from None
+
+
+def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "",
+           published_doi: str = "") -> tuple[dict, list[str]]:
+    """Fetch the metadata records into `store`; return (meta, warnings).
+    `published_doi`: the DOI a preprint was reached from (the anchor switch), whose
+    Crossref record gives the published version's venue, year and title."""
     warn: list[str] = []
     meta: dict = {}
     if openalex and not arxiv and not doi:
@@ -443,7 +505,7 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "")
             raw = fetch(url, {})
         except net.HttpError as e:
             raise Refused(f"OpenAlex has no work {openalex} ({e})") from None
-        rec = from_openalex(raw)
+        rec = _primary(from_openalex, raw, f"OpenAlex ({openalex})")
         if not rec or not rec.get("title"):
             raise Refused(f"OpenAlex has no work {openalex}")
         if rec.get("doi") or rec.get("arxiv"):
@@ -456,11 +518,12 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "")
     if arxiv:
         url = retraction.ARXIV_QUERY.format(urllib.parse.quote(arxiv, safe="/"), 1)
         raw = fetch(url, {"Accept": "application/atom+xml"})
-        rec = from_arxiv_feed(raw, arxiv)
+        rec = _primary(from_arxiv_feed, raw, f"arXiv ({arxiv})", arxiv)
         if not rec:
             raise Refused(f"arXiv has no entry for {arxiv}")
         store.keep("metadata-arxiv.xml", "metadata", url, raw, parser="arxiv")
         meta = {**rec, "doi": ""}
+        meta["published_doi"] = meta.get("published_doi") or published_doi
         meta["abstract_url"], meta["abstract_file"] = f"https://arxiv.org/abs/{arxiv}", "metadata-arxiv.xml"
     elif doi:
         url = retraction.CROSSREF_WORK.format(urllib.parse.quote(doi, safe="/:;()"))
@@ -468,7 +531,7 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "")
             raw = fetch(url, {"Accept": "application/json"})
         except net.HttpError as e:
             raise Refused(f"Crossref has no record for {doi} ({e})") from None
-        rec = from_crossref(raw)
+        rec = _primary(from_crossref, raw, f"Crossref ({doi})")
         if not rec:
             raise Refused(f"Crossref has no record for {doi}")
         store.keep("metadata-crossref.json", "metadata", url, raw, parser="crossref")
@@ -509,6 +572,9 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "")
                 meta["published_year"] = pub.get("year") or ""
                 for k in ("venue_type", "volume", "issue", "pages"):
                     meta[k] = pub.get(k) or ""
+                # a retitled camera-ready: the publisher's own title, as its record holds it
+                if pub.get("title") and norm_title(pub["title"]) != norm_title(meta.get("title") or ""):
+                    meta["published_title"] = pub["title"]
         except (net.HttpError, ValueError) as e:
             warn.append(f"Crossref no dio el registro de la versión publicada {pdoi} ({net.redact(str(e))[:80]})")
     if arxiv and (pdoi or meta.get("journal_ref")):
@@ -620,6 +686,16 @@ def derived_views(vault: Path, paths: list[Path]) -> dict:
     return {"sota_stale": "; ".join(stale) or None}
 
 
+def refresh_views(vault: Path, out: dict) -> dict:
+    """After attach-pdf / rebuild / reconvert: the derived views `add` fires, for
+    every note whose source text was written and changed (never on --dry-run)."""
+    paths = [vault / r["path"] for r in out.get("notes", [])
+             if r.get("status") in ("attached", "rebuilt", "reconverted") and r.get("changed", True) and r.get("path")]
+    if paths:
+        out.update(derived_views(vault, paths))
+    return out
+
+
 def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: str | None = None) -> dict:
     vault = a.vault.resolve()
     if not (vault / "Papers").is_dir():
@@ -657,7 +733,7 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
             switched, arxiv, doi = doi, pre, ""
     pid = next_id(vault)
     store = Store(vault, pid, date)
-    meta, warn = gather(store, arxiv, doi, fetch, openalex)
+    meta, warn = gather(store, arxiv, doi, fetch, openalex, published_doi=switched)
     if switched:
         meta["published_doi"] = meta.get("published_doi") or switched
         warn.append(f"el DOI {switched} tiene preprint en arXiv ({arxiv}) según OpenAlex: la nota se ancla en el "
@@ -673,7 +749,7 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
         if a.facet:
             new = fa.add_entry(new, a.project, a.facet, a.matched, None)
         if not a.dry_run and new != text:
-            existing.write_text(new, encoding="utf-8", newline="\n")
+            atomic_write(existing, new)
         return {"status": "exists", "id": existing.name.split(" ")[0], "path": existing.relative_to(vault).as_posix(),
                 "project_added": new != text, "written": not a.dry_run}
 
@@ -716,6 +792,8 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
                    ("published_venue", meta.get("published_venue") or ""),
                    ("published_year", meta.get("published_year") or ""),
                    ("journal_ref", meta.get("journal_ref") or "")]
+        if meta.get("published_title"):
+            fields.append(("published_title", meta["published_title"]))
     # the published version's kind and place (Crossref / OpenAlex), for the bibliography
     fields += [(k, meta.get(k)) for k in ("venue_type", "volume", "issue", "pages") if meta.get(k)]
     fields += [("ingested_by", TOOL), ("fuentes", f"{store.rel}/fuentes.json")]
@@ -735,7 +813,7 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
             if f["file"] == meta.get("abstract_file"):
                 f["abstract"] = True
         store.write()
-        path.write_text(text, encoding="utf-8", newline="\n")
+        atomic_write(path, text)
     return {"status": "created" if not a.dry_run else "dry_run", "id": pid,
             "path": path.relative_to(vault).as_posix(), "fulltext": kind or "abstract-only",
             "abstract": "found" if meta.get("abstract") else "missing",
@@ -748,12 +826,13 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
                     "abstract": meta.get("abstract") or ""}}
 
 
-def convert(f: dict, data: bytes, prefix: str = "") -> str | None:
-    """The `## Texto completo` block the current converter gives for one kept file
-    (`prefix`: where its figure links point, when the note kept figure images)."""
+def convert(f: dict, data: bytes, prefix: str = "", rules: tuple = vf.VERSION) -> str | None:
+    """The `## Texto completo` block the converter gives for one kept file
+    (`prefix`: where its figure links point, when the note kept figure images;
+    `rules`: an older converter's rules, vf.rules_of, to re-check a note it wrote)."""
     if f["kind"] == "pdf-text":
-        return vf.build_from_text(data, f["url"], f.get("version", "?"), f["obtenido"])
-    return vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"], fig_prefix=prefix)
+        return vf.build_from_text(data, f["url"], f.get("version", "?"), f["obtenido"], rules=rules)
+    return vf.build(f["kind"], f["url"], f.get("version", "?"), data, f["obtenido"], fig_prefix=prefix, rules=rules)
 
 
 def manifest_prefix(manifest: dict, mpath: Path) -> str:
@@ -812,8 +891,11 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
         got_body = section_body(text, "Texto completo") or ""
         if manifest.get("converter") != vf.TOOL_ID:
             # another converter version wrote it: its `> Fuente:` lines name that version,
-            # so only the text itself can be compared with what this version gives
-            if ws(_unquoted(block or "")) != ws(_unquoted(got_body)):
+            # so only the text itself is compared — with what that version's rules give
+            # (kept here), or with what this version gives
+            rules = vf.rules_of(manifest.get("converter"))
+            own = convert(f, data, manifest_prefix(manifest, mpath), rules) if rules < vf.VERSION else block
+            if ws(_unquoted(got_body)) not in (ws(_unquoted(own or "")), ws(_unquoted(block or ""))):
                 problems.append(f"convertidor distinto ({manifest.get('converter')} → {vf.TOOL_ID}) y "
                                 "## Texto completo no coincide con lo que da el actual (el cambio de versión o "
                                 "una edición a mano): `reconvert` lo regenera desde los bytes guardados, sin red")
@@ -841,7 +923,10 @@ def verify_note(vault: Path, path: Path) -> dict:
                         "`rebuild` las regenera desde la fuente"}
     if not (vault / vn.fm_get(fm, "fuentes")).is_file():
         return {"id": pid, "status": "raw_missing", "problems": ["falta fuentes.json"]}
-    _, problems = expected_sections(vault, text)
+    try:
+        _, problems = expected_sections(vault, text)
+    except (ValueError, KeyError) as e:
+        problems = [f"fuentes.json o un registro guardado ilegible ({type(e).__name__}: {str(e)[:120]})"]
     return {"id": pid, "status": "ok" if not problems else "integrity_problem", "problems": problems}
 
 
@@ -908,11 +993,14 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
         new = set_suspicious(new, block)
         new = vn.set_fields(new, {"fulltext": "full" if block else "abstract-only", "ingested_by": TOOL,
                                   "fuentes": f"{store.rel}/fuentes.json",
-                                  **({"arxiv_version": meta_r["version"]} if arxiv else {})})
+                                  **({"arxiv_version": meta_r["version"]} if arxiv else {}),
+                                  **({"published_title": meta["published_title"]}
+                                     if meta.get("published_title") else {})})
         if not a.dry_run:
             store.write()
-            path.write_text(new, encoding="utf-8", newline="\n")
+            atomic_write(path, new)
         out.append({"id": pid, "status": "rebuilt" if not a.dry_run else "dry_run",
+                    "path": path.relative_to(vault).as_posix(),
                     "fulltext": kind or "abstract-only", "changed": new != text, "warnings": warn})
     return {"tool": TOOL, "notes": out}
 
@@ -951,11 +1039,12 @@ def cmd_reconvert(a) -> dict:
                 continue
             new = set_suspicious(replace_section(text, "Texto completo", block.strip()), block)
             if not a.dry_run:
-                path.write_text(new, encoding="utf-8", newline="\n")
+                atomic_write(path, new)
                 manifest["converter"] = vf.TOOL_ID
-                mpath.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-                                 newline="\n")
-            out.append({"id": pid, "status": "reconverted" if not a.dry_run else "dry_run", "changed": new != text})
+                write_manifest(mpath, manifest)
+            out.append({"id": pid, "status": "reconverted" if not a.dry_run else "dry_run",
+                        "changed": new.rstrip("\n") != text.rstrip("\n"),
+                        "path": path.relative_to(vault).as_posix()})
     return {"tool": TOOL, "converter": vf.TOOL_ID, "notes": out}
 
 
@@ -1050,7 +1139,8 @@ def cmd_attach_pdf(a, today: str | None = None) -> dict:
             if not block:
                 out.append({"id": pid, "status": "refused", "reason": f"pdftotext no sacó texto de {pdf.name}"})
                 continue
-            row = {"id": pid, "status": "attached" if not a.dry_run else "dry_run", "pdf": pdf.name, "matched_by": how}
+            row = {"id": pid, "status": "attached" if not a.dry_run else "dry_run", "pdf": pdf.name, "matched_by": how,
+                   "path": path.relative_to(vault).as_posix()}
             if not a.dry_run:
                 rel = vn.fm_get(fm, "fuentes")
                 mpath = vault / rel if rel else None
@@ -1061,17 +1151,16 @@ def cmd_attach_pdf(a, today: str | None = None) -> dict:
                 else:
                     manifest = json.loads(mpath.read_text(encoding="utf-8"))
                 mpath.parent.mkdir(parents=True, exist_ok=True)
-                (mpath.parent / "texto.pdf").write_bytes(data)
+                atomic_write(mpath.parent / "texto.pdf", data)
                 manifest["files"] = [f for f in manifest["files"] if f.get("role") != "fulltext"] + [
                     {"file": "texto.pdf", "role": "fulltext", "url": f"local:{pdf.name}", "sha256": sha256(data),
                      "bytes": len(data), "obtenido": date, "kind": "pdf", "version": RESEARCHER_PDF}]
                 manifest["converter"] = vf.TOOL_ID
-                mpath.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-                                 newline="\n")
+                write_manifest(mpath, manifest)
                 new = set_suspicious(replace_section(text, "Texto completo", block.strip()), block)
                 new = vn.set_fields(new, {"fulltext": "full", "pdf": f"local: {pdf.name}",
                                           "fuentes": mpath.relative_to(vault).as_posix()})
-                path.write_text(new, encoding="utf-8", newline="\n")
+                atomic_write(path, new)
             out.append(row)
     return {"tool": TOOL, "attached": sum(1 for r in out if r["status"] == "attached"), "notes": out}
 
@@ -1082,7 +1171,7 @@ def cmd_zotero_key(a) -> dict:
     if is_flagged(path):
         raise Refused(f"{a.id} es send: never: no se modifica")
     text = path.read_text(encoding="utf-8")
-    path.write_text(vn.set_fields(text, {"zotero_key": a.key}), encoding="utf-8", newline="\n")
+    atomic_write(path, vn.set_fields(text, {"zotero_key": a.key}))
     return {"id": a.id, "zotero_key": a.key}
 
 
@@ -1147,15 +1236,15 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
             if not a.dry_run and out.get("path") and (out.get("status") == "created" or out.get("project_added")):
                 out.update(derived_views(a.vault.resolve(), [a.vault.resolve() / out["path"]]))
         elif a.cmd == "rebuild":
-            out = cmd_rebuild(a, fetch, fetch_arxiv, today)
+            out = refresh_views(a.vault.resolve(), cmd_rebuild(a, fetch, fetch_arxiv, today))
         elif a.cmd == "verify":
             out = cmd_verify(a)
         elif a.cmd == "reconvert":
-            out = cmd_reconvert(a)
+            out = refresh_views(a.vault.resolve(), cmd_reconvert(a))
         elif a.cmd == "gaps":
             out = cmd_gaps(a)
         elif a.cmd == "attach-pdf":
-            out = cmd_attach_pdf(a, today)
+            out = refresh_views(a.vault.resolve(), cmd_attach_pdf(a, today))
         else:
             out = cmd_zotero_key(a)
     except Refused as e:

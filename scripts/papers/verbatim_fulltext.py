@@ -15,7 +15,12 @@ Nothing is paraphrased or reconstructed:
     `[nota al pie: …]`; text a reader never sees (white, display:none, zero
     size or opacity — the usual carrier of a prompt injection) is kept inside
     `[texto oculto en la fuente: …]`; a cell spanning columns or rows is repeated in each
-    position it covers, so every column stays aligned with its header. Math with
+    position it covers, so every column stays aligned with its header; text
+    outside a paragraph is kept too; an algorithm, pseudo-code or code listing
+    (`ltx_listing`, `ltx_algorithm`, `ltx_algorithmic`) stays verbatim as a
+    fenced block under its caption (`[extracción dañada: algoritmo]` when it holds
+    no text); a figure drawn as inline SVG (pgfplots) gets `[figura SVG no
+    extraída]` under its caption — never read off as text. Math with
     no LaTeX, and LaTeXML error nodes, become
     `[extracción dañada]`. The abstract (already in `## Resumen`), front
     matter, navigation and bibliography are left out. A figure's image is
@@ -30,8 +35,11 @@ Nothing is paraphrased or reconstructed:
     inside `[texto oculto en la fuente: …]`; a scan's OCR layer (most of its
     text invisible) is the paper and is not marked. Headings
     numbered "3.2", "3.2.", Roman "II." with lettered "A." subsections, and
-    appendices; the text starts at the introduction and stops at
-    References / REFERENCES. A table's rows stay under its caption, verbatim
+    appendices — a number only when it follows the paper's numbering and reads
+    as a title (a "64 GPUs" table cell is not a heading), a bare appendix letter
+    only after the references; the text starts at the introduction and stops at
+    References / REFERENCES, resuming at an appendix or at supplementary
+    material whose numbering restarts («Material suplementario», S1, S1.2 …). A table's rows stay under its caption, verbatim
     in pdftotext's reading order (columns not verified). A prose line with
     garbled inline math keeps its words and gets
     `[extracción dañada: fórmulas en línea]`; a run of other symbol lines
@@ -72,8 +80,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "citations"))
 import net  # noqa: E402  (shared HTTP helper: spacing, retries, curl fallback)
 
-__version__ = "1.5.0"   # 1.5.0: PDF text no reader sees (invisible, < 1 pt, white) marked hidden; 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
+__version__ = "1.7.0"   # 1.7.0: HTML text outside paragraphs kept, algorithms / listings as fenced blocks, SVG figures marked; 1.6.0: PDF headings follow the paper's numbering (no table cell / wrapped line as a heading), supplement after the references as «Material suplementario»; 1.5.0: PDF text no reader sees (invisible, < 1 pt, white) marked hidden; 1.4.0: figure images linked under their caption; 1.3.0: visually hidden text marked; 1.2.0: spanned table cells repeated (columns aligned); 1.1.0: Roman PDF headings, …
 TOOL_ID = f"kairo/verbatim_fulltext@{__version__}"
+VERSION = tuple(int(x) for x in __version__.split("."))
+PDF_HEADINGS_SINCE = (1, 6, 0)          # before this, legacy PDF heading rules (_pdf_heading_v15)
+HTML_BLOCKS_SINCE = (1, 7, 0)           # before this, HTML without loose text, algorithms, SVG marks
 DAMAGED = "[extracción dañada]"
 # A paper with no numbered sections (letter format) is kept whole under this heading.
 UNSECTIONED_HEADING = "Texto (sin secciones numeradas en la fuente)"
@@ -281,6 +292,37 @@ def figure_images(html_text: str, page_url: str) -> list[tuple[str, str]]:
 
 
 _FIG_PREFIX = ""                       # set by html_to_body for one conversion
+_LEGACY_HTML = False                   # set by html_to_body: the rules of converter 1.6.0 and earlier
+SVG_MARK = "[figura SVG no extraída]"
+ALGO_DAMAGED = "[extracción dañada: algoritmo]"
+_LISTING = ("ltx_listing", "ltx_algorithm", "ltx_algorithmic")
+
+
+def _is_listing(n) -> bool:
+    return isinstance(n, Node) and any(n.has(k) for k in _LISTING)
+
+
+def _listing(n, out: list[str]) -> None:
+    """An algorithm / pseudo-code / code listing as a fenced block, verbatim, one
+    source line per line (its line number first); `[extracción dañada: algoritmo]`
+    when it holds no text."""
+    lines: list[str] = []
+    rows = list(_iter(n, lambda x: x.has("ltx_listingline")))
+    for r in rows:
+        tag = next((k for k in r.children if not isinstance(k, str) and k.has("ltx_tag")), None)
+        rest = "".join(text_of(k) for k in r.children if k is not tag)
+        line = norm((text_of(tag) + " " if tag is not None else "") + rest)
+        if line:
+            lines.append(line)
+    if not rows:
+        sub: list[str] = []
+        _walk(n, sub)
+        lines = [ln for b in sub for ln in b.split("\n") if ln.strip()]
+    if not lines:
+        out.append(ALGO_DAMAGED)
+        return
+    fence = "~~~~" if any("```" in ln for ln in lines) else "```"
+    out.append(fence + "\n" + "\n".join(lines) + "\n" + fence)
 
 
 def _figure(f, out: list[str]) -> None:
@@ -306,6 +348,12 @@ def _figure(f, out: list[str]) -> None:
             if fig_name(src) not in names:
                 names.append(fig_name(src))
         out += [f"![{label or 'Figure'}]({_FIG_PREFIX}{n})" for n in names]
+    if not _LEGACY_HTML:
+        # an inline SVG plot (pgfplots) is never read as text: said, under its caption
+        if not is_table and _owner_figure(f) is None and next(_iter(f, lambda x: x.tag == "svg"), None):
+            out.append(SVG_MARK)
+        for lst in _iter(f, lambda x: _is_listing(x) and not _is_listing(x.parent)):
+            _listing(lst, out)
     if is_table:
         for t in _iter(f, lambda x: x.tag == "table" and x.has("ltx_tabular")
                        and _owner_figure(x) is f):
@@ -329,15 +377,46 @@ def _equation(t, out: list[str]) -> None:
 _HEAD = {"ltx_title_section": "###", "ltx_title_appendix": "###",
          "ltx_title_subsection": "####", "ltx_title_subsubsection": "#####"}
 _SKIP = ("ltx_bibliography", "ltx_page_navbar", "ltx_abstract", "ltx_authors", "ltx_dates",
-         "ltx_page_footer", "ltx_page_header")
+         "ltx_page_footer", "ltx_page_header", "ltx_listing_data")
+_INLINE = {"span", "a", "em", "strong", "b", "i", "u", "s", "sup", "sub", "small", "code", "tt", "cite",
+           "math", "abbr", "q", "mark", "br", "img", "kbd", "var", "samp", "time"}
+_BLOCK = {"div", "p", "table", "figure", "ul", "ol", "li", "section", "h1", "h2", "h3", "h4", "h5", "h6",
+          "blockquote", "svg", "dl", "pre", "article"}
+_NOT_TEXT = ("nav", "header", "footer", "script", "style", "button", "form", "noscript", "template", "svg")
+
+
+def _inline(c) -> bool:
+    """A run of text inside a block: an inline element holding no block."""
+    return c.tag in _INLINE and not _is_listing(c) and next(
+        _iter(c, lambda x: x.tag in _BLOCK or _is_listing(x)), None) is None
 
 
 def _walk(n, out: list[str]) -> None:
+    buf: list[str] = []                     # text outside any <p>: bare strings and inline elements
+
+    def flush():
+        if norm("".join(buf)):
+            out.append(norm("".join(buf)))
+        buf.clear()
     for c in n.children:
         if isinstance(c, str):
+            if not _LEGACY_HTML:
+                buf.append(c)
             continue
         if any(c.has(k) for k in _SKIP) or c.tag in ("nav", "header", "footer", "script", "style"):
             continue
+        if c.has("ltx_tag") and c.parent is not None and c.parent.has("ltx_item"):
+            continue
+        if not _LEGACY_HTML:
+            if c.tag in _NOT_TEXT:
+                continue
+            if _inline(c):
+                buf.append(text_of(c))
+                continue
+            flush()
+            if _is_listing(c):
+                _listing(c, out)
+                continue
         if hidden(c):
             if norm(text_of(c)):
                 out.append(norm(text_of(c)))
@@ -377,32 +456,33 @@ def _walk(n, out: list[str]) -> None:
                 out.extend(body[1:])
             continue
         if c.tag == "p" or c.has("ltx_p"):
-            buf: list[str] = []
+            pbuf: list[str] = []
             for k in c.children:
                 if not isinstance(k, str) and k.tag in ("table", "figure", "ul", "ol"):
-                    if norm("".join(buf)):
-                        out.append(norm("".join(buf)))
-                    buf = []
+                    if norm("".join(pbuf)):
+                        out.append(norm("".join(pbuf)))
+                    pbuf = []
                     wrapper = Node("div", [], None)
                     wrapper.children = [k]
                     _walk(wrapper, out)
                 else:
-                    buf.append(text_of(k))
-            if norm("".join(buf)):
-                out.append(norm("".join(buf)))
-            continue
-        if c.has("ltx_tag") and c.parent is not None and c.parent.has("ltx_item"):
+                    pbuf.append(text_of(k))
+            if norm("".join(pbuf)):
+                out.append(norm("".join(pbuf)))
             continue
         _walk(c, out)
+    flush()
 
 
-def html_to_body(html_text: str, fig_prefix: str = "") -> str:
-    global _FIG_PREFIX
-    _FIG_PREFIX = fig_prefix
+def html_to_body(html_text: str, fig_prefix: str = "", legacy: bool = False) -> str:
+    """LaTeXML HTML → verbatim body. `legacy`: the rules of converter 1.6.0 and
+    earlier (text outside paragraphs, algorithms and SVG figures not kept)."""
+    global _FIG_PREFIX, _LEGACY_HTML
+    _FIG_PREFIX, _LEGACY_HTML = fig_prefix, legacy
     try:
         return _html_to_body(html_text)
     finally:
-        _FIG_PREFIX = ""
+        _FIG_PREFIX, _LEGACY_HTML = "", False
 
 
 def _html_to_body(html_text: str) -> str:
@@ -468,11 +548,9 @@ def _num_heading(num: str, title: str) -> str:
     return ("###", "####", "#####", "#####")[min(num.count("."), 3)] + f" {num} {title}"
 
 
-def _pdf_heading(s: str, st: dict) -> str | None:
-    """The `###` heading a pdftotext line opens, or None. Numbered ("3.2 Title",
-    "3.2. Title"), Roman ("II. METHODS") with lettered subsections ("A. Decoders"),
-    and appendices ("A Title", "Appendix A: Title"); Roman, lettered and dotted
-    numbers must follow on from the previous one, so an enumeration is not a heading."""
+def _pdf_heading_v15(s: str, st: dict) -> str | None:
+    """The heading rules of converter 1.5.0 and earlier, kept unchanged so a note
+    those versions wrote is regenerated exactly by `verify` (legacy=True)."""
     if s.endswith(".") or len(s) >= 95:
         return None
     m = re.match(r"^(?:APPENDIX|Appendix)\s+([A-Z])(?:[:.]\s*|\s+)(.*)$", s)
@@ -512,6 +590,102 @@ def _pdf_heading(s: str, st: dict) -> str | None:
     return None
 
 
+SUPPLEMENT_HEADING = "### Material suplementario"
+# a table cell is a number and a unit ("64 GPUs", "16 Nodes"), never a section title
+_UNITS = {"gpu", "cpu", "tpu", "node", "core", "thread", "rank", "process", "device", "accelerator", "server",
+          "machine", "worker", "socket", "gb", "mb", "tb", "kb", "gib", "mib", "tib", "gb/", "mb/", "ghz", "mhz",
+          "tflop", "gflop", "pflop", "flop", "epoch", "layer", "token", "sample", "iteration", "step", "bit",
+          "byte", "sec", "min", "hour", "day", "replica", "shard", "partition", "batche", "batch", "head"}
+
+
+def _looks_like_heading(title: str) -> bool:
+    """Short, no sentence punctuation, not a number-and-unit table cell."""
+    toks = title.split()
+    if len(toks) > 14 or re.search(r"[;!?]|\.\s|[,:]$", title) or title.count(",") >= 2:
+        return False
+    first = re.sub(r"(?:/s|s)$", "", toks[0].lower()) if toks else ""
+    if len(toks) <= 2 and (first in _UNITS or toks[0].lower() in _UNITS):
+        return False
+    numeric = sum(1 for t in toks if re.fullmatch(r"[\d.,]+[%x×]?", t))
+    return numeric * 2 < len(toks) or len(toks) > 4
+
+
+def _next_in_sequence(parts: list[int], path: list[int]) -> bool:
+    """Whether the number `parts` (3.2 → [3, 2]) follows `path`, the last number
+    seen: the next section, the next subsection of the current one, or a first
+    subsection one level down (each level below a new number starts at 1)."""
+    j = 0
+    while j < len(parts) and j < len(path) and parts[j] == path[j]:
+        j += 1
+    if j == len(parts):
+        return False                                 # the same number again, or an ancestor
+    prev = path[j] if j < len(path) else 0
+    return parts[j] == prev + 1 and all(p == 1 for p in parts[j + 1:])
+
+
+def _pdf_heading(s: str, st: dict, in_table: bool = False) -> str | None:
+    """The `###` heading a pdftotext line opens, or None. Numbered ("3.2 Title",
+    "3.2. Title"), Roman ("II. METHODS") with lettered subsections ("A. Decoders"),
+    and appendices ("A Title", "Appendix A: Title").
+
+    A number must follow on from the current numbering (the next section or
+    subsection, or the first one) and its title must look like a heading, so a
+    table cell ("64 GPUs") or an enumeration is not one; under a table caption it
+    also needs a word of six letters or more. A bare appendix letter ("A Title") counts only
+    after the references or an explicit "Appendix", in order — a wrapped line
+    ("A GPU node hosts …") is not an appendix. Numbering that restarts at 1 after
+    the references is the supplementary material: a «Material suplementario» part
+    whose headings carry an S prefix ("S1", "S1.2"), never the main text's §1."""
+    if s.endswith(".") or len(s) >= 95:
+        return None
+    m = re.match(r"^(?:APPENDIX|Appendix)\s+([A-Z])(?:[:.]\s*|\s+)(.*)$", s)
+    if m and (not st["app"] or m.group(1) >= st["app"]):
+        st.update(app=m.group(1), in_roman=False, boundary=True)
+        return f"### Appendix {m.group(1)}: {m.group(2)}".rstrip(": ")
+    m = _PDF_ROMAN.match(s)
+    if m and _title_ok(m.group(2)) and st["roman"] < len(_ROMANS) and m.group(1) == _ROMANS[st["roman"]]:
+        st["roman"] += 1
+        st.update(letter="", in_roman=True)
+        return f"### {m.group(1)}. {m.group(2)}"
+    if st["in_roman"]:
+        m = _PDF_LETTER.match(s)
+        nxt = chr(ord(st["letter"]) + 1) if st["letter"] else "A"
+        if m and _title_ok(m.group(2)) and m.group(1) == nxt:
+            st["letter"] = nxt
+            return f"#### {nxt}. {m.group(2)}"
+    m = _PDF_HEAD_DOT.match(s) or _PDF_HEAD.match(s)
+    if not m or not _title_ok(m.group(2)) or not _looks_like_heading(m.group(2)):
+        return None
+    num, title = m.group(1), m.group(2)
+    if num[0].isalpha():
+        if in_table or not (st["boundary"] or st["app"]):
+            return None
+        if "." in num:                               # "A.2": a subsection of the current appendix
+            ok = num[0] == (st["app"] or "A")
+        else:                                        # the next letter (one may be missing: A, C)
+            ok = 1 <= ord(num[0]) - ord(st["app"] or "@") <= 2
+        if not ok:
+            return None
+        st.update(app=num[0], in_roman=False)
+        return f"### Appendix {num}: {title}" if re.fullmatch(r"[A-Z]", num) else _num_heading(num, title)
+    parts = [int(x) for x in num.split(".")]
+    if st["roman"] and not st["supp"] and not st["boundary"]:
+        return None                                  # a Roman-numbered paper: an arabic number is no section
+    if ((st["boundary"] or st["app"]) and not st["supp"] and parts == [1] and (st["path"] or st["roman"])
+            and not in_table):
+        st.update(supp=True, path=[1], in_roman=False)
+        return SUPPLEMENT_HEADING + "\n\n#" + _num_heading("S1", title)
+    if in_table and not re.search(r"[A-Za-z]{6,}", title):
+        return None                                  # under a table caption: a row label is no heading
+    if not _next_in_sequence(parts, st["path"]):
+        return None
+    st["path"] = parts
+    if st["supp"]:
+        return "#" + _num_heading("S" + num, title)
+    st["top"] = parts[0]
+    return _num_heading(num, title)
+
+
 def _caption(s: str) -> tuple[str, str] | None:
     """(kind, label line) for a figure / table caption. "FIG. 2." and "TABLE II."
     (physics style) keep their own label next to the arabic number locators use."""
@@ -529,10 +703,11 @@ def _caption(s: str) -> tuple[str, str] | None:
     return kind, f"**{kind} {n}{own}:** {rest}"
 
 
-def pdftext_to_body(txt: str, start: str | None = None) -> str:
+def pdftext_to_body(txt: str, start: str | None = None, legacy: bool = False) -> str:
     """pdftotext output → verbatim body. The text starts at the introduction:
     `start` names its exact line, else the first "1 Introduction" /
-    "1. Introduction" / "I. INTRODUCTION" / "Introduction" line, else the top."""
+    "1. Introduction" / "I. INTRODUCTION" / "Introduction" line, else the top.
+    `legacy`: the heading rules of converter 1.5.0 and earlier (see legacy_rules)."""
     lines = [_lig(l.rstrip()) for l in txt.replace("\f", "\n").split("\n")]
     if start is not None:
         i0 = next((i for i, l in enumerate(lines) if l.strip() == start), 0)
@@ -541,7 +716,8 @@ def pdftext_to_body(txt: str, start: str | None = None) -> str:
     # text no reader sees (mark_hidden) is kept wherever it sits, front matter included
     out: list[str] = [l.strip() for l in lines[:i0] if l.strip().startswith(HIDDEN_OPEN)]
     damaged_run = in_refs = False
-    st = {"app": "", "roman": 0, "letter": "", "in_roman": False, "top": 0}
+    st = {"app": "", "roman": 0, "letter": "", "in_roman": False, "top": 0,
+          "path": [], "boundary": False, "supp": False}
     table_rows = -1                                  # -1: not inside a table; else rows kept
     for l in lines[i0:]:
         s = l.strip()
@@ -553,6 +729,7 @@ def pdftext_to_body(txt: str, start: str | None = None) -> str:
             continue
         if _PDF_REFS.fullmatch(s):
             in_refs = True
+            st["boundary"] = True
             table_rows = -1
             continue
         if not in_refs and _PDF_INTRO.match(s) and not out:
@@ -560,7 +737,7 @@ def pdftext_to_body(txt: str, start: str | None = None) -> str:
             if not re.match(r"^(?:1|I)\.?\s", s):
                 out.append(f"### {s}")
                 continue
-        head = _pdf_heading(s, st)
+        head = _pdf_heading_v15(s, st) if legacy else _pdf_heading(s, st, in_table=table_rows >= 0)
         if head:
             in_refs = False
             table_rows = -1
@@ -896,31 +1073,47 @@ def fuente_line(url: str, version: str, kind: str, sha: str, date: str, figures:
            }.get(kind, kind)
     rules = ("ecuaciones como su LaTeX fuente ($…$); tablas como filas «| … |» (una celda que abarca varias "
              "columnas o filas se repite en cada una); notas al pie "
-             "en línea; se omiten el abstract (en ## Resumen) y la bibliografía"
+             "en línea; algoritmos y listados de código como bloque «```» bajo su pie; "
+             f"una figura SVG se marca «{SVG_MARK}»; se omiten el abstract (en ## Resumen) y la bibliografía"
              + ("; figuras enlazadas como imagen bajo su pie (nunca convertidas a texto: lo que se lea de "
                 "una gráfica no es literal)" if figures else "")
              if kind != "pdf" else
              "ligaduras tipográficas normalizadas a letras; las filas de cada tabla, tal como "
-             "las extrae pdftotext, bajo su pie; se omiten el abstract (en ## Resumen) y la "
+             "las extrae pdftotext, bajo su pie; un encabezado numerado sigue la numeración del paper; "
+             "el material que reinicia la numeración tras la bibliografía va como «Material suplementario», "
+             "con prefijo S; se omiten el abstract (en ## Resumen) y la "
              "bibliografía")
     return (f"> Fuente: {url} ({how}, versión {version}), obtenido {date}; sha256 del "
             f"archivo descargado: {sha}.\n> Texto verbatim generado por {TOOL_ID}: {rules}; "
             f"«{DAMAGED}» marca lo que no se pudo extraer, sin reconstruirlo.")
 
 
-def build_from_text(data: bytes, url: str, version: str, date: str) -> str | None:
+def rules_of(converter_id: str | None) -> tuple:
+    """The conversion rules a note was written with, from its manifest's converter
+    id ("kairo/verbatim_fulltext@1.5.0" → (1, 5, 0)); never newer than this one.
+    `verify` regenerates an older note with its own rules, so a converter change
+    never turns a note it did not write into an integrity problem."""
+    m = re.search(r"@(\d+)\.(\d+)\.(\d+)", converter_id or "")
+    return min(tuple(int(x) for x in m.groups()), VERSION) if m else (0, 0, 0)
+
+
+def build_from_text(data: bytes, url: str, version: str, date: str, rules: tuple = VERSION) -> str | None:
     """--pdf-text: pdftotext output already on disk; the same rules as build()."""
-    return _assemble("pdf", url, version, data, pdftext_to_body(data.decode("utf-8", errors="replace")), date)
+    body = pdftext_to_body(data.decode("utf-8", errors="replace"), legacy=rules < PDF_HEADINGS_SINCE)
+    return _assemble("pdf", url, version, data, body, date)
 
 
-def build(kind: str, url: str, version: str, data: bytes, date: str, fig_prefix: str = "") -> str | None:
+def build(kind: str, url: str, version: str, data: bytes, date: str, fig_prefix: str = "",
+          rules: tuple = VERSION) -> str | None:
+    """The `## Texto completo` block. `rules`: the converter version whose rules to
+    apply (rules_of), for `verify` of a note an older version wrote."""
     if kind == "pdf":
         txt = pdf_bytes_to_text(data)
         if txt is None:
             return None
-        body = pdftext_to_body(mark_hidden(txt, pdf_hidden_runs(data)["runs"]))
+        body = pdftext_to_body(mark_hidden(txt, pdf_hidden_runs(data)["runs"]), legacy=rules < PDF_HEADINGS_SINCE)
     else:
-        body = html_to_body(data.decode("utf-8", errors="replace"), fig_prefix)
+        body = html_to_body(data.decode("utf-8", errors="replace"), fig_prefix, legacy=rules < HTML_BLOCKS_SINCE)
     return _assemble(kind, url, version, data, body, date, figures=bool(fig_prefix) and kind != "pdf")
 
 
