@@ -137,6 +137,24 @@ class HiddenCosts(TestEstimate):
         self.assertEqual(one, er.SUBAGENT_SYSTEM_TOKENS + 2_000 + er.tokens(30_000))
         self.assertGreater(many, 6 * (er.SUBAGENT_SYSTEM_TOKENS + 2_000) + 3 * er.tokens(30_000))
 
+    def test_a_cached_estimate_charges_resent_context_at_the_stated_factor(self):
+        fresh = er.SUBAGENT_SYSTEM_TOKENS + 2_000 + er.tokens(30_000)
+        raw = er.agent_input(30_000, turns=6, prompt_tokens=2_000)
+        cached = er.agent_input(30_000, turns=6, prompt_tokens=2_000, cached=True)
+        self.assertEqual(cached, fresh + -(-(raw - fresh) * er.CACHE_READ_FACTOR // 1))
+        self.assertEqual(er.agent_input(30_000, turns=1, prompt_tokens=2_000, cached=True), fresh)
+        ids = [f"P-09{i:02d}" for i in range(12)]
+        code, out = self.cli("--vault", str(self.vault), "--papers", *ids)
+        self.assertEqual(code, 0, out)
+        lo, hi = out["range"]["input_tokens"]
+        clo, chi = out["range"]["input_tokens_cached"]
+        self.assertLess(clo, lo)
+        self.assertLess(chi, hi)
+        self.assertLessEqual(clo, chi)
+        self.assertGreater(clo, 0)
+        self.assertEqual(out["assumptions"]["CACHE_READ_FACTOR"], er.CACHE_READ_FACTOR)
+        self.assertIn("caché", out["note"])
+
     def test_the_assumptions_are_printed_by_name(self):
         code, out = self.cli("--planned-papers", "5")
         for key in ("SUBAGENT_SYSTEM_TOKENS", "ORCHESTRATOR_TURNS", "FIX_REQUESTS_PER_PAPER", "CHECK_SOTA_RUNS"):

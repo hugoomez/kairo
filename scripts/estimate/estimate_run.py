@@ -53,7 +53,7 @@ import re
 import sys
 from pathlib import Path
 
-TOOL = "kairo/estimate_run@1.2.0"
+TOOL = "kairo/estimate_run@1.3.0"   # 1.3.0: a cached estimate beside the raw one
 ROOT = Path(__file__).resolve().parents[2]
 CHARS_PER_TOKEN = 3.6
 PAGE = 40                       # candidates per screener page (literature-search step 5)
@@ -99,6 +99,12 @@ FIX_REQUESTS_PER_READER = 10
 FIX_READ_CHARS = 8_000                 # one request: the section under its locator
 CHECK_SOTA_RUNS = (2, 4)
 CHECK_SOTA_REPORT_TOKENS = 2_500       # one check_sota.py report, read by the main session
+# The prompt cache: Claude Code re-sends a conversation's prefix (system prompt, skills,
+# earlier turns) on every turn, and a cached re-send costs a fraction of a fresh token
+# (Anthropic bills a cache read at 10% of input). An assumption about how usage counts
+# on a subscription, not a measurement: the cached estimate uses it, the raw one does not.
+CACHE_READ_FACTOR = 0.1
+_CACHED = False                        # set while main() computes the cached estimate
 SKILLS = ("create-project", "literature-search")
 AGENT_FILES = {"screener": "screener", "paper_carder": "paper-carder", "facet_summarizer": "facet-summarizer",
                "sota_synthesizer": "sota-synthesizer", "fresh_verifier": "fresh-verifier",
@@ -140,15 +146,24 @@ def prompt_tokens(task: str) -> int:
         return PROMPT_TOKENS.get(task, 2_000)
 
 
-def agent_input(read_chars: float, turns: int, prompt_tokens: int) -> int:
+def with_cache(total: int, fresh: int, cached: bool | None) -> int:
+    """`total` input tokens of which `fresh` are read for the first time; with the
+    prompt cache, every re-send counts CACHE_READ_FACTOR of a fresh token."""
+    if not (_CACHED if cached is None else cached):
+        return total
+    return fresh + int(math.ceil(max(0, total - fresh) * CACHE_READ_FACTOR))
+
+
+def agent_input(read_chars: float, turns: int, prompt_tokens: int, cached: bool | None = None) -> int:
     """Input tokens of one subagent: its system prompt + tool schemas + own prompt on
     every turn, and what it reads, carried into every later turn (read in pieces over
-    its turns, the reads cost about (turns + 1) / 2 times their size)."""
+    its turns, the reads cost about (turns + 1) / 2 times their size). `cached`:
+    the re-sends charged at CACHE_READ_FACTOR (the cached estimate)."""
     per_turn = SUBAGENT_SYSTEM_TOKENS + prompt_tokens
     read = tokens(read_chars)
     if turns <= 1:
         return per_turn + read
-    return turns * per_turn + int(math.ceil(read * (turns + 1) / 2))
+    return with_cache(turns * per_turn + int(math.ceil(read * (turns + 1) / 2)), per_turn + read, cached)
 
 
 def _both(fn) -> tuple[int, int]:
@@ -282,7 +297,8 @@ def orchestrator(n: int, replies: tuple[int, int]) -> dict:
 
     def inp(i: int) -> int:
         t = turns(i)
-        return t * (MAIN_SYSTEM_TOKENS + skills) + int(math.ceil(replies[i] * (t + 1) / 2))
+        return with_cache(t * (MAIN_SYSTEM_TOKENS + skills) + int(math.ceil(replies[i] * (t + 1) / 2)),
+                          MAIN_SYSTEM_TOKENS + skills + replies[i], None)
 
     return _stage(0, None, _both(inp), (turns(0) * ORCHESTRATOR_OUT_PER_TURN, turns(1) * ORCHESTRATOR_OUT_PER_TURN),
                   0, turns=turns(0), turns_high=turns(1), skill_tokens=skills)
@@ -295,7 +311,9 @@ def assumptions() -> dict:
             "FIX_REQUESTS_PER_PAPER": FIX_REQUESTS_PER_PAPER, "FIX_ROUNDS": FIX_ROUNDS,
             "FIX_REQUESTS_PER_READER": FIX_REQUESTS_PER_READER, "FIX_READ_CHARS": FIX_READ_CHARS,
             "CHECK_SOTA_RUNS": CHECK_SOTA_RUNS, "CHECK_SOTA_REPORT_TOKENS": CHECK_SOTA_REPORT_TOKENS,
-            "context_growth": "(turns + 1) / 2 × lo leído", "prompt_caching": "no descontado"}
+            "context_growth": "(turns + 1) / 2 × lo leído", "CACHE_READ_FACTOR": CACHE_READ_FACTOR,
+            "prompt_caching": "`input_tokens` sin descontar; `input_tokens_cached` cuenta cada reenvío a "
+                              "CACHE_READ_FACTOR de un token nuevo (supuesto)"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -319,13 +337,38 @@ def main(argv: list[str] | None = None) -> int:
     if a.papers and not a.vault:
         print(json.dumps({"error": "--papers needs --vault"}))
         return 2
-    stages: dict = {}
+    global _CACHED
     try:
-        if a.run:
-            stages["screening"] = screening(a.run)
+        stages = compute(a)
+        _CACHED = True
+        cached = compute(a)
     except (OSError, ValueError) as e:
         print(json.dumps({"error": f"cannot read the run: {e}"}, ensure_ascii=False))
         return 2
+    finally:
+        _CACHED = False
+    total = {k: round(sum(s[k] for s in stages.values()), 1) for k in ("input_tokens", "output_tokens",
+                                                                       "wall_minutes", "subagents")}
+    total["input_tokens_cached"] = round(sum(s["input_tokens"] for s in cached.values()))
+    rng = {k: [round(sum(s[k] for s in stages.values())), round(sum(s[k + "_high"] for s in stages.values()))]
+           for k in ("input_tokens", "output_tokens")}
+    rng["input_tokens_cached"] = [round(sum(s["input_tokens"] for s in cached.values())),
+                                  round(sum(s["input_tokens_high"] for s in cached.values()))]
+    print(json.dumps({"tool": TOOL, "stages": stages, "total": total, "range": rng,
+                      "assumptions": assumptions(),
+                      "note": "estimación a partir de tamaños en disco (caracteres / 3.6 por token, factores fijos "
+                              "con nombre en `assumptions`; `range` = bajo–alto; `input_tokens` sin descontar la "
+                              "caché de prompts, `input_tokens_cached` con cada reenvío a CACHE_READ_FACTOR — "
+                              "lo más cercano al uso real, si el supuesto vale); no es una medida — la ejecución "
+                              "dirá lo que costó"}, ensure_ascii=False, indent=1))
+    return 0
+
+
+def compute(a) -> dict:
+    """Every stage's figures for the parsed arguments (raw, or cached while _CACHED)."""
+    stages: dict = {}
+    if a.run:
+        stages["screening"] = screening(a.run)
     n = len(a.papers) + a.planned_papers
     if a.abstract_only and n:
         k = a.planned_papers
@@ -338,16 +381,7 @@ def main(argv: list[str] | None = None) -> int:
                                  card_sizes(a.vault, a.papers, a.planned_papers)))
     replies = (sum(s["output_tokens"] for s in stages.values()), sum(s["output_tokens_high"] for s in stages.values()))
     stages["orchestrator"] = orchestrator(0 if a.abstract_only else n, replies)
-    total = {k: round(sum(s[k] for s in stages.values()), 1) for k in ("input_tokens", "output_tokens",
-                                                                       "wall_minutes", "subagents")}
-    rng = {k: [round(sum(s[k] for s in stages.values())), round(sum(s[k + "_high"] for s in stages.values()))]
-           for k in ("input_tokens", "output_tokens")}
-    print(json.dumps({"tool": TOOL, "stages": stages, "total": total, "range": rng,
-                      "assumptions": assumptions(),
-                      "note": "estimación a partir de tamaños en disco (caracteres / 3.6 por token, factores fijos "
-                              "con nombre en `assumptions`; `range` = bajo–alto, sin descontar la caché de prompts); "
-                              "no es una medida — la ejecución dirá lo que costó"}, ensure_ascii=False, indent=1))
-    return 0
+    return stages
 
 
 if __name__ == "__main__":
