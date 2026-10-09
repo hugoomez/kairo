@@ -55,7 +55,10 @@
     `SEMANTIC_SCHOLAR_API_KEY` / `OPENALEX_API_KEY` are used when set.
   - Drops papers already in `Papers/` (arXiv id, DOI or the published DOI of
     an ingested preprint, normalised title) and papers offered by an earlier
-    watch of this project. Another version of either — the published, often
+    watch of this project — recognised by any of their ids (key, DOI, arXiv
+    id, Semantic Scholar id, exact normalised title): a paper first listed as
+    `doi:Y` that comes back as `arxiv:X` carrying that DOI keeps its first key
+    (`otras_claves` lists the new one). Another version of either — the published, often
     retitled version of a preprint: same first author, title similarity ≥
     lit_search.TITLE_CLOSE, no identifier telling them apart — is listed in
     `publicadas` (`of`: the P-id or the earlier key) and on the page, never
@@ -591,6 +594,33 @@ def other_version(c: dict, works: list[dict]) -> dict | None:
         if difflib.SequenceMatcher(None, me["title"], w["title"]).ratio() >= TITLE_CLOSE:
             return w
     return None
+
+
+def work_ids(c: dict) -> set[str]:
+    """Every id a record can be recognised by: its key, DOI, arXiv id (no version),
+    Semantic Scholar id, and its normalised title when it has four words or more."""
+    ids = {c["key"]} if c.get("key") else set()
+    if c.get("doi"):
+        ids.add("doi:" + c["doi"].lower())
+    if c.get("arxiv"):
+        ids.add("arxiv:" + re.sub(r"v\d+$", "", c["arxiv"].lower()))
+    if c.get("s2"):
+        ids.add(f"s2:{c['s2']}")
+    t = norm_title(c.get("title") or "")
+    if len(t.split()) >= 4:
+        ids.add("title:" + t)
+    return ids
+
+
+def earlier_ids(pdir: Path) -> dict[str, str]:
+    """Every id of every candidate an earlier watch listed → the key it was listed
+    under (the first run that listed it wins)."""
+    out: dict[str, str] = {}
+    for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json"), key=lambda f: f.stat().st_mtime):
+        for c in load_run(f).get("candidates", []):
+            for i in work_ids(c):
+                out.setdefault(i, c["key"])
+    return out
 
 
 def earlier_keys(pdir: Path) -> tuple[dict[str, bool], dict[str, tuple[str, dict]]]:
@@ -1327,9 +1357,21 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
     by_vault, by_earlier = vault_works(vault), earlier_works(pdir)
     publicadas = []
     cands = []
+    # a paper listed before under another id (first a DOI, now an arXiv id carrying
+    # that DOI; the same exact title) is the paper listed before: it takes that key
+    ids_before = earlier_ids(pdir)
+    taken: set[str] = set()
     for c in merged.values():
         if in_vault(c):
             continue
+        if c["key"] not in seen_before:
+            same = sorted({ids_before[i] for i in work_ids(c) if i in ids_before})
+            if same:
+                c["otras_claves"] = [c["key"]]
+                c["key"] = same[0]
+        if c["key"] in taken:
+            continue                                   # two new records of one earlier paper
+        taken.add(c["key"])
         if c["key"] not in seen_before:
             prev = other_version(c, by_vault) or other_version(c, by_earlier)
             if prev:
