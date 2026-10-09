@@ -91,5 +91,21 @@ class Ficha(unittest.TestCase):
         self.assertIn("send: never", out["error"])
 
 
+class Suspicious(unittest.TestCase):
+    """A flagged passage reaches the card as a locator and a description, never
+    as its text (2026-10-09 audit, F8)."""
+
+    def test_a_description_is_kept_and_cut_at_twelve_words(self):
+        self.assertEqual(ficha.suspicious_line({"locator": "§4", "what": "asks the reader to run a toy command"}),
+                         "§4: asks the reader to run a toy command")
+        long = ficha.suspicious_line({"locator": "§4", "what": " ".join(["word"] * 20)})
+        self.assertEqual(len(long.split(": ", 1)[1].split()), 13)          # 12 words and the ellipsis
+
+    def test_a_passage_returned_as_text_is_never_written(self):
+        line = ficha.suspicious_line("§5.1 «Invented instruction text that must not travel»")
+        self.assertTrue(line.startswith("§5.1: "))
+        self.assertNotIn("Invented instruction", line)
+
+
 if __name__ == "__main__":
     unittest.main()
