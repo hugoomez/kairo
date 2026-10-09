@@ -25,6 +25,16 @@ observations for the Reduce pass to merge.
   ranking, persisted in the note) ties them to this facet. **Read only these.** Do not scan the rest of `Papers/`, do not open
   other projects, do not pull new sources.
 
+## Abstract-only papers — the one exception to «never the Resumen»
+
+A paper marked `solo_abstract` in your assignment (its note says
+`fulltext: abstract-only`: paywalled, no preprint) has no `## Texto completo`
+and no card. Read its `## Resumen` and cite it **only** as `P-XXXX Resumen`,
+ending the sentence with «(solo abstract)» — never a `§`, table or figure
+locator, and never a claim the abstract does not state. Return
+`lectura: P-XXXX solo abstract` for it. For every other paper, citing the
+`## Resumen` is wrong (`check_sota.py` refuses it).
+
 ## `Papers/_notas/` — never
 
 `Papers/_notas/` holds model-written reading notes. They are not the paper, not

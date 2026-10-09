@@ -71,7 +71,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402  (single definitions)
 
-__version__ = "1.4.0"   # 1.4.0: Eq. (3), Tabla S1, Fig. A2, bare §A; named locators match headings only
+__version__ = "1.5.0"   # 1.5.0: a bare "Resumen" / "Abstract" locator; 1.4.0: Eq. (3), Tabla S1, Fig. A2, bare §A; named locators match headings only
 TOOL_ID = f"kairo/verifier_packet@{__version__}"
 
 # --------------------------------------------------------------------------
@@ -242,7 +242,7 @@ def citation_refs(bullet: str) -> list[tuple[str, str]]:
 
 
 LOCATOR_START_RE = re.compile(
-    r"^(?:§|App(?:endix)?\b|Apéndice|Fig|Tabla|Table|Eqs?\b|Ecs?\b|Ecuaci[oó]n\b|Equation\b)")
+    r"^(?:§|App(?:endix)?\b|Apéndice|Fig|Tabla|Table|Eqs?\b|Ecs?\b|Ecuaci[oó]n\b|Equation\b|Resumen\b|Abstract\b)")
 
 
 NUM = r"[A-Z]?\d+(?:\.\d+)*"
@@ -326,6 +326,10 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
         if m.group(1).strip() in romans:
             continue
         toks.append(("named", m.group(1).strip()))
+    # a bare "Resumen" / "Abstract" (how the map cites an abstract-only paper)
+    for m in re.finditer(r"(?<!§)\b(Resumen|Abstract)\b", s_noapp):
+        if ("named", m.group(1)) not in toks:
+            toks.append(("named", m.group(1)))
     seen, out = set(), []
     for t in toks:
         if t not in seen:

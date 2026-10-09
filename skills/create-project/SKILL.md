@@ -416,6 +416,21 @@ records, **never typed or pasted by the model**. For each confirmed paper:
 
 *(Skipped for the `corpus` template: `sota_map: false`.)*
 
+**Full text before the map.** Run
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" gaps --vault <vault> --project <PROJ-XXX>`
+first. Each paper it lists is abstract-only (paywalled, no preprint): show the
+researcher the list with its DOI links and offer, once, to fetch the PDFs with
+their own access and run `ingest_paper.py attach-pdf --vault <vault> --pdf-dir
+<folder> --project <PROJ-XXX>` **before** the map is built. Whatever stays
+abstract-only still enters the map, under its own rule: `facet_assignment.py
+--chunks` lists it under `solo_abstract` (and marks it in its chunk); its
+summarizer may cite it only as `P-XXXX Resumen`, with the sentence marked
+«(solo abstract)»; it gets no card; and «Cobertura de lectura» lists it as
+`solo abstract: P-XXXX`. `check_sota.py` refuses a `Resumen` citation of a
+paper that has full text, warns on a missing «(solo abstract)», and warns on
+every project paper the map neither cites nor declares in «Cobertura de
+lectura» (`sin_cubrir`, `solo_abstract_sin_declarar`).
+
 **Cards first — each paper read once, ever.** `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ficha.py" status --vault <vault> --project <PROJ-XXX>`
 lists `to_card`: the papers with no reading card or a stale one (the note was
 rebuilt). Dispatch one `paper-carder` per such paper, all in the same turn (one
@@ -582,7 +597,9 @@ genuinely competing schools exist; include **§9 only if** `type` is
 
 Then, always, **`## Cobertura de lectura`** (written by the Reduce pass): how
 many papers the map covers and every `no leído: P-XXXX §… (motivo)` line a
-summarizer returned, verbatim — or that every citable section was read.
+summarizer returned, verbatim — or that every citable section was read — plus
+one `solo abstract: P-XXXX` line per abstract-only paper and one `no citado:
+P-XXXX (motivo)` line per project paper the map does not cite.
 `check_sota.py` reports it as `cobertura_lectura` (a warning when the section
 is missing; its lines are never checked as citations). List each unread
 section in the end-of-run message as `importante`: a gap of the kind «no

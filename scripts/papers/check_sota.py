@@ -35,6 +35,14 @@ but no locator of its own is listed as without locator.
 A citation without a locator (`P-0007` alone) is listed, not failed: the rule
 is "a locator where possible".
 
+The map cites a paper's text, never its abstract — except a paper whose note
+says `fulltext: abstract-only` (paywalled, no preprint), cited only as
+`P-0007 Resumen` and marked «(solo abstract)» (a warning when the mark is
+missing; a problem when the paper has full text). With the project known,
+every paper of the project is either cited or declared in «Cobertura de
+lectura» (`sin_cubrir`), and an abstract-only one is declared there as
+`solo abstract: P-0007` (`solo_abstract_sin_declarar`): warnings.
+
 None of this checks that a sentence says what its source says — only that its
 locators and figures are real. `--packet FILE [--section "<heading>"]` writes
 the fresh-verifier packet for that: every cited sentence (or row) of the
@@ -92,7 +100,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "ledger"))
-from check_quotes import paper_projects  # noqa: E402
+from check_quotes import paper_projects, projects_of  # noqa: E402
 sys.path.insert(0, str(HERE.parent / "security"))
 import isolation  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402, I001  (path set by verifier_packet)
@@ -107,10 +115,13 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.8.0"
+TOOL = "kairo/check_sota@1.9.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice)\s*[A-Z]?\d+(?:\.\d+)*"
-             r"|(?:Eq\.?|Ec\.?|Ecuaci[oó]n|Equation)\s*\(?\s*[A-Z]?\d+\s*\)?)")
+             r"|(?:Eq\.?|Ec\.?|Ecuaci[oó]n|Equation)\s*\(?\s*[A-Z]?\d+\s*\)?"
+             r"|(?:Resumen|Abstract)\b)")
+ABSTRACT_LOC = re.compile(r"(?:§\s*)?\b(?:Resumen|Abstract)\b", re.I)
+SOLO_ABSTRACT = "(solo abstract)"
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
 # A unit glued to a figure ("530B", "80GB", "7B", "1.2k", "312 TFLOPS") is a result
 # whatever its size: model sizes, memory and throughput live in these.
@@ -507,6 +518,11 @@ def _one_citation(vault: str, project: str | None, m, start: int, report: dict, 
         res = resolve_citation(vault, pid, "§Resumen")
         units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
         return
+    if ABSTRACT_LOC.search(span) and (fm_scalar(fm, "fulltext") or "").strip() != "abstract-only":
+        # the map cites a paper's text; only a paper with no full text is cited by its abstract
+        report["problems"].append({**where, "severity": "importante",
+                                   "reason": f"{pid} tiene texto completo: cita la sección del texto, no el "
+                                             "Resumen (solo un paper fulltext: abstract-only se cita por su Resumen)"})
     res = resolve_citation(vault, pid, span)
     if res["note"] and not res["units"]:
         report["problems"].append({**where, "severity": "crítico",
@@ -598,6 +614,7 @@ def check_tables(vault: str, project: str | None, text: str, report: dict) -> No
         else:
             _check_plots(t["row"], cited_figures(fuente if fuente is not None else t["row"]), t["end"], report)
         if CITE.search(t["row"]):
+            check_abstract_marks(vault, t["row"], report)
             cites, units = cited_units(vault, project, t["row"], t["start"], report)
             check_numbers(t["row"], units, ", ".join(c.group(0).strip() for c in cites), t["end"], report,
                           row_numbers(t))
@@ -653,6 +670,7 @@ def check(vault: str, project: str | None, text: str) -> dict:
             report.setdefault("warnings", []).append(
                 "una inferencia «(inferencia)» cita un solo paper: una inferencia entre papers cita cada paper "
                 "que combina — " + " ".join(block.split())[:160])
+        check_abstract_marks(vault, block, report)
         per: list = []
         cited_units(vault, project, block, start, report, per)
         check_attributed(block, per, end, report)
@@ -670,7 +688,58 @@ def check(vault: str, project: str | None, text: str) -> dict:
         report.setdefault("warnings", []).append(
             f"falta la sección `## {COVERAGE_HEADING}` (lo que el map no leyó): el sota-synthesizer la escribe "
             "siempre; sin ella el lector no sabe qué secciones quedaron sin leer")
+    if project:
+        check_coverage(vault, project, text, cov, report)
     return report
+
+
+def project_papers(vault: str, project: str) -> list[tuple[str, list[str]]]:
+    """(id, frontmatter) of every paper note of the project (reading notes never)."""
+    out = []
+    for path in sorted(Path(vault, "Papers").glob("P-*.md")):
+        if not path.is_file() or is_model_notes(path.resolve()):
+            continue
+        fm = split_frontmatter(read_text(str(path)))[0]
+        if project in projects_of(fm):
+            out.append((path.name.split(" ")[0].removesuffix(".md"), fm))
+    return out
+
+
+def check_coverage(vault: str, project: str, text: str, cov: str, report: dict) -> None:
+    """Every paper of the project is cited by the map or declared in «Cobertura de
+    lectura»; an abstract-only one is declared there as `solo abstract: P-XXXX`."""
+    body = section_text(text, None)
+    cited = {m.group(1) for m in CITE.finditer(body)} | {
+        m.group(1) for t in tables(body) for h in t["header"] if (m := HEADER_PAPER.match(h))}
+    loose, abstract = [], []
+    for pid, fm in project_papers(vault, project):
+        if (fm_scalar(fm, "fulltext") or "").strip() == "abstract-only" \
+                and not re.search(rf"solo abstract:\s*{re.escape(pid)}\b", cov, re.I):
+            abstract.append(pid)
+        elif pid not in cited and not re.search(rf"\b{re.escape(pid)}\b", cov):
+            loose.append(pid)
+    report["sin_cubrir"] = loose
+    report["solo_abstract_sin_declarar"] = abstract
+    if loose:
+        report.setdefault("warnings", []).append(
+            "papers del proyecto que el mapa ni cita ni declara en «Cobertura de lectura»: " + ", ".join(loose)
+            + " — cada uno se cita o se lista allí con el motivo")
+    if abstract:
+        report.setdefault("warnings", []).append(
+            "papers solo abstract sin declarar en «Cobertura de lectura» como `solo abstract: P-XXXX`: "
+            + ", ".join(abstract))
+
+
+def check_abstract_marks(vault: str, block: str, report: dict) -> None:
+    """A sentence citing an abstract-only paper's Resumen says so: «(solo abstract)»."""
+    for m in CITE.finditer(block):
+        if not ABSTRACT_LOC.search(m.group(2) or "") or SOLO_ABSTRACT in block:
+            continue
+        path = find_paper(vault, m.group(1))
+        if path and (fm_scalar(split_frontmatter(read_text(path))[0], "fulltext") or "").strip() == "abstract-only":
+            report.setdefault("warnings", []).append(
+                f"{m.group(0).strip()}: una frase que cita un paper solo abstract lleva «{SOLO_ABSTRACT}» — "
+                + " ".join(block.split())[:160])
 
 
 def section_text(text: str, heading: str | None) -> str:
