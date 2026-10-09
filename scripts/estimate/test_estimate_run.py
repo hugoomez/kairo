@@ -80,7 +80,9 @@ class TestEstimate(unittest.TestCase):
                             encoding="utf-8")
         _, after = self.cli("--vault", str(self.vault), "--papers", *ids)
         self.assertEqual((after["stages"]["cards"]["subagents"], after["stages"]["cards"]["reused"]), (0, 12))
-        self.assertLess(after["total"]["input_tokens"], before["total"]["input_tokens"] / 2)
+        reading = ("cards", "map")
+        self.assertLess(sum(after["stages"][k]["input_tokens"] for k in reading),
+                        sum(before["stages"][k]["input_tokens"] for k in reading) / 2)
 
     def test_a_planned_count_without_notes_uses_a_typical_size(self):
         code, out = self.cli("--planned-papers", "20")
@@ -101,8 +103,44 @@ class TestEstimate(unittest.TestCase):
         ing = out["stages"]["ingest"]
         self.assertEqual(ing["wall_minutes"], round(30 * er.ABSTRACT_ONLY_SECONDS / 60, 1))
         self.assertEqual(ing["wall_minutes_max"], ing["wall_minutes"])
-        # no full text: no map, reduce or verification to run
-        self.assertEqual(sorted(out["stages"]), ["ingest"])
+        # no full text: no map, reduce or verification to run (the orchestrator still runs)
+        self.assertEqual(sorted(out["stages"]), ["ingest", "orchestrator"])
+
+
+class HiddenCosts(TestEstimate):
+    """The terms a per-text count misses (2026-10-09 audit, H25): the orchestrator's
+    skills re-sent every main turn, each subagent's system prompt and tool schemas
+    every turn, context that grows while a subagent reads a note in pieces, the
+    paper-reader fix rounds and check_sota re-runs — named, with a low–high range."""
+
+    def test_the_orchestrator_and_the_fix_rounds_are_stages(self):
+        ids = [f"P-09{i:02d}" for i in range(12)]
+        code, out = self.cli("--vault", str(self.vault), "--papers", *ids)
+        st = out["stages"]
+        self.assertGreater(st["orchestrator"]["input_tokens"], er.tokens(er.skill_chars()))   # re-sent each turn
+        self.assertGreater(st["fixes"]["subagents"], 0)
+        self.assertGreater(st["fixes"]["check_sota_runs"], 1)
+
+    def test_every_stage_and_the_total_carry_a_low_high_range(self):
+        ids = [f"P-09{i:02d}" for i in range(12)]
+        code, out = self.cli("--vault", str(self.vault), "--papers", *ids)
+        for name, s in out["stages"].items():
+            self.assertLessEqual(s["input_tokens"], s["input_tokens_high"], name)
+        lo, hi = out["range"]["input_tokens"]
+        self.assertEqual(lo, out["total"]["input_tokens"])
+        self.assertGreater(hi, lo)
+        self.assertIn("estimación", out["note"])
+
+    def test_turns_resend_the_system_prompt_and_the_context_grows(self):
+        one = er.agent_input(30_000, turns=1, prompt_tokens=2_000)
+        many = er.agent_input(30_000, turns=6, prompt_tokens=2_000)
+        self.assertEqual(one, er.SUBAGENT_SYSTEM_TOKENS + 2_000 + er.tokens(30_000))
+        self.assertGreater(many, 6 * (er.SUBAGENT_SYSTEM_TOKENS + 2_000) + 3 * er.tokens(30_000))
+
+    def test_the_assumptions_are_printed_by_name(self):
+        code, out = self.cli("--planned-papers", "5")
+        for key in ("SUBAGENT_SYSTEM_TOKENS", "ORCHESTRATOR_TURNS", "FIX_REQUESTS_PER_PAPER", "CHECK_SOTA_RUNS"):
+            self.assertIn(key, out["assumptions"])
 
 
 if __name__ == "__main__":

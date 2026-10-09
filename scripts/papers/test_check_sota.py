@@ -135,7 +135,7 @@ class CheckSota(unittest.TestCase):
         self.assertTrue(any("Cobertura de lectura" in w for w in out["warnings"]))
         self.write("## X\n\n- The toy decoder reaches a threshold of 1.1% — P-0101 §3.2\n\n"
                    "## Cobertura de lectura\n\n12 papers.\n\n- (para el reduce) no leído: P-0101 §9.9 "
-                   "(turnos, 40 de 50 páginas)\n")
+                   "(turnos, 40 de 50 páginas)\n- no citado: P-0103 (referencia en conflicto)\n")
         code, out = self.run_cli()
         self.assertEqual((code, out["problems"]), (0, []))             # its lines are not claims
         self.assertEqual(out["cobertura_lectura"], "1 secciones no leídas declaradas")

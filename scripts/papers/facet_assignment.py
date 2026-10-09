@@ -22,7 +22,10 @@ never re-derives facet membership.
         the same, plus `chunks`: the map's work with every paper read once —
         each paper placed on one of its facets (the least loaded) and carrying
         all its facets — cut into chunks of at most 6 (one facet-summarizer
-        each). Same exit codes.
+        each). Same exit codes. An abstract-only paper (`fulltext: abstract-only`:
+        paywalled, no preprint) stays in its chunk, marked `solo_abstract: true`,
+        and is listed apart under `solo_abstract`: its summarizer may cite only
+        `P-XXXX Resumen`, marked «(solo abstract)».
     python facet_assignment.py --vault <vault> --add P-0901 --project PROJ-900 \\
         --facet A --matched "toy term"        (or --unrecovered "<why>")
         Append one entry to the note's frontmatter (idempotent: an entry for the
@@ -48,7 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 _KEY = re.compile(r"^([A-Za-z_][\w-]*)\s*:(.*)$")
 _PAIR = re.compile(r"""\s*([A-Za-z_]\w*)\s*:\s*("(?:[^"\\]|\\.)*"|'[^']*'|[^,]*?)\s*(?:,|$)""")
 _ID = re.compile(r"^(P-\d{4,})\b")
@@ -160,13 +163,22 @@ def add_entry(text: str, project: str, facet: str, matched: str | None,
     return ("---\n" + "\n".join(fm) + "\n---\n" + body).replace("\n", nl)
 
 
+def fulltext_of(fm: list[str]) -> str:
+    """The note's `fulltext:` value (`full`, `abstract-only`, …), or ""."""
+    for ln in fm:
+        m = _KEY.match(ln)
+        if m and m.group(1) == "fulltext":
+            return str(_value(m.group(2).strip()) or "").strip()
+    return ""
+
+
 def paper_notes(vault: Path) -> list[Path]:
     return sorted(p for p in (vault / "Papers").glob("P-*.md")
                   if p.is_file() and not is_model_notes(p.resolve()))
 
 
 def assignment(vault: Path, project: str) -> dict:
-    res: dict = {"project": project, "facets": {}, "sin_facetas": [], "send_never": []}
+    res: dict = {"project": project, "facets": {}, "sin_facetas": [], "send_never": [], "solo_abstract": []}
     for p in paper_notes(vault):
         pid = (_ID.match(p.name) or [None, p.stem])[1]
         rel = p.relative_to(vault).as_posix()
@@ -180,10 +192,14 @@ def assignment(vault: Path, project: str) -> dict:
         if not mine:
             res["sin_facetas"].append(pid)
             continue
+        abstract_only = fulltext_of(parts[0]) == "abstract-only"
+        if abstract_only:
+            res["solo_abstract"].append(pid)
         for e in mine:
             res["facets"].setdefault(str(e.get("facet")), []).append(
                 {"id": pid, "path": rel, "matched": e.get("matched"),
-                 **({"unrecovered": e["unrecovered"]} if e.get("unrecovered") else {})})
+                 **({"unrecovered": e["unrecovered"]} if e.get("unrecovered") else {}),
+                 **({"solo_abstract": True} if abstract_only else {})})
     res["facets"] = dict(sorted(res["facets"].items()))
     return res
 
@@ -202,7 +218,8 @@ def chunks(res: dict, size: int = CHUNK) -> list[dict]:
     papers: dict[str, dict] = {}
     for fid, entries in res["facets"].items():
         for e in entries:
-            p = papers.setdefault(e["id"], {"id": e["id"], "path": e["path"], "facets": {}})
+            p = papers.setdefault(e["id"], {"id": e["id"], "path": e["path"], "facets": {},
+                                            **({"solo_abstract": True} if e.get("solo_abstract") else {})})
             p["facets"][fid] = e.get("matched")
     load: dict[str, int] = {fid: 0 for fid in res["facets"]}
     home: dict[str, list[dict]] = {fid: [] for fid in res["facets"]}
@@ -285,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
             print("Sin faceta registrada (no reasignar; avisar): " + ", ".join(res["sin_facetas"]))
         if res["send_never"]:
             print("send: never (omitidas): " + ", ".join(res["send_never"]))
+        if res["solo_abstract"]:
+            print("Solo abstract (citar solo «P-XXXX Resumen», marcado «(solo abstract)»): "
+                  + ", ".join(res["solo_abstract"]))
     return 1 if res["sin_facetas"] else 0
 
 

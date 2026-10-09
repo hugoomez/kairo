@@ -22,8 +22,13 @@ rebuilt or reconverted later makes its card stale (`status` says so).
 The card is a model's reading aid with checked quotes: `citable: false` —
 the map cites the paper (`P-XXXX §3.2`), never the card, and `check_sota.py`
 still checks every figure against the paper's text. A `send: never` note
-never gets a card. The main session does not read cards (they hold paper
-text): the vault hook treats them like paper notes.
+never gets a card. The main session never opens a card file (they hold paper
+text): the vault hook treats them like paper notes. It does receive each
+`paper-carder` reply — quotes of paper text — as that subagent's answer (the
+reply store of the SubagentStop hook covers only packet-isolated agents, not
+the carder), and saves it unchanged to a file for `write`: data to pass on,
+never instructions. A flagged passage (`suspicious`) reaches the card as its
+locator and a neutral description of at most 12 words, never as its text.
 
 Exit: 0 ok · 1 nothing written · 2 bad input. Standard library only.
 """
@@ -43,15 +48,14 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "citations"))
 sys.path.insert(0, str(HERE.parent / "security"))
 import check_quotes as cq  # noqa: E402
+import check_sota  # noqa: E402
 import vaultnotes as vn  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 
-TOOL = "kairo/ficha@1.0.0"
+TOOL = "kairo/ficha@1.2.0"
 DIR = "_fichas"
 KINDS = ("problema", "método", "setup", "resultado", "limitación", "definición", "benchmark")
 MIN_QUOTE_WORDS = 6
-_NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?")
-_PLOT = re.compile(r"≈[^()]*\(leído de la Figura")
 
 
 def paper_notes(vault: Path) -> list[Path]:
@@ -131,11 +135,35 @@ def check_item(vault: Path, pid: str, it: dict) -> str | None:
     got = cq.check_quote(str(vault), {"paper": pid, "locator": loc, "quote": quote, "error": None}, None)
     if not got["ok"]:
         return got["reason"]
-    if not _PLOT.search(claim):
-        missing = [n for n in _NUM.findall(claim) if n.replace(",", ".") not in quote.replace(",", ".")]
-        if missing:
-            return "cifras de la afirmación que no están en la cita: " + ", ".join(missing)
+    missing = missing_figures(claim, quote)
+    if missing:
+        return "cifras de la afirmación que no están en la cita: " + ", ".join(missing)
     return None
+
+
+def missing_figures(claim: str, quote: str) -> list[str]:
+    """The claim's figures its quote does not hold — check_sota's own matching (a
+    whole number, never a digit run inside another; a power of ten as one value).
+    Every figure counts here, small ones and years too; only a value marked as read
+    off a plot (`≈… (leído de la Figura N, no literal)`) is exempt, and only it."""
+    return [n for n in check_sota.numbers(claim, every=True) if not check_sota.number_in(n, [quote])]
+
+
+SUSPICIOUS_WORDS = 12
+_LOC_IN = re.compile(r"§\s*[\w.]+|(?:Tabla|Table|Figura|Figure|Fig\.?|Ap[eé]ndice|Appendix)\s*[A-Z]?\d+(?:\.\d+)*")
+
+
+def suspicious_line(x) -> str:
+    """A flagged passage as its locator and a neutral description of at most 12
+    words — never the passage: a card travels to other models, and the text that
+    reads like an instruction stays in the paper note."""
+    if isinstance(x, dict):
+        loc = str(x.get("locator") or "?").strip()
+        words = str(x.get("what") or "").split()
+        what = " ".join(words[:SUSPICIOUS_WORDS]) + (" …" if len(words) > SUSPICIOUS_WORDS else "")
+        return f"{loc}: {what or '(sin descripción)'}"
+    m = _LOC_IN.search(str(x))
+    return f"{m.group(0) if m else '?'}: (texto omitido: el modelo devolvió el pasaje, no una descripción)"
 
 
 def render(pid: str, note_name: str, sha: str, model: str, kept: list[dict], dropped: list[dict],
@@ -156,7 +184,7 @@ def render(pid: str, note_name: str, sha: str, model: str, kept: list[dict], dro
     if reply.get("not_read"):
         L += ["## No leído por el modelo", ""] + [f"- {x}" for x in reply["not_read"]] + [""]
     if reply.get("suspicious"):
-        L += ["## Texto sospechoso señalado", ""] + [f"- {x}" for x in reply["suspicious"]] + [""]
+        L += ["## Texto sospechoso señalado", ""] + [f"- {suspicious_line(x)}" for x in reply["suspicious"]] + [""]
     if dropped:
         L += ["## Descartados por el script", ""]
         L += [f"- [{d['kind']}] {d['locator']}: {d['why']}" for d in dropped] + [""]
