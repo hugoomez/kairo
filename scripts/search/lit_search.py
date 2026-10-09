@@ -80,7 +80,12 @@ the top `per_query` and are recorded «por relevancia», never as truncated.
 Abstracts: a candidate with a DOI and no abstract (Crossref often has none for
 ACM / IEEE / Springer proceedings) gets one from OpenAlex by DOI before the
 prefilter (`enrich`, default true; each lookup a recorded query that never
-counts as identified).
+counts as identified); `snowball` does the same for the neighbours it adds.
+A Crossref / OpenAlex record whose type is not a work (a peer review, a journal
+issue, a dataset, an erratum: CROSSREF_NON_WORK, OPENALEX_NON_WORK) is dropped
+before dedup and counted (`not_work` per query, «tipo no artículo» in PRISMA).
+PRISMA keeps database search and citation search (the snowball) on separate
+lines, and the duplicates line makes them add up to the candidates.
 
 Dedup: records sharing a normalised DOI, an arXiv id, or a normalised title
 (≥ 4 words) are one candidate; a preprint with no DOI and a published record
@@ -185,6 +190,14 @@ S2 = "https://api.semanticscholar.org/graph/v1"
 S2_FIELDS = "title,abstract,authors,year,publicationDate,externalIds,venue,citationCount,url"
 OA_SELECT = ("id,doi,title,publication_year,publication_date,authorships,primary_location,locations,"
              "cited_by_count,type,abstract_inverted_index")
+# Record types that are not a work to screen (a review of a paper, an issue's
+# front matter, a dataset, a grant): dropped before dedup and counted per query
+# (`not_work`) and on their own PRISMA line («tipo no artículo»).
+CROSSREF_NON_WORK = frozenset({"peer-review", "component", "dataset", "database", "journal-issue",
+                               "journal-volume", "journal", "proceedings", "proceedings-series", "book-series",
+                               "book-set", "report-series", "standard-series", "grant", "other"})
+OPENALEX_NON_WORK = frozenset({"paratext", "erratum", "peer-review", "grant", "supplementary-materials",
+                               "libguides", "dataset", "retraction"})
 PAGE = 100
 SNOWBALL_PAGE = 500                  # Semantic Scholar references / citations: limit ≤ 1000 per call
 SNOWBALL_CAP = 2000                  # per key and direction; more is reported as truncated
@@ -457,7 +470,8 @@ def parse_openalex(raw: bytes) -> tuple[list[dict], int]:
                     "authors": [ws((a.get("author") or {}).get("display_name")) for a in w.get("authorships") or []],
                     "date": w.get("publication_date"), "year": w.get("publication_year"), "arxiv": aid, "doi": doi,
                     "venue": venue, "citations": w.get("cited_by_count"), "url": w.get("id"),
-                    "openalex": (w.get("id") or "").rsplit("/", 1)[-1] or None})
+                    "openalex": (w.get("id") or "").rsplit("/", 1)[-1] or None,
+                    "work_type": w.get("type"), "non_work": (w.get("type") or "") in OPENALEX_NON_WORK})
     return out, int((data.get("meta") or {}).get("count") or len(out))
 
 
@@ -500,7 +514,8 @@ def parse_crossref(raw: bytes) -> tuple[list[dict], int]:
         out.append({"title": ws((w.get("title") or [""])[0]), "abstract": abstract, "authors": authors,
                     "date": date, "year": year, "arxiv": aid, "doi": doi,
                     "venue": ws((w.get("container-title") or [""])[0]) or None,
-                    "citations": w.get("is-referenced-by-count"), "url": f"https://doi.org/{doi}" if doi else None})
+                    "citations": w.get("is-referenced-by-count"), "url": f"https://doi.org/{doi}" if doi else None,
+                    "work_type": w.get("type"), "non_work": (w.get("type") or "") in CROSSREF_NON_WORK})
     return out, int(msg.get("total-results") or len(out))
 
 
@@ -554,6 +569,12 @@ def parse_openreview(raw: bytes) -> tuple[list[dict], int]:
                     "venue": venue or None, "openreview_venue": raw_venue or None, "citations": None,
                     "url": f"https://openreview.net/forum?id={n.get('id')}", "openreview": n.get("id")})
     return out, int(data.get("count") or len(out))
+
+
+def non_work(r: dict) -> bool:
+    """A Crossref / OpenAlex record whose type is not a work (CROSSREF_NON_WORK,
+    OPENALEX_NON_WORK): a peer review, a journal issue, a dataset, an erratum…"""
+    return bool(r.get("non_work"))
 
 
 PARSERS = {"arxiv": parse_arxiv, "s2": parse_s2, "s2-anchor": parse_s2, "openalex": parse_openalex,
@@ -760,6 +781,8 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
         kept = [r for r in recs if in_window(r.get("date"), r.get("year"), plan)
                 or (plan.get("arxiv_revisions") and r.get("updated") and in_window(r["updated"], None, plan))]
     q["outside_window"] = len(recs) - len(kept)
+    q["not_work"] = sum(1 for r in kept if non_work(r))
+    kept = [r for r in kept if not non_work(r)]
     q["ranked"] = q["source"] in RANKED
     q["truncated"] = bool(q["total"] and q["source"] != "s2-anchor" and not q["ranked"] and q["total"] > q["fetched"])
     out = []
@@ -808,7 +831,7 @@ def run_exhaustive(q: dict, plan: dict, raw_dir: Path, fetch: Fetch, until: str)
                              "`exhaustive` no divide la ventana sin clave")
         return recs
     sig = (q["facet"], q["source"], q["pass"])
-    stats = {"splits": 0, "truncated": False, "error": None, "fetched": 0, "outside": 0}
+    stats = {"splits": 0, "truncated": False, "error": None, "fetched": 0, "outside": 0, "not_work": 0}
 
     def part(lo: _dt.date, hi: _dt.date, depth: int, tag: str) -> list[dict]:
         p = {**plan, "from": lo.isoformat(), "to": hi.isoformat()}
@@ -826,6 +849,7 @@ def run_exhaustive(q: dict, plan: dict, raw_dir: Path, fetch: Fetch, until: str)
         stats["truncated"] = stats["truncated"] or bool(pq.get("truncated"))
         stats["fetched"] += pq["fetched"]
         stats["outside"] += pq.get("outside_window", 0)
+        stats["not_work"] += pq.get("not_work", 0)
         return got
 
     q["raw"] = list(q["raw"])
@@ -833,7 +857,7 @@ def run_exhaustive(q: dict, plan: dict, raw_dir: Path, fetch: Fetch, until: str)
     for r in out:
         r["query"] = q["id"]                     # one query in the record, its parts in `raw`
     q.update(splits=stats["splits"], truncated=stats["truncated"], error=stats["error"],
-             fetched=stats["fetched"], outside_window=stats["outside"])
+             fetched=stats["fetched"], outside_window=stats["outside"], not_work=stats["not_work"])
     # a lost part leaves the query lost (degraded coverage); what was read is kept
     return out if not stats["error"] else out + recs
 
@@ -1143,12 +1167,13 @@ def cmd_run(plan_path: Path, out: Path, vault: Path | None, fetch: Fetch, today:
 def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
     per_source: dict[str, int] = {}
     for q in queries:
-        if q.get("pass") == "enrich":
+        if q.get("pass") == "enrich" or q.get("pass", "").startswith("snowball"):
             continue                            # a lookup of known candidates, not identification
         s = q["source"].replace("-anchor", "")
         per_source[s] = per_source.get(s, 0) + q["fetched"] - q.get("outside_window", 0)
     return {"tool": TOOL, "run": out.as_posix(), "queries": len(queries),
             "identified": per_source, "identified_total": sum(per_source.values()),
+            "not_work": sum(q.get("not_work", 0) for q in queries),
             "candidates": len(cands), "in_vault": sum(1 for c in cands if c.get("in_vault")),
             "to_read": sum(1 for c in cands if passes_prefilter(c)),
             "prefiltered_out": sum(1 for c in cands if not passes_prefilter(c)),
@@ -1459,7 +1484,10 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                     extra = []
                 c["fetched"] = len(extra)
                 kept_c = 0
+                c["not_work"] = sum(1 for r in extra if non_work(r))
                 for rank, r in enumerate(extra, 1):
+                    if non_work(r):
+                        continue
                     fm = snowball_keep(r, plan)
                     if not fm or not in_window(r.get("date"), r.get("year"), plan):
                         continue
@@ -1471,7 +1499,10 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
                 c["kept"] = kept_c
                 q = {**q, "_complement": c}
             kept = 0
+            q["not_work"] = sum(1 for r in recs if non_work(r))
             for rank, r in enumerate(recs, 1):
+                if non_work(r):
+                    continue
                 fm = snowball_keep(r, plan)
                 if not fm or not in_window(r.get("date"), r.get("year"), plan):
                     continue
@@ -1537,6 +1568,10 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             c["in_vault"] = p.get("in_vault", False)
         else:
             c["in_vault"] = None                # not checked: pass --vault
+    filled = 0
+    if plan.get("enrich", True):
+        # a neighbour kept on its title alone (no abstract) gets one by DOI, as in `run`
+        filled = enrich_abstracts(merged, plan, run / "raw", queries, fetch, only=lambda c: bool(c.get("snowball")))
     mark_prefilter(merged, plan)
     save(run / "queries.json", queries)
     save(run / "candidates.json", merged)
@@ -1544,7 +1579,7 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
     if stale.exists():
         stale.unlink()                      # new candidates: the retraction check must run again
     return {"tool": TOOL, "added": sum(1 for c in merged if c.get("snowball")), "candidates": len(merged),
-            "next": "retraction"}
+            "abstracts_completados": filled, "next": "retraction"}
 
 
 def cmd_retraction(run: Path, mailto: str | None, keys: list[str] | None = None) -> dict:
@@ -1681,17 +1716,32 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
                                   f"el mínimo es {pf.get('need')}"}
     save(run / "screened.json", cands)
     identified: dict[str, int] = {}
+    by_citations: dict[str, int] = {}
+    cit_kept = 0
     for q in queries:
         if q.get("pass") == "enrich":
             continue
         s = q["source"].replace("-anchor", "")
-        identified[s] = identified.get(s, 0) + q.get("fetched", 0) - q.get("outside_window", 0)
+        if q.get("pass", "").startswith("snowball"):
+            # citation searching is its own PRISMA line, never mixed with the databases
+            by_citations[s] = by_citations.get(s, 0) + q.get("fetched", 0)
+            cit_kept += q.get("kept", 0)
+        else:
+            identified[s] = identified.get(s, 0) + q.get("fetched", 0) - q.get("outside_window", 0)
+    not_work_db = sum(q.get("not_work", 0) for q in queries if not q.get("pass", "").startswith("snowball"))
+    not_work_cit = sum(q.get("not_work", 0) for q in queries if q.get("pass", "").startswith("snowball"))
     tally = {r: 0 for r in REASONS + (PREFILTER, "retractado/retirado")}
     for c in cands:
         if c["screen"]["decision"] == "exclude":
             tally[c["screen"]["reason"]] += 1
     n_retr = tally["retractado/retirado"]
     counts = {"identificados": identified, "identificados_total": sum(identified.values()),
+              "identificados_citas": by_citations, "identificados_citas_total": sum(by_citations.values()),
+              "citas_conservadas": cit_kept,
+              "citas_descartadas": sum(by_citations.values()) - cit_kept - not_work_cit,
+              "tipo_no_articulo": not_work_db + not_work_cit,
+              # what dedup (and the retitled-preprint join) removed: the rest of the arithmetic
+              "duplicados": sum(identified.values()) - not_work_db + cit_kept - len(cands),
               "tras_deduplicacion": len(cands), "tras_prefiltro": len(cands) - tally[PREFILTER],
               "tras_retraccion": len(cands) - tally[PREFILTER] - n_retr,
               "retraccion": retr["counts"],
@@ -1875,13 +1925,23 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
         state = "perdida" if q.get("error") else "truncada" if q.get("truncated") else \
             f"por citas (top {plan.get('anchors')})" if q["source"] == "s2-anchor" else \
             "por relevancia" if q.get("ranked") and (q.get("total") or 0) > q.get("fetched", 0) else "completa"
+        if q.get("not_work"):
+            state += f" · {q['not_work']} tipo no artículo"
         qtext = q["query"].replace("|", "\\|")
         L.append(f"| {q['id']} | {q['facet']} | {q['source']} | {q['pass']} | `{qtext}` | {q.get('fetched', 0)} | "
                  f"{q.get('total') if q.get('total') is not None else '—'} | {state} |")
     c = counts
     L += ["", "**Conteos** (calculados por el script a partir de las respuestas guardadas):",
-          "- Identificados: " + ", ".join(f"{k} {v}" for k, v in c["identificados"].items())
+          "- Identificados en bases de datos: " + ", ".join(f"{k} {v}" for k, v in c["identificados"].items())
           + f" (total {c['identificados_total']})",
+          *(["- Identificados por búsqueda de citas (snowball): "
+             + ", ".join(f"{k} {v}" for k, v in c["identificados_citas"].items())
+             + f" (total {c['identificados_citas_total']}); descartados fuera de la ventana o sin las facetas: "
+             f"{c.get('citas_descartadas', 0)}; quedan {c.get('citas_conservadas', 0)}"]
+            if c.get("identificados_citas") else []),
+          *([f"- Excluidos antes del cribado por tipo no artículo (revisión por pares, número de revista, "
+             f"dataset, fe de erratas…): {c['tipo_no_articulo']}"] if "tipo_no_articulo" in c else []),
+          *([f"- Duplicados eliminados: {c['duplicados']}"] if "duplicados" in c else []),
           f"- Tras deduplicación: {c['tras_deduplicacion']}",
           f"- Excluidos por el prefiltro mecánico (alcanzan menos de {prefilter_need(plan)} faceta(s) en consultas y "
           f"título/resumen; nadie los leyó; sus títulos, en `prefiltrados.md`): {c.get('prefiltro', 0)} → "

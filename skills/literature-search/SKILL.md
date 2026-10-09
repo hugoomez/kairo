@@ -231,7 +231,9 @@ is kept when one facet term is in its title, since a title alone rarely
 carries two. **One hop by default** (a cost/rigor
 trade-off, adequate for hypothesis seeding); for `linea_publicacion: true`,
 snowball again from the newly added strong candidates until a round adds none
-(closure), and say so in the report.
+(closure), and say so in the report. A neighbour kept with no abstract is
+looked up in OpenAlex by DOI, as in `run` (`abstracts_completados` in the
+snowball's output).
 
 ### 4. Retraction / withdrawal check
 
@@ -354,7 +356,11 @@ check), excludes without a few words of why (`duplicado` aside), or excludes
 - **`busqueda.md`** — the *Búsqueda ejecutada* block: the degraded-coverage
   warning first when any query was lost or truncated, description, facets,
   window, criteria, every query verbatim with hits / available / state, and
-  the PRISMA counts (identified per source → after dedup → after the prefilter → after the
+  the PRISMA counts (identified per source in the databases, and on its own line
+  by citation searching — the snowball's neighbours, with how many it kept →
+  records that are not works removed («tipo no artículo»: a Crossref / OpenAlex
+  peer review, journal issue, dataset, erratum…, also counted per query) →
+  duplicates removed, so the numbers add up → after dedup → after the prefilter → after the
   retraction screen (Crossref / arXiv checked, removed, lost) → included,
   every exclusion reason on its own line, `fuera de alcance` and `relevancia
   baja` never summed; the prefilter on its own line). Exact integers computed
