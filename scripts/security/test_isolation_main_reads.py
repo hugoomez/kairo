@@ -42,7 +42,11 @@ class Base(unittest.TestCase):
         (p / "_busquedas" / "2031-01-01" / "candidates.json").write_text("[]", encoding="utf-8")
         (p / "_busquedas" / "2031-01-01" / "raw" / "Q001-1.json").write_text("{}", encoding="utf-8")
         (p / "_busquedas" / "2031-01-01" / "ranked.md").write_text("# ranked\n", encoding="utf-8")
+        (p / "_busquedas" / "2031-01-01" / "screened.json").write_text("[]", encoding="utf-8")
         (p / "_vigilancia" / "raw-2031-01-02").mkdir(parents=True)
+        (p / "_vigilancia" / "vigilancia-2031-01-02.json").write_text("{}", encoding="utf-8")
+        (p / "_vigilancia" / "vigilancia-2031-01-02.md").write_text("# page", encoding="utf-8")
+        (p / "_vigilancia" / "estado.json").write_text("{}", encoding="utf-8")
         (p / "_vigilancia" / "raw-2031-01-02" / "W1-1.json").write_text("{}", encoding="utf-8")
         (p / "Hipotesis").mkdir()
         (p / "Hipotesis" / "H-0981.md").write_text("---\nid: H-0981\n---\n\nClaim inventado.\n", encoding="utf-8")
@@ -66,7 +70,9 @@ PROTECTED = ("Papers/_fuentes/P-0981/source.pdf", "Papers/_fuentes/P-0981/source
              "Projects/demo/_trazas-agente/cli/2031-01-01__abc.jsonl",
              "Projects/demo/_busquedas/2031-01-01/candidates.json",
              "Projects/demo/_busquedas/2031-01-01/raw/Q001-1.json",
-             "Projects/demo/_vigilancia/raw-2031-01-02/W1-1.json")
+             "Projects/demo/_vigilancia/raw-2031-01-02/W1-1.json",
+             "Projects/demo/_busquedas/2031-01-01/screened.json",
+             "Projects/demo/_vigilancia/vigilancia-2031-01-02.json")
 
 
 class TestReadAndGetNote(Base):
@@ -79,7 +85,8 @@ class TestReadAndGetNote(Base):
 
     def test_other_project_files_stay_open(self):
         for rel in ("Projects/demo/_busquedas/2031-01-01/ranked.md", "Projects/demo/Hipotesis/H-0981.md",
-                    "Projects/demo/_hub.md"):
+                    "Projects/demo/_hub.md", "Projects/demo/_vigilancia/vigilancia-2031-01-02.md",
+                    "Projects/demo/_vigilancia/estado.json"):
             self.assertIsNone(self.blocked("Read", {"file_path": str(self.vault / rel)}), rel)
 
     def test_get_note_on_a_paper_note_or_card_is_refused_like_read(self):

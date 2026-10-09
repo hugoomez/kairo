@@ -384,6 +384,31 @@ class Screen(Base):
         self.assertEqual(code, 0, out)
         self.assertEqual(out["counts"]["crossref"]["unverifiable"], 1)
 
+    def test_accept_lists_the_includes_and_the_auto_accept_set_without_abstracts(self):
+        self.cli("retraction", "--run", str(self.run_dir))
+        d = self.all_decisions()
+        code, out = self.decide(d)
+        self.assertEqual(code, 0, out)
+        code, out = self.cli("accept", "--run", str(self.run_dir))
+        self.assertEqual(code, 0, out)
+        screened = json.loads((self.run_dir / "screened.json").read_text(encoding="utf-8"))
+        includes = {c["key"]: c for c in screened if c["screen"].get("decision") == "include"}
+        self.assertEqual({x["key"] for x in out["includes"]}, set(includes))
+        every = {f["id"] for f in PLAN["facets"]}
+        auto = {k for k, c in includes.items()
+                if c["screen"].get("relevance") == "alta" and every <= set(c.get("facets") or {})}
+        self.assertEqual(set(out["auto_accept"]), auto)
+        for x in out["includes"]:
+            self.assertEqual(x["why"], includes[x["key"]]["screen"]["why"])
+            self.assertEqual(x["facets"], includes[x["key"]].get("facets") or {})
+            self.assertEqual(x["auto"], x["key"] in auto)
+        text = json.dumps(out, ensure_ascii=False)
+        for c in screened:
+            if c.get("abstract"):
+                self.assertNotIn(c["abstract"][:40], text)       # never an abstract
+        code, out = self.cli("accept", "--run", str(self.tmp / "nope"))
+        self.assertEqual(code, 2)
+
     def test_incomplete_or_invalid_decisions_are_refused(self):
         self.cli("retraction", "--run", str(self.run_dir))
         d = self.all_decisions()

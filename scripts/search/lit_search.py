@@ -9,6 +9,7 @@ paged, deduplicated and counted by this script, never by a model.
     lit_search.py retraction --run <run dir> [--mailto you@example.org] [--keys K1 …]
     lit_search.py screen     --run <run dir> --decisions decisions.json [--screened-by <model id>]
     lit_search.py agree      --decisions decisions.json --second sample.json
+    lit_search.py accept     --run <run dir>     (the includes + auto-accept set, no abstracts)
     lit_search.py show       --run <run dir> [--offset 0] [--limit 60] [--all] [--abstract-chars N]
     lit_search.py merge      --run <run dir> (--from-store | --blocks page1.txt …) [--extra mine.json] --out decisions.json
     lit_search.py replay     --run <run dir> --out <new dir> [--vault <vault>]
@@ -2104,6 +2105,43 @@ def prefiltered_md(cands: list[dict]) -> str:
     return "\n".join(out) + "\n"
 
 
+def cmd_accept(run: Path) -> dict:
+    """The screened includes for create-project steps 5–6, without any abstract:
+    what the session needs to confirm and ingest (ids, title, relevance, facets,
+    the screener's sentence) and the `autonomo` auto-accept set — included with
+    relevance `alta` and reaching every facet of the plan, a rule re-applied
+    here from screened.json, never estimated. The session never opens
+    screened.json itself (it holds the abstracts; the vault hook refuses it)."""
+    if not (run / "screened.json").is_file():
+        raise Refused(f"{run} has no screened.json: run `screen` first")
+    cands = load(run / "screened.json")
+    plan = load(run / "plan.json")
+    every = {f["id"] for f in plan.get("facets") or []}
+
+    def ids(c: dict) -> dict:
+        out = {k: c[k] for k in ("doi", "arxiv") if c.get(k)}
+        if "openalex.org/" in str(c.get("url") or ""):
+            out["openalex"] = str(c["url"]).rsplit("/", 1)[-1]
+        return out
+    includes, scope = [], []
+    for c in cands:
+        s = c.get("screen") or {}
+        base = {"key": c["key"], "title": c.get("title") or "", "year": c.get("year"), **ids(c),
+                "facets": c.get("facets") or {}}
+        if s.get("decision") == "include":
+            auto = s.get("relevance") == "alta" and every <= set(c.get("facets") or {})
+            retr = (c.get("retraction") or {}).get("status")
+            includes.append({**base, "relevance": s.get("relevance"), "why": s.get("why") or "", "auto": auto,
+                             **({"retraction": retr} if retr and retr != "clear" else {}),
+                             **({"openreview": c["openreview_venue"]} if c.get("openreview_venue") else {})})
+        elif s.get("reason") == "fuera de alcance":
+            scope.append({**base, "scope_clause": s.get("scope_clause") or "", "why": s.get("why") or ""})
+    return {"tool": TOOL, "run": run.as_posix(), "includes": includes,
+            "auto_accept": [x["key"] for x in includes if x["auto"]],
+            "rule": "autonomo: incluidos con relevancia alta que alcanzan todas las facetas del plan",
+            "fuera_de_alcance": scope}
+
+
 def cmd_agree(first: Path, second: Path) -> dict:
     """Agreement between two screeners on the candidates both decided (include /
     exclude): counts, the keys they disagree on, and Cohen's kappa — computed
@@ -2657,6 +2695,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
     sc.add_argument("--run", type=Path, required=True)
     sc.add_argument("--decisions", type=Path, required=True)
     sc.add_argument("--screened-by", help="model id of whoever wrote the decisions (recorded in busqueda.md)")
+    ac = sub.add_parser("accept", help="the screened includes and the auto-accept set, without abstracts")
+    ac.add_argument("--run", type=Path, required=True)
     ag = sub.add_parser("agree")
     ag.add_argument("--decisions", type=Path, required=True)
     ag.add_argument("--second", type=Path, required=True)
@@ -2699,6 +2739,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
             out = cmd_retraction(a.run, a.mailto, a.keys)
         elif a.cmd == "agree":
             out = cmd_agree(a.decisions, a.second)
+        elif a.cmd == "accept":
+            out = cmd_accept(a.run)
         elif a.cmd == "merge":
             out = cmd_merge(a.run, a.blocks or [], a.extra, a.out, a.allow_unread, from_store=a.from_store)
         elif a.cmd == "screen":

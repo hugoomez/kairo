@@ -332,8 +332,10 @@ def protected_kind(p: Path | str) -> str | None:
       Papers/_fichas/P-*.md                  its reading card (quotes the paper)
       Papers/_fuentes/**                     the kept source bytes (html, pdf, xml, json, figures)
       Projects/*/_trazas-agente/**           captured transcripts (subagents read papers in them)
-      Projects/*/_busquedas/**/candidates.json, Projects/*/_busquedas/**/raw/**
-      Projects/*/_vigilancia/raw-*/**        search and watch material holding abstracts
+      Projects/*/_busquedas/**/candidates.json, …/screened.json, Projects/*/_busquedas/**/raw/**
+      Projects/*/_vigilancia/raw-*/**, Projects/*/_vigilancia/vigilancia-*.json
+                                             search and watch material holding abstracts
+    (the session reads `lit_search.py accept` and the watch's .md page instead)
     """
     parts = [x.lower() for x in str(p).replace("\\", "/").split("/") if x not in ("", ".")]
     for i, a in enumerate(parts):
@@ -349,9 +351,11 @@ def protected_kind(p: Path | str) -> str | None:
             sub, below = rest[1], rest[2:]
             if sub == "_trazas-agente":
                 return "transcripción de una sesión"
-            if sub == "_busquedas" and (below[-1] == "candidates.json" or "raw" in below[:-1]):
+            if sub == "_busquedas" and (below[-1] in ("candidates.json", "screened.json") or "raw" in below[:-1]):
                 return "material de búsqueda con abstracts"
-            if sub == "_vigilancia" and len(below) >= 2 and below[0].startswith("raw-"):
+            if sub == "_vigilancia" and ((len(below) >= 2 and below[0].startswith("raw-"))
+                                         or (len(below) == 1 and below[0].startswith("vigilancia-")
+                                             and below[0].endswith(".json"))):
                 return "material de vigilancia con abstracts"
     return None
 
