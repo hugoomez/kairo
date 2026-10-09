@@ -132,7 +132,8 @@ def received(sha: str, agent: str | None = None) -> list[dict]:
 # 3. Replies travel by hook, never retyped.
 #    When an isolated agent stops, Claude Code's SubagentStop hook hands over its
 #    final answer (`last_assistant_message`, else the last assistant text of its
-#    own transcript). The hook stores it by content (`<state>/replies/<sha>.txt`)
+#    own transcript) and the model it ran on (`message.model` in that transcript,
+#    None when unknown). The hook stores it by content (`<state>/replies/<sha>.txt`)
 #    and records which packet(s) that agent read, so a script that records the
 #    agent's verdict can check it against what the agent actually said — the
 #    orchestrator saves the reply, but can no longer change it unseen.
@@ -145,20 +146,26 @@ def replies_dir() -> Path:
     return state_dir() / "replies"
 
 
-def _last_assistant_text(transcript: Path) -> str:
-    text = ""
+def _assistant_messages(transcript: Path) -> list[dict]:
     try:
         lines = transcript.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return ""
+        return []
+    out = []
     for raw in lines:
         try:
             obj = json.loads(raw)
         except ValueError:
             continue
         msg = obj.get("message") if isinstance(obj, dict) else None
-        if not isinstance(msg, dict) or msg.get("role", obj.get("type")) != "assistant":
-            continue
+        if isinstance(msg, dict) and msg.get("role", obj.get("type")) == "assistant":
+            out.append(msg)
+    return out
+
+
+def _last_assistant_text(transcript: Path) -> str:
+    text = ""
+    for msg in _assistant_messages(transcript):
         content = msg.get("content")
         parts = [content] if isinstance(content, str) else [
             b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text"]
@@ -168,6 +175,17 @@ def _last_assistant_text(transcript: Path) -> str:
     return text
 
 
+def _transcript_model(transcript: Path) -> str | None:
+    """The model the agent actually ran on: the last real `message.model` of its
+    own transcript (`<synthetic>` entries are Claude Code's, not a model's)."""
+    model = None
+    for msg in _assistant_messages(transcript):
+        m = msg.get("model")
+        if isinstance(m, str) and m.strip() and not m.startswith("<"):
+            model = m.strip()
+    return model
+
+
 def capture_reply(event: dict) -> dict | None:
     """SubagentStop: keep an isolated agent's final answer, tied to the packets it read."""
     name = agent_name(event)
@@ -175,10 +193,12 @@ def capture_reply(event: dict) -> dict | None:
     if name not in ISOLATED_AGENTS or not aid:
         return None
     text = str(event.get("last_assistant_message") or "").strip()
-    if not text and event.get("agent_transcript_path"):
-        text = _last_assistant_text(Path(str(event["agent_transcript_path"])))
+    transcript = Path(str(event["agent_transcript_path"])) if event.get("agent_transcript_path") else None
+    if not text and transcript:
+        text = _last_assistant_text(transcript)
     if not text:
         return None
+    model = _transcript_model(transcript) if transcript else None
     packets = sorted({r["sha256"] for r in _receipts() if r.get("agent_id") == aid and r.get("sha256")})
     data = text.encode("utf-8")
     sha = hashlib.sha256(data).hexdigest()
@@ -186,7 +206,7 @@ def capture_reply(event: dict) -> dict | None:
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{sha}.txt").write_bytes(data)
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "agent_type": name, "agent_id": aid,
-           "packets": packets, "reply_sha256": sha}
+           "packets": packets, "reply_sha256": sha, "model": model}
     with open(state_dir() / REPLIES, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return rec
@@ -207,7 +227,8 @@ def _receipts() -> list[dict]:
 
 def replies(packet_sha: str, agent: str | None = None) -> list[dict]:
     """The stored final answers of the agents that read packet `packet_sha` (by
-    `agent`, when given), oldest first, each with its `text`."""
+    `agent`, when given), oldest first, each with its `text` and the `model`
+    the agent ran on (from its own transcript; None when unknown)."""
     f = state_dir() / REPLIES
     if not f.is_file():
         return []
@@ -221,6 +242,7 @@ def replies(packet_sha: str, agent: str | None = None) -> list[dict]:
             continue
         if agent is not None and r.get("agent_type") != agent.rsplit(":", 1)[-1]:
             continue
+        r.setdefault("model", None)            # stored before the model was recorded
         try:
             r["text"] = (replies_dir() / f"{r['reply_sha256']}.txt").read_text(encoding="utf-8")
         except OSError:
