@@ -107,6 +107,10 @@ facet, the term that matched it (the query term for per-term queries; for an
 OR-group, the first facet term found in its title or abstract, else the
 OR-group itself).
 
+A facet marked `"required": true` must be reached by every candidate, on top of
+`min_facets` (anchors included; a record with no abstract must show a required
+facet in its title): "codes and their decoders" is the codes facet required and
+the decoders facet optional with `min_facets: 1`.
 Prefilter (`prefilter`, default true): a candidate that reaches fewer than
 `min_facets` facets (default min(2, facets); 1 for a question that is a union,
 "codes and their decoders", where a paper on one facet alone is in scope) — counting the facets whose queries found it and the
@@ -329,6 +333,9 @@ def load_plan_dict(plan: dict) -> dict:
             raise Refused(f"facet id {f['id']} repeated")
         ids.add(f["id"])
         f["synonyms"] = [ws(s) for s in f.get("synonyms") or [] if ws(s)]
+        if not isinstance(f.get("required", False), bool):
+            raise Refused(f"facet {f['id']}: `required` must be true or false")
+        f["required"] = bool(f.get("required", False))
     srcs = plan.get("sources") or list(DEFAULT_SOURCES)
     bad = [s for s in srcs if s not in SOURCES]
     if bad:
@@ -642,12 +649,12 @@ def config_warnings(plan: dict) -> list[str]:
                    "(nunca se amplía hasta su total) y una ejecución grande puede agotarlo igualmente (consultas "
                    "perdidas); clave gratuita en https://openalex.org/settings/api")
     if (len(plan.get("facets") or []) >= 2 and prefilter_need(plan) == 1 and not plan.get("fields")
-            and srcs & {"openalex", "s2", "crossref"}):
+            and not required_facets(plan) and srcs & {"openalex", "s2", "crossref"}):
         out.append("min_facets 1 sin `fields`: con una sola faceta basta para leer un candidato, y OpenAlex, "
                    "Semantic Scholar y Crossref no se limitan a ningún campo (las categorías de arXiv solo valen "
                    "para arXiv): un término genérico («decoder», «parallelism») trae papers de otros campos que "
-                   "habrá que cribar. Añade `fields` al plan (" + ", ".join(sorted(FIELDS)) + ") o términos "
-                   "propios del dominio")
+                   "habrá que cribar. Añade `fields` al plan (" + ", ".join(sorted(FIELDS)) + "), términos "
+                   "propios del dominio o marca la faceta del dominio `\"required\": true`")
     if "s2" in srcs and not os.environ.get("SEMANTIC_SCHOLAR_API_KEY"):
         out.append("SEMANTIC_SCHOLAR_API_KEY: sin clave, Semantic Scholar responde a menudo HTTP 429 (consultas "
                    "perdidas); clave gratuita en https://www.semanticscholar.org/product/api")
@@ -1149,19 +1156,32 @@ def prefilter_need(plan: dict) -> int:
     return plan.get("min_facets") or min(2, len(plan["facets"]))
 
 
+def required_facets(plan: dict) -> set[str]:
+    """The facets every candidate must reach (`"required": true`), whatever `min_facets` says."""
+    return {f["id"] for f in plan["facets"] if f.get("required")}
+
+
 def mark_prefilter(cands: list[dict], plan: dict) -> None:
     """Which candidates reach enough facets to be worth reading (see the module doc)."""
     need = prefilter_need(plan)
+    req = required_facets(plan)
     for c in cands:
         reached = set(c["facets"]) | set(facet_matches(c, plan))
         # a record with no abstract (common for publisher records) shows only its
         # title, which rarely carries two facets: one facet term in it is enough —
-        # the same rule the snowball applies to its neighbours
+        # a required one when the plan has any; the snowball's rule for its neighbours
         bare = not ws(c.get("abstract"))
         in_title = set(facet_matches(c, plan, title_only=True))
-        ok = (not plan.get("prefilter", True)) or bool(c.get("anchor")) or len(reached) >= need \
-            or (bare and bool(in_title))
+        title_ok = bool(in_title & req) if req else bool(in_title)
+        # anchors are exempt from `min_facets`, never from a required facet
+        missing = sorted(req - reached)
+        ok = (not plan.get("prefilter", True)) or (
+            (bool(c.get("anchor")) or len(reached) >= need or (bare and title_ok)) and not missing)
         c["prefilter"] = {"facets": sorted(reached), "need": need, "pass": ok}
+        if req:
+            c["prefilter"]["required"] = sorted(req)
+        if missing:
+            c["prefilter"]["missing_required"] = missing
         if bare:
             c["prefilter"]["sin_abstract"] = True
 
@@ -1424,9 +1444,10 @@ def snowball_keep(r: dict, plan: dict) -> dict[str, str]:
     Without one (common for publisher records), the title alone cannot carry two
     facets often enough: one facet term in the title keeps it, marked `sin_abstract`."""
     fm = facet_matches(r, plan)
+    req = required_facets(plan)
     if r.get("abstract"):
-        return fm if len(fm) >= prefilter_need(plan) else {}
-    return fm if fm else {}
+        return fm if len(fm) >= prefilter_need(plan) and req <= set(fm) else {}
+    return fm if (set(fm) & req if req else fm) else {}
 
 
 def _snowball_pages(run: Path, q: dict, pid: str, rel: str, fetch: Fetch) -> list[dict]:
@@ -1810,7 +1831,9 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
             pf = c.get("prefilter") or {}
             c["screen"] = {"decision": "exclude", "reason": PREFILTER,
                            "why": f"alcanza {len(pf.get('facets') or [])} faceta(s) en consultas y título/resumen; "
-                                  f"el mínimo es {pf.get('need')}"}
+                                  f"el mínimo es {pf.get('need')}"
+                                  + (f"; no alcanza la faceta obligatoria {', '.join(pf['missing_required'])}"
+                                     if pf.get("missing_required") else "")}
     save(run / "screened.json", cands)
     identified: dict[str, int] = {}
     by_citations: dict[str, int] = {}
@@ -1995,7 +2018,8 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
           "(`raw/`, `queries.json`).", "",
           f"**Descripción original:** {plan['description']}", "",
           "**Facetas:**", "", "| faceta | término | sinónimos |", "|---|---|---|"]
-    L += [f"| {f['id']} | {f['term']} | {', '.join(f['synonyms'])} |" for f in plan["facets"]]
+    L += [f"| {f['id']}{' (obligatoria)' if f.get('required') else ''} | {f['term']} | {', '.join(f['synonyms'])} |"
+          for f in plan["facets"]]
     window = f"{plan.get('from') or 'sin límite'} → {plan.get('to') or plan['date']}"
     L += ["", f"**Ventana de fechas:** {window}" + (f" · **Categorías arXiv:** {', '.join(plan['arxiv_categories'])}"
                                                   if plan["arxiv_categories"] else "")
@@ -2041,7 +2065,9 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
           *([f"- Duplicados eliminados: {c['duplicados']}"] if "duplicados" in c else []),
           f"- Tras deduplicación: {c['tras_deduplicacion']}",
           f"- Excluidos por el prefiltro mecánico (alcanzan menos de {prefilter_need(plan)} faceta(s) en consultas y "
-          f"título/resumen; nadie los leyó; sus títulos, en `prefiltrados.md`): {c.get('prefiltro', 0)} → "
+          f"título/resumen" + (f", o no alcanzan la faceta obligatoria {', '.join(sorted(required_facets(plan)))}"
+                               if required_facets(plan) else "")
+          + f"; nadie los leyó; sus títulos, en `prefiltrados.md`): {c.get('prefiltro', 0)} → "
           f"quedan {c.get('tras_prefiltro', '—')}",
           *([f"  - Muestra del prefiltro: un cribador leyó {c['muestra_prefiltro']['leidos']} de los "
              f"{c['muestra_prefiltro']['de']} apartados (muestra reproducible, `prefilter_sample.json`) e incluyó "

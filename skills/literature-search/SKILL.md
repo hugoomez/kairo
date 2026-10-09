@@ -145,6 +145,14 @@ copies it in, dated):
   codes *and* papers on the decoders, so a code-construction paper that never
   mentions decoding is in scope; "decoders for qLDPC codes" is an intersection
   (keep the default). Say which you chose and why in the hand-back.
+- `"required": true` on a facet — every candidate must reach it, on top of
+  `min_facets`. **A union is almost always one required facet plus optional
+  ones**: "qLDPC codes and their decoders" is facet A (`qLDPC codes`, …)
+  `required` + facet B (`decoder`, …) optional, with `min_facets: 1` — so a
+  qLDPC paper on codes alone is read, and a generic "decoder" paper from speech
+  or video coding is not. Anchors are exempt from `min_facets` but not from a
+  required facet; a record with no abstract must show a required facet in its
+  title.
 
 ### 2. Run, and search the vault
 
