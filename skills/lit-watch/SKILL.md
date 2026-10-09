@@ -136,6 +136,15 @@ lost or truncated, and the counts.
   them in the report: for an ingested preprint the researcher may want the
   published version recorded (`resolve_refs.py --only <P-id> --write`) before
   citing it.
+- `newer_plan`: the project has a plan later than the one this watch follows
+  (`_vigilancia/plan-seguido.json`) — often a one-off search. The watch keeps
+  its own plan; name the newer one and ask the researcher whether to adopt it
+  (`delta … --adopt-plan <_busquedas/run>`). Never adopt it on your own. Exit 2
+  saying the followed plan changed or is gone: report it; the researcher
+  restores it or adopts a plan explicitly.
+- A legacy arXiv row that carried its own `submittedDate:[…]` has it removed
+  (`fecha_quitada` in the run, «Consultas con fecha propia» on the page): the
+  watch applies its own window instead.
 - `config_warnings`: a free key missing for the sources the watch uses
   (OpenAlex's small keyless budget, Semantic Scholar's 429s). The page says it
   too; say it once.

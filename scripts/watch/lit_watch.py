@@ -2,7 +2,7 @@
 """Literature watch: what is new since the last watch, and does it threaten a hypothesis?
 
     lit_watch.py delta   --vault <vault> --project-dir <dir> [--since YYYY-MM-DD] [--top 10] [--no-citations]
-                         [--no-own-papers]
+                         [--no-own-papers] [--adopt-plan <_busquedas/run | latest>]
     lit_watch.py triage  --project-dir <dir> --run <file> --key <k> --why "<one line>"
     lit_watch.py threat  --vault <vault> --project-dir <dir> --run <file> --key <k>
                          --hypothesis H-XXXX --sentence "<verbatim from the abstract>"
@@ -16,14 +16,23 @@
 
 `delta` (mechanical, network):
   - Re-runs the project's own recorded queries, restricted to the window:
-    the latest `_busquedas/<run>/plan.json` written by lit_search.py (the
-    sources it used that can be limited to a date window — arXiv, Semantic
-    Scholar, OpenAlex, Crossref; OpenReview cannot and is left out, said so in
-    `sources_left_out` — and its cross pass; no anchor pass),
+    the `_busquedas/<run>/plan.json` written by lit_search.py that the watch
+    follows (the sources it used that can be limited to a date window — arXiv,
+    Semantic Scholar, OpenAlex, Crossref; OpenReview cannot and is left out,
+    said so in `sources_left_out` — and its cross pass; no anchor pass),
     or, for projects searched before it existed, every row of the
     "Consultas (verbatim)" tables in `Estado-del-arte.md` (a `|` escaped or
     inside `code` stays in its cell; Semantic Scholar OR-groups become one
-    plain-keyword query per alternative; anchor rows are not re-run).
+    plain-keyword query per alternative; anchor rows are not re-run; an arXiv
+    row's own `submittedDate:[…]` / `lastUpdatedDate:[…]` clause is removed
+    — `fecha_quitada`, said on the page — since the watch adds its own window
+    and two would leave the query empty forever; a row that is only a date
+    clause is not run).
+  - The plan followed is recorded in `_vigilancia/plan-seguido.json` (path +
+    sha256) by the first watch: the latest plan then. A later plan (a one-off
+    search) is never followed silently — the run names it (`newer_plan`, and
+    on the page) and `--adopt-plan <_busquedas/run | latest>` switches to it. A
+    recorded plan that was edited or removed stops the watch (exit 2).
   - Citations (unless `--no-citations`): the works OpenAlex lists as citing
     the project's own papers (their `openalex_id`) or the seeds its search
     snowballed from, published in the window — one `cites:W1|W2|…` query per
@@ -397,12 +406,55 @@ def s2_keywords(query: str) -> list[str]:
     return out
 
 
-def structured_plan(pdir: Path) -> tuple[dict | None, str | None]:
-    """The latest lit_search run of the project (`_busquedas/<run>/plan.json`)."""
+PLAN_FOLLOWED = "plan-seguido.json"
+
+
+def _sha_file(f: Path) -> str:
+    return hashlib.sha256(f.read_bytes()).hexdigest()
+
+
+def followed_plan(pdir: Path, adopt: str | None = None) -> tuple[dict | None, str | None, str | None]:
+    """The lit_search plan this watch follows: the one recorded in
+    `_vigilancia/plan-seguido.json` (path + sha256), else — first watch — the
+    latest `_busquedas/<run>/plan.json`, then recorded. A later plan (a one-off
+    search) is never followed silently: it is returned as the newer plan, and
+    `adopt` (a `_busquedas/<run>` folder, its plan.json, or `latest`) switches to
+    it. A recorded plan that changed or vanished is refused, never guessed.
+    Returns (plan, its run folder, the newer plan's path or None)."""
     plans = sorted((pdir / "_busquedas").glob("*/plan.json"))
     if not plans:
-        return None, None
-    return json.loads(plans[-1].read_text(encoding="utf-8")), plans[-1].parent.relative_to(pdir).as_posix()
+        if adopt:
+            raise Refused("--adopt-plan: this project has no _busquedas/<run>/plan.json")
+        return None, None, None
+    rec_f = pdir / "_vigilancia" / PLAN_FOLLOWED
+    rec = load_state(rec_f) if rec_f.is_file() else None
+    rel = lambda f: f.relative_to(pdir).as_posix()  # noqa: E731
+    if adopt:
+        f = plans[-1] if adopt == "latest" else pdir / adopt.replace("\\", "/")
+        if f.is_dir():
+            f = f / "plan.json"
+        if not f.is_file() or f.resolve() not in {p.resolve() for p in plans}:
+            raise Refused(f"--adopt-plan {adopt}: no such plan; the project's plans: "
+                          + ", ".join(rel(p) for p in plans))
+        rec = None
+        chosen = f
+    elif rec:
+        chosen = pdir / str(rec.get("plan") or "")
+        if not chosen.is_file():
+            raise Refused(f"the plan this watch follows ({rec.get('plan')}, _vigilancia/{PLAN_FOLLOWED}) is gone: "
+                          "restore it, or choose one with --adopt-plan <_busquedas/run | latest>")
+        if _sha_file(chosen) != rec.get("sha256"):
+            raise Refused(f"the plan this watch follows ({rec['plan']}) changed since it was adopted (sha256 "
+                          "differs): a watch never follows an edited plan silently — restore it, or adopt it as "
+                          f"it is now with --adopt-plan {Path(rec['plan']).parent.as_posix()}")
+    else:
+        chosen = plans[-1]
+    if rec is None:
+        rec_f.parent.mkdir(exist_ok=True)
+        atomic_write(rec_f, json.dumps({"plan": rel(chosen), "sha256": _sha_file(chosen),
+                                        "adoptado": date.today().isoformat()}, ensure_ascii=False, indent=2) + "\n")
+    newer = next((rel(p) for p in reversed(plans) if p.parent.name > chosen.parent.name), None)
+    return json.loads(chosen.read_text(encoding="utf-8")), chosen.parent.relative_to(pdir).as_posix(), newer
 
 
 def recorded_queries(pdir: Path) -> list[dict]:
@@ -440,13 +492,37 @@ def recorded_queries(pdir: Path) -> list[dict]:
                 continue  # vault, PatentsView: not watched
             if not query or query in ("…", "...") or anchor:
                 continue
+            dropped = None
+            if src == "arxiv":
+                query, dropped = strip_arxiv_dates(query)
+                if not query:
+                    continue                           # only a date clause: nothing to watch
             qs = s2_keywords(query) if src == "s2" else [query]
             for qq in qs:
                 k = (facet, src, qq)
                 if k not in seen:
                     seen.add(k)
-                    out.append({"facet": facet, "source": src, "query": qq})
+                    out.append({"facet": facet, "source": src, "query": qq,
+                                **({"fecha_quitada": dropped} if dropped else {})})
     return out
+
+
+_ARXIV_DATE = re.compile(r"(?:\bAND\s+)?\(?\s*(?:submittedDate|lastUpdatedDate):\[[^\]]*\]\s*\)?(?:\s+AND\b)?")
+
+
+def strip_arxiv_dates(query: str) -> tuple[str, str | None]:
+    """A recorded arXiv query without its own `submittedDate:[…]` /
+    `lastUpdatedDate:[…]` clause, and the clause removed. The watch adds its own
+    window: two windows ANDed would make the query empty forever, and an empty
+    answer would count as covered."""
+    found = [m.group(0).strip() for m in _ARXIV_DATE.finditer(query)]
+    if not found:
+        return query, None
+    q = _ARXIV_DATE.sub(" ", query)
+    q = re.sub(r"^\s*AND\s+|\s+AND\s*$", "", " ".join(q.split())).strip()
+    while q.startswith("(") and q.endswith(")") and q.count("(") == 1:
+        q = q[1:-1].strip()
+    return ("" if q in ("", "()") else q), " · ".join(found)
 
 
 # --------------------------------------------------------------------------
@@ -705,6 +781,12 @@ def digest_md(run: dict) -> str:
          f"*Ventana:* desde {run.get('since')} (consultado desde {run.get('queried_from')}) hasta {run.get('until')} · "
          f"*Consultas de:* {run.get('queries_from')}", ""]
     L += _warnings_md(run)
+    if run.get("plan_newer"):
+        L += ["## Hay un plan más reciente", "",
+              f"La vigilancia sigue el plan de `{run.get('queries_from')}` (el que adoptó; "
+              f"`_vigilancia/{PLAN_FOLLOWED}`), no `{run['plan_newer']}`, que es posterior — quizá una búsqueda "
+              "puntual. Para vigilar con ese plan, adóptalo explícitamente: `lit_watch.py delta … --adopt-plan "
+              f"{Path(run['plan_newer']).parent.as_posix()}`.", ""]
     if run.get("lost") or run.get("truncated"):
         L += ["## ⚠️ Cobertura degradada", ""]
         L += [f"- Perdida (su ventana sigue abierta): {x}" for x in run.get("lost") or []]
@@ -723,6 +805,14 @@ def digest_md(run: dict) -> str:
                   "(https://openalex.org/settings/api) se lee la ventana entera.", ""]
         L += [f"- {q.get('id')} {q.get('source')}{' (sin clave)' if q.get('sin_clave') else ''} "
               f"«{q.get('query')}»: {q.get('hits')} leídos de {q.get('total')}" for q in ranked]
+        L.append("")
+    dated = [q for q in run.get("queries") or [] if q.get("fecha_quitada")]
+    if dated:
+        L += ["## Consultas con fecha propia", "",
+              "Estas filas de la tabla Consultas traían su propia ventana de fechas; la vigilancia se la quita y "
+              "aplica la suya (dos ventanas juntas dejarían la consulta vacía para siempre):", ""]
+        L += [f"- {q.get('facet')} {q.get('source')} «{q.get('query')}»: quitado `{q['fecha_quitada']}`"
+              for q in dated]
         L.append("")
     if run.get("sources_left_out"):
         L += ["## Fuentes fuera de la vigilancia", ""] + [f"- {x}" for x in run["sources_left_out"]] + [""]
@@ -1282,14 +1372,14 @@ def write_status(pdir: Path, today: date, status: str, res: dict | None = None, 
 
 
 def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
-          citations: bool = True, own: bool = True) -> dict:
+          citations: bool = True, own: bool = True, adopt: str | None = None) -> dict:
     """One watch of the project, holding its lock (`take_lock`) while it runs. Every
     run that gets the lock leaves `_vigilancia/estado.json`, a failed one too."""
     if not hub_path(pdir).is_file():
         raise Refused(f"{pdir} is not a project folder (no _hub.md)")
     stale = take_lock(pdir)
     try:
-        res = _delta(vault, pdir, since, top, fetch, today, citations, own)
+        res = _delta(vault, pdir, since, top, fetch, today, citations, own, adopt)
     except Exception as exc:
         write_status(pdir, today, "failed", error=str(exc)[:400])
         raise
@@ -1299,10 +1389,10 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
 
 
 def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
-           citations: bool, own: bool) -> dict:
+           citations: bool, own: bool, adopt: str | None = None) -> dict:
     out = run_path(pdir, today)                        # this run's name, and its own raw folder
     raw_dir = raw_dir_of(out)
-    plan, plan_run = structured_plan(pdir)
+    plan, plan_run, newer_plan = followed_plan(pdir, adopt)
     queries = [] if plan else recorded_queries(pdir)
     if not plan and not queries:
         raise Refused("no recorded queries to re-run: no _busquedas/<run>/plan.json (lit_search.py) and "
@@ -1482,7 +1572,7 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
                            | ({"openalex"} if citations else set()))})
     run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(),
            "queried_from": query_from.isoformat(), "until": today.isoformat(),
-           "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)",
+           "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)", "plan_newer": newer_plan,
            "degraded": bool(lost) or bool(truncated), "lost_all": lost_all,
            "truncated": [f"{x.get('id', x['facet'])} {x['source']}: {x.get('hits')} de {x.get('total')}"
                          for x in truncated],
@@ -1540,7 +1630,7 @@ def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, 
            "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
            "novelty_candidates": sum(1 for c in cands if c["novelty"]),
            "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
-           "publicadas": len(publicadas),
+           "publicadas": len(publicadas), "newer_plan": newer_plan,
            **({"tus_papers": {k: len(v) if isinstance(v, list) else v for k, v in own_news.items()}}
               if own_news is not None else {}),
            "citation_root_errors": root_errors,
@@ -1753,6 +1843,9 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--top", type=int, default=10)
     p.add_argument("--no-citations", action="store_true",
                    help="skip the pass over new papers citing the project's papers and seeds")
+    p.add_argument("--adopt-plan", default=None,
+                   help="follow this lit_search plan from now on (_busquedas/<run>, or `latest`) instead of the "
+                        "one recorded in _vigilancia/plan-seguido.json")
     p.add_argument("--no-own-papers", action="store_true",
                    help="skip the check of the project's own papers (new arXiv versions, published versions, "
                         "OpenReview decisions)")
@@ -1794,7 +1887,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
         elif a.cmd == "delta":
             since = date.fromisoformat(a.since) if a.since else None
             out = delta(a.vault.resolve(), a.project_dir.resolve(), since, a.top, fetch, today or date.today(),
-                        citations=not a.no_citations, own=not a.no_own_papers)
+                        citations=not a.no_citations, own=not a.no_own_papers, adopt=a.adopt_plan)
         else:
             a.project_dir = a.project_dir.resolve()
             run_file = a.run if a.run.is_absolute() else (a.vault or Path.cwd()) / a.run
