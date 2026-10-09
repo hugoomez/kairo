@@ -94,6 +94,19 @@ class CodeParametersAndColumns(unittest.TestCase):
         self.assertTrue(cs.number_in("d = 7", ["we use $d=7$ toy codes"]))
         self.assertTrue(cs.number_in("d = 7", ["at distance 7 the toy code"]))
         self.assertFalse(cs.number_in("d = 7", ["we use d = 5 and 7 rounds"]))
+
+    def test_a_parameter_matches_its_latex_subscript_and_the_maps_own_notation_falls_back(self):
+        # the paper's $D_{min}=4$ is the map's D_min = 4
+        self.assertTrue(cs.number_in("D_min = 4", [r"a toy array with $D_{min}=4\ \mu m$ spacing"]))
+        self.assertTrue(cs.number_in("D_min = 4", [r"with $D_{\mathrm{min}} = 4$ here"]))
+        # an upright name in LaTeX: ${\rm XQI}=1$, $\mathrm{XQI} = 1$, $\operatorname{XQI}=1$
+        for tex in (r"a toy ${\rm XQI}=1$ score", r"a toy $\mathrm{XQI} = 1$ score", r"$\operatorname{XQI}=1$"):
+            self.assertTrue(cs.number_in("XQI = 1", [tex]), tex)
+        # a name the paper never uses is the map's notation: the value is checked as a number
+        self.assertTrue(cs.number_in("k = 7", ["a toy clique with $7$ vertices"]))
+        self.assertFalse(cs.number_in("k = 7", ["a toy clique with $8$ vertices"]))
+        # a name the paper does bind, to another value, still fails
+        self.assertFalse(cs.number_in("k = 7", ["we fix $k=5$ and run 7 toy rounds"]))
         self.assertTrue(cs.number_in("TP = 8", ["tensor parallel TP = 8 here"]))
         self.assertFalse(cs.number_in("k = 4", ["we use k = 3"]))
 

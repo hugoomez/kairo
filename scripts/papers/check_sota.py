@@ -356,12 +356,33 @@ def _tuple_in(tok: str, texts: list[str]) -> bool:
     return False
 
 
+# "$D_{min}$", "$D_{\mathrm{min}}$" are the map's D_min: a LaTeX subscript in plain form
+_SUB_TEX = re.compile(r"_\{\s*(?:\\(?:mathrm|text|textrm|mathit|rm)\s*\{\s*)?([A-Za-z0-9]+)\s*\}?\s*\}")
+# "${\rm RQI}=1$", "$\mathrm{RQI} = 1$", "$\operatorname{RQI}=1$": the upright name, plain
+_NAME_TEX = re.compile(r"\{\s*\\(?:rm|mathrm|text|textrm|operatorname)\s*\{?\s*([A-Za-z][A-Za-z0-9_]*)\s*\}?\s*\}"
+                       r"|\\(?:mathrm|text|textrm|operatorname)\s*\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}")
+
+
+def _plain_names(t: str) -> str:
+    return _SUB_TEX.sub(r"_\1", _NAME_TEX.sub(lambda m: m.group(1) or m.group(2), t))
+
+
 def _param_in(pm: re.Match, texts: list[str]) -> bool:
+    """The value bound to the same parameter (or an alias) in the cited text. A name
+    the cited text never uses is the map's own notation ("k = 7" for "a clique of 7
+    vertices"): then the value is checked as a whole number; a name the text binds
+    to another value still fails."""
     name, val = (pm.group(1), pm.group(2)) if pm.group(1) else (pm.group(3), pm.group(4))
     names = [name] + PARAM_ALIAS.get(name.lower(), [])
     alts = "|".join(re.escape(n) if len(n) == 1 else f"(?i:{re.escape(n)})" for n in names)
+    plain = [_plain_names(t) for t in texts]
     rx = re.compile(rf"(?<![\w\\])(?:{alts})\s*(?:=|:|of\b|de\b)?\s*\$?\s*{val}(?![\d]|[.,]\d)")
-    return any(rx.search(t) for t in texts)
+    if any(rx.search(t) for t in plain):
+        return True
+    named = re.compile(rf"(?<![\w\\])(?:{alts})(?![\w])")
+    if any(named.search(t) for t in plain):
+        return False
+    return any(_figure_in(val, False, t) for t in plain)
 
 
 def number_in(tok: str, texts: list[str]) -> bool:
@@ -523,10 +544,10 @@ def _one_citation(vault: str, project: str | None, m, start: int, report: dict, 
         units.extend(u.removeprefix("[## Resumen]\n") for u in res["units"])
         return
     if ABSTRACT_LOC.search(span) and (fm_scalar(fm, "fulltext") or "").strip() != "abstract-only":
-        # the map cites a paper's text; only a paper with no full text is cited by its abstract
-        report["problems"].append({**where, "severity": "importante",
-                                   "reason": f"{pid} tiene texto completo: cita la sección del texto, no el "
-                                             "Resumen (solo un paper fulltext: abstract-only se cita por su Resumen)"})
+        # the abstract is the paper's own verbatim text, so the citation is checked like any
+        # other; a paper with full text is still better cited where its text says it
+        report.setdefault("warnings", []).append(
+            f"{m.group(0).strip()}: {pid} tiene texto completo — mejor citar la sección que lo dice que el Resumen")
     res = resolve_citation(vault, pid, span)
     if res["note"] and not res["units"]:
         report["problems"].append({**where, "severity": "crítico",

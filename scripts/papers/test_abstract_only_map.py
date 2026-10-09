@@ -71,14 +71,15 @@ class AbstractOnly(unittest.TestCase):
         self.assertEqual((code, out["problems"]), (0, []), out)
         self.assertNotIn("warnings", out)
 
-    def test_resumen_of_a_full_text_paper_is_a_problem_and_the_mark_is_required(self):
+    def test_resumen_of_a_full_text_paper_is_a_warning_and_the_mark_is_required(self):
+        # the abstract is the paper's own verbatim text: citing it is checkable, never an
+        # error — but a paper with full text is better cited at the section that says it
         code, out = self.check(
             "## X\n\n- The toy scheme gains 12% — P-0301 Resumen\n"
             "- The toy scheme gains 12% — P-0302 Resumen\n\n"
             "## Cobertura de lectura\n\n- solo abstract: P-0302\n- no citado: P-0303\n")
-        self.assertEqual(code, 3)
-        self.assertTrue(any(p["citation"] == "P-0301 Resumen" and "texto completo" in p["reason"]
-                            for p in out["problems"]), out["problems"])
+        self.assertFalse(any(p["citation"] == "P-0301 Resumen" for p in out["problems"]), out["problems"])
+        self.assertTrue(any("P-0301" in w and "texto completo" in w for w in out["warnings"]), out.get("warnings"))
         self.assertTrue(any("(solo abstract)" in w for w in out["warnings"]), out.get("warnings"))
 
     def test_every_project_paper_is_cited_or_declared(self):
