@@ -493,9 +493,13 @@ same numeric result showing up under both "Línea de evolución" and "Lo
 establecido"), **do not re-derive the citation independently for the second
 occurrence.** Look up the locator already used the first time and reuse it
 verbatim. If the two occurrences disagree on the section number, that
-disagreement is itself the signal that one of them is wrong — stop and
-have `paper-reader` re-verify both against the source `Papers/P-XXXX.md` `## Texto completo`
-before writing either one; do not resolve the conflict by just picking
+disagreement is itself the signal that one of them is wrong. The
+`sota-synthesizer` cannot dispatch anyone: it keeps both locators and returns
+the conflict (and any locator it ran out of turns to confirm) in a
+`verificar:` list after the document. **Before writing the document, send
+every `verificar:` line to `paper-reader` as `check` requests** (batched as in
+the fix loop below) and keep the locator it confirms (its `better_locator`
+when given), or drop the sentence; do not resolve the conflict by just picking
 whichever number was written down first. Never let the same fact carry two
 different section citations in the finished document.
 
@@ -510,9 +514,12 @@ It resolves every `P-XXXX <locator>` with the fresh-verifier's resolver and
 checks every number in a cited sentence — and in every table: a row that
 cites, and each cell of a table whose header names papers (the *Matriz de
 conceptos*) against its column's paper — against the text the locators point
-at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: send them all to one `paper-reader`
-subagent as `check` requests (paper path, locator, the sentence) — this session
-never reads a paper note (the vault hook refuses it) — and either fix the
+at. Multipliers (`3×`) are checked whatever their size. Exit 0 = clean. Exit 3 = problems: send them to `paper-reader`
+subagents as `check` requests (paper path, locator, the sentence) — this session
+never reads a paper note (the vault hook refuses it). **Batch them: at most 10
+requests per `paper-reader`, grouped by paper, all dispatched in the same turn**
+(one at a time if the prompt says memory is low) — one reader with every
+problem of a large map runs out of turns. Then either fix the
 locator / figure to what it returns (its `better_locator`, the verbatim `text`)
 or drop the sentence; then run it again. If a problem cannot be
 resolved (the paper does not say it anywhere you can find), drop the
@@ -543,7 +550,7 @@ never the packet's text: its `Read` is held to that file by the vault hook,
 and the read leaves the receipt `verifications.py append --packet-sha256
 <stored[i].sha256>` requires. Every
 `errors_found` finding names an `Afirmación`: have `paper-reader` check its
-source and fix the sentence to what the text says, or drop it, then re-run
+source (batched, at most 10 requests per reader, as above) and fix the sentence to what the text says, or drop it, then re-run
 `check_sota.py`. A
 `cannot_assess` is listed in the end-of-run message as `importante`. Record
 the verdicts in the frontmatter's `verifications:` list (one entry per section,
