@@ -2,7 +2,9 @@
 """Literature watch: what is new since the last watch, and does it threaten a hypothesis?
 
     lit_watch.py delta   --vault <vault> --project-dir <dir> [--since YYYY-MM-DD] [--top 10] [--no-citations]
-                         [--no-own-papers]
+                         [--no-own-papers] [--adopt-plan <_busquedas/run | latest>]
+    lit_watch.py triage-packet --project-dir <dir> --run <file>
+    lit_watch.py triage  --project-dir <dir> --run <file> --from-store | --reply <file> [--allow-unread]
     lit_watch.py triage  --project-dir <dir> --run <file> --key <k> --why "<one line>"
     lit_watch.py threat  --vault <vault> --project-dir <dir> --run <file> --key <k>
                          --hypothesis H-XXXX --sentence "<verbatim from the abstract>"
@@ -16,14 +18,23 @@
 
 `delta` (mechanical, network):
   - Re-runs the project's own recorded queries, restricted to the window:
-    the latest `_busquedas/<run>/plan.json` written by lit_search.py (the
-    sources it used that can be limited to a date window — arXiv, Semantic
-    Scholar, OpenAlex, Crossref; OpenReview cannot and is left out, said so in
-    `sources_left_out` — and its cross pass; no anchor pass),
+    the `_busquedas/<run>/plan.json` written by lit_search.py that the watch
+    follows (the sources it used that can be limited to a date window — arXiv,
+    Semantic Scholar, OpenAlex, Crossref; OpenReview cannot and is left out,
+    said so in `sources_left_out` — and its cross pass; no anchor pass),
     or, for projects searched before it existed, every row of the
     "Consultas (verbatim)" tables in `Estado-del-arte.md` (a `|` escaped or
     inside `code` stays in its cell; Semantic Scholar OR-groups become one
-    plain-keyword query per alternative; anchor rows are not re-run).
+    plain-keyword query per alternative; anchor rows are not re-run; an arXiv
+    row's own `submittedDate:[…]` / `lastUpdatedDate:[…]` clause is removed
+    — `fecha_quitada`, said on the page — since the watch adds its own window
+    and two would leave the query empty forever; a row that is only a date
+    clause is not run).
+  - The plan followed is recorded in `_vigilancia/plan-seguido.json` (path +
+    sha256) by the first watch: the latest plan then. A later plan (a one-off
+    search) is never followed silently — the run names it (`newer_plan`, and
+    on the page) and `--adopt-plan <_busquedas/run | latest>` switches to it. A
+    recorded plan that was edited or removed stops the watch (exit 2).
   - Citations (unless `--no-citations`): the works OpenAlex lists as citing
     the project's own papers (their `openalex_id`) or the seeds its search
     snowballed from, published in the window — one `cites:W1|W2|…` query per
@@ -40,22 +51,33 @@
     after their publication date are still caught); OpenAlex, Semantic Scholar
     and citations 60 days, because they can only filter by publication date
     and index late (OVERLAP_BY_SOURCE). `--since` sets every window exactly.
-  - Every query is paged up to MAX_RESULTS. An arXiv or OpenAlex query with
-    more matches has its window split in halves (up to MAX_SPLIT_DEPTH times,
-    plan queries only) until each part is read whole; a part still capped is
-    `truncated`: reported, and its window stays open. Semantic Scholar and
-    Crossref rank keyword matches by relevance and count loose matches in
-    their totals: their top results are read and they are never `truncated`.
-    Without OPENALEX_API_KEY an OpenAlex query is read the same way — its top
-    KEYLESS_OPENALEX_PER_QUERY by relevance, one call, never split (`sin_clave`
-    in the run, «por relevancia» on the page) — so a weekly watch never spends
-    the keyless daily budget on one busy query.
+  - Every query is paged up to MAX_RESULTS, newest first (`order: date`:
+    arXiv by submission date, OpenAlex by publication date), so a capped window
+    always holds the newest papers. An arXiv or OpenAlex query with more
+    matches has its window split in halves (up to MAX_SPLIT_DEPTH times, plan
+    queries only) until each part is read whole; a part still capped is
+    `truncated`: it read its newest papers, so the query is covered up to
+    today (new weeks are never missed), and the older part it did not read is
+    its gap (`huecos` in `cursores.json`, `gap` in the run) — said on the page
+    («leídos los N más recientes; quedan sin leer los anteriores a <fecha>»),
+    kept in `open_windows`, and re-read newest first by every later watch until
+    it is read whole. Semantic Scholar (it cannot sort by date) and Crossref
+    (its keyword search matches any word, so it keeps its relevance order) rank
+    by relevance and count loose matches in their totals: their top results are
+    read and they are never `truncated`. Without OPENALEX_API_KEY an OpenAlex
+    query reads its newest KEYLESS_OPENALEX_PER_QUERY in one call, never split
+    and never held open (`sin_clave` in the run, listed with the
+    relevance-ranked ones on the page), so a weekly watch never spends the
+    keyless daily budget on one busy query.
   - A candidate that came without an abstract gets one from OpenAlex by DOI
     (lit_search.enrich_abstracts; recorded under `abstract_lookups`).
     `SEMANTIC_SCHOLAR_API_KEY` / `OPENALEX_API_KEY` are used when set.
   - Drops papers already in `Papers/` (arXiv id, DOI or the published DOI of
     an ingested preprint, normalised title) and papers offered by an earlier
-    watch of this project. Another version of either — the published, often
+    watch of this project — recognised by any of their ids (key, DOI, arXiv
+    id, Semantic Scholar id, exact normalised title): a paper first listed as
+    `doi:Y` that comes back as `arxiv:X` carrying that DOI keeps its first key
+    (`otras_claves` lists the new one). Another version of either — the published, often
     retitled version of a preprint: same first author, title similarity ≥
     lit_search.TITLE_CLOSE, no identifier telling them apart — is listed in
     `publicadas` (`of`: the P-id or the earlier key) and on the page, never
@@ -64,11 +86,14 @@
     whose queries found it, plus (with a plan) the facet terms in its title or
     abstract, by lit_search's rule (or the project has one facet) — or when it
     cites the project's papers and shows one facet, or cites two of them.
-    The top `--top` strong candidates are marked for
-    triage. A strong candidate left past `--top` is the backlog: the next
-    watch carries it (`pendiente_desde`: the run that first left it), first in
-    line and whether or not the new window finds it again, until it is triaged
-    or decided — nothing a watch found strong is dropped unread. The output
+    The top `--top` strong candidates are marked for triage (`triage: true`),
+    this window's first, then the backlog: a strong candidate is *offered* only
+    once someone read it — its triage line (`why`) or a decision is recorded;
+    being marked is not reading. One not offered is the backlog: the next
+    watch carries it (`pendiente_desde`: the run that first left it), whether
+    or not the new window finds it again, oldest first behind that week's
+    papers, until it is triaged or decided — nothing a watch found strong is
+    dropped unread, and an old backlog never starves a new week. The output
     counts `strong_not_triaged` and `carried`.
   - Each candidate keeps `abstract_sha256`, the hash of the abstract exactly
     as the source returned it, so a later threat can only quote that text.
@@ -80,17 +105,50 @@
     written to a note. A failure there is reported and never costs the watch.
   - Novelty prefilter: word overlap between each active hypothesis's (not
     `refutada`, not `descartada`, not `send: never`)
-    `## Claim` and each candidate's title + abstract. Only ids and scores are
+    `## Claim` and each candidate's title + abstract (`words`: shared
+    Spanish/English stems, and 2–3 letter acronyms in capitals). Only ids and scores are
     stored — the claim text never leaves the note.
   - Title and abstract are third-party text: a candidate whose text reads like
     an instruction to a model carries `sospechoso` (the patterns found).
   - Writes `<project>/_vigilancia/vigilancia-<date>[-n].json`, moves the cursor
-    of every query read whole and the hub's `last_watch:`. A lost query, or one
-    still truncated after splitting, keeps its cursor: its own window stays open
-    (`open_windows`) — never counted as covered — without holding the other
-    queries back; papers already offered are dropped,
-    never repeated. If every query failed, nothing is written and the run says
-    so.
+    of every query that answered and the hub's `last_watch:`. A lost query (or
+    a capped citation query, which cannot be read newest first) keeps its
+    cursor: its own window stays open (`open_windows`) — never counted as
+    covered — without holding the other queries back; papers already offered
+    are dropped,
+    never repeated. The page is written before the run file, so a candidate is
+    never in a run without being on a page. If every query failed, no run is
+    written and nothing moves: the run exits 4 and leaves a short page,
+    `vigilancia-<date>[-n].md`, saying the watch failed and why.
+  - Every run leaves `_vigilancia/estado.json`: date, `status` (ok · degraded ·
+    failed), `exit_code`, the run and page names, the counts, the lost queries,
+    the open windows, the config warnings and, when it failed, the `error` — for
+    an interface or a cron wrapper to notify from. Missing free keys
+    (`config_warnings`) are also said on the page.
+  - One watch of a project at a time: `delta` holds `_vigilancia/.vigilancia.lock`
+    while it runs; a second one refuses (exit 5) unless the lock is older than
+    LOCK_STALE_HOURS (a run that died), which it takes over and says so
+    (`stale_lock_removed`). Each run keeps its raw responses in its own
+    `raw-<date>[-n]/`, named like its run file.
+  - The watch's state is never guessed: a corrupt run file or `cursores.json`
+    stops it with that file's name (exit 2). Every state file is written to a
+    temporary file and then renamed over the old one, so an interrupted write
+    leaves the old file whole.
+
+`triage-packet` / `triage --from-store | --reply` (prompt-injection isolation):
+the session that runs commands never reads a candidate's title or abstract.
+`triage-packet` stores, in Kairo's packet store (`isolation.store`, named by
+its sha256), lit_search's packet format holding the followed plan's criteria
+and every candidate marked for triage still without a line, and records it in
+the run (`triage_packet`); it prints the path, sha256 and keys only. A
+`screener` reads it. `triage --from-store` takes its reply as the SubagentStop
+hook stored it (`--reply <file>`: the reply saved unchanged, checked against the
+stored one when there is one); it is refused without a screener's read receipt
+for the packet (unless `--allow-unread`) or when its keys are not the packet's.
+Each decision becomes the candidate's line verbatim — `<relevance or exclusion
+reason>: <why>`, prefixed «cita …:» when it cites the project's papers — with
+`triage_by` (agent, packet, receipt, whether the reply was verified). It prints
+counts only. `triage --key --why` records a line by hand.
 
 `threat` records a novelty threat, which is a model's judgement and not
 evidence:
@@ -125,8 +183,9 @@ a threat. A threat decision appends one more dated line to the hypothesis.
 triaged candidate has its one-line reason and every threat has a severity and
 a verbatim sentence. Exit 3 when something is missing (listed in `missing`).
 
-Prints one JSON object. Exit codes: 0 ok · 2 refused (bad input) · 3 run
-incomplete (`check`) · 1 error.
+Prints one JSON object. Exit codes: 0 ok · 2 refused (bad input, or corrupt
+state) · 3 run incomplete (`check`) · 4 every query lost (`delta`; a page says
+so) · 5 another watch of the project is running (`delta`) · 1 error.
 Standard library only.
 """
 
@@ -162,7 +221,7 @@ from vaultnotes import (  # noqa: E402
     write_text,
 )
 
-TOOL = "kairo/lit_watch@1.11.0"
+TOOL = "kairo/lit_watch@1.12.0"
 SEVERITIES = ("crítico", "importante", "menor")
 INACTIVE = ("refutada", "descartada")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -227,9 +286,43 @@ def norm_title(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 
+_ACCENTS = str.maketrans("áéíóúüñ", "aeiouun")
+# Spanish → the form an English word reaches: claims are written in Spanish and
+# abstracts in English, so both sides go through the same rules (first match wins).
+_ES_ENDINGS = (("cionales", "tional"), ("cional", "tional"), ("ciones", "tion"), ("cion", "tion"), ("ales", "al"), ("iles", "il"), ("ores", "or"),
+               ("icos", "ic"), ("icas", "ic"), ("ico", "ic"), ("ica", "ic"), ("os", ""), ("as", ""),
+               ("o", ""), ("a", ""))
+_SHORT_CAPS_STOP = {"and", "the", "for", "not", "its", "our", "are", "can", "but", "all", "per", "via", "los",
+                    "las", "del", "con", "sin", "por", "una", "uno", "que", "on", "in", "of", "to", "at", "by",
+                    "or", "an", "as", "is", "it", "we", "no", "en", "el", "la", "de", "se", "su", "un", "y"}
+
+
+def shared_stem(w: str) -> str:
+    """One word (lowercase) → a stem a Spanish and an English form share:
+    accents dropped; -cional(es) → -tional, -ción/-ciones → -tion, -ales → -al, -ores → -or,
+    -ico/-ica(s) → -ic, a final -o/-a(s) dropped, -ial dropped (tensorial →
+    tensor); then lit_search's English stem."""
+    w = w.translate(_ACCENTS)
+    if len(w) >= 5:
+        for end, to in _ES_ENDINGS:
+            if w.endswith(end) and len(w) - len(end) >= 4:
+                w = w[:-len(end)] + to
+                break
+    if w.endswith("ial") and len(w) - 3 >= 4:
+        w = w[:-3]
+    return stem(w)
+
+
 def words(s: str) -> set[str]:
-    """Content words, stemmed (lit_search's rule), so inflections share a form."""
-    return {stem(w) for w in re.findall(r"[a-záéíóúñü][a-záéíóúñü0-9-]{3,}", (s or "").lower()) if w not in STOP}
+    """Content words as shared stems (`shared_stem`), so inflections and the
+    Spanish and English forms of a term meet; plus 2–3 letter acronyms written
+    in capitals (HPC, GPU, GPUs, MPI), lowercased and without their plural."""
+    s = s or ""
+    out = {shared_stem(w) for w in re.findall(r"[a-záéíóúñü][a-záéíóúñü0-9-]{3,}", s.lower()) if w not in STOP}
+    for a in re.findall(r"(?<![\w-])([A-Z][A-Z0-9]{1,2})s?(?![\w-])", s):
+        if a.lower() not in _SHORT_CAPS_STOP:
+            out.add(a.lower())
+    return out
 
 
 def section(body: str, heading: str) -> str:
@@ -247,12 +340,38 @@ def hub_field(pdir: Path, key: str) -> str | None:
     return fm_get(parts[0], key) if parts else None
 
 
+def atomic_write(path: Path, text: str) -> None:
+    """Write `text` to a temporary file beside `path`, then replace `path` with it:
+    an interrupted write leaves the old file whole, never half a file."""
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def load_state(path: Path):
+    """A state file of the watch (a run, the cursors). A corrupt one stops the
+    watch with its name: the watch never guesses what an earlier run offered or
+    covered."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise Refused(f"{path.parent.name}/{path.name} está corrupto ({e}): la vigilancia no adivina su estado — "
+                      "restáuralo (git) o arréglalo a mano y vuelve a lanzarla") from None
+
+
 def load_run(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    run = load_state(path)
+    if not isinstance(run, dict):
+        raise Refused(f"{path.parent.name}/{path.name} no es una ejecución de la vigilancia (no es un objeto JSON)")
+    return run
 
 
 def save_run(path: Path, run: dict) -> None:
-    path.write_text(json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    atomic_write(path, json.dumps(run, ensure_ascii=False, indent=2) + "\n")
 
 
 def find_candidate(run: dict, key: str) -> dict:
@@ -313,12 +432,55 @@ def s2_keywords(query: str) -> list[str]:
     return out
 
 
-def structured_plan(pdir: Path) -> tuple[dict | None, str | None]:
-    """The latest lit_search run of the project (`_busquedas/<run>/plan.json`)."""
+PLAN_FOLLOWED = "plan-seguido.json"
+
+
+def _sha_file(f: Path) -> str:
+    return hashlib.sha256(f.read_bytes()).hexdigest()
+
+
+def followed_plan(pdir: Path, adopt: str | None = None) -> tuple[dict | None, str | None, str | None]:
+    """The lit_search plan this watch follows: the one recorded in
+    `_vigilancia/plan-seguido.json` (path + sha256), else — first watch — the
+    latest `_busquedas/<run>/plan.json`, then recorded. A later plan (a one-off
+    search) is never followed silently: it is returned as the newer plan, and
+    `adopt` (a `_busquedas/<run>` folder, its plan.json, or `latest`) switches to
+    it. A recorded plan that changed or vanished is refused, never guessed.
+    Returns (plan, its run folder, the newer plan's path or None)."""
     plans = sorted((pdir / "_busquedas").glob("*/plan.json"))
     if not plans:
-        return None, None
-    return json.loads(plans[-1].read_text(encoding="utf-8")), plans[-1].parent.relative_to(pdir).as_posix()
+        if adopt:
+            raise Refused("--adopt-plan: this project has no _busquedas/<run>/plan.json")
+        return None, None, None
+    rec_f = pdir / "_vigilancia" / PLAN_FOLLOWED
+    rec = load_state(rec_f) if rec_f.is_file() else None
+    rel = lambda f: f.relative_to(pdir).as_posix()  # noqa: E731
+    if adopt:
+        f = plans[-1] if adopt == "latest" else pdir / adopt.replace("\\", "/")
+        if f.is_dir():
+            f = f / "plan.json"
+        if not f.is_file() or f.resolve() not in {p.resolve() for p in plans}:
+            raise Refused(f"--adopt-plan {adopt}: no such plan; the project's plans: "
+                          + ", ".join(rel(p) for p in plans))
+        rec = None
+        chosen = f
+    elif rec:
+        chosen = pdir / str(rec.get("plan") or "")
+        if not chosen.is_file():
+            raise Refused(f"the plan this watch follows ({rec.get('plan')}, _vigilancia/{PLAN_FOLLOWED}) is gone: "
+                          "restore it, or choose one with --adopt-plan <_busquedas/run | latest>")
+        if _sha_file(chosen) != rec.get("sha256"):
+            raise Refused(f"the plan this watch follows ({rec['plan']}) changed since it was adopted (sha256 "
+                          "differs): a watch never follows an edited plan silently — restore it, or adopt it as "
+                          f"it is now with --adopt-plan {Path(rec['plan']).parent.as_posix()}")
+    else:
+        chosen = plans[-1]
+    if rec is None:
+        rec_f.parent.mkdir(exist_ok=True)
+        atomic_write(rec_f, json.dumps({"plan": rel(chosen), "sha256": _sha_file(chosen),
+                                        "adoptado": date.today().isoformat()}, ensure_ascii=False, indent=2) + "\n")
+    newer = next((rel(p) for p in reversed(plans) if p.parent.name > chosen.parent.name), None)
+    return json.loads(chosen.read_text(encoding="utf-8")), chosen.parent.relative_to(pdir).as_posix(), newer
 
 
 def recorded_queries(pdir: Path) -> list[dict]:
@@ -356,13 +518,37 @@ def recorded_queries(pdir: Path) -> list[dict]:
                 continue  # vault, PatentsView: not watched
             if not query or query in ("…", "...") or anchor:
                 continue
+            dropped = None
+            if src == "arxiv":
+                query, dropped = strip_arxiv_dates(query)
+                if not query:
+                    continue                           # only a date clause: nothing to watch
             qs = s2_keywords(query) if src == "s2" else [query]
             for qq in qs:
                 k = (facet, src, qq)
                 if k not in seen:
                     seen.add(k)
-                    out.append({"facet": facet, "source": src, "query": qq})
+                    out.append({"facet": facet, "source": src, "query": qq,
+                                **({"fecha_quitada": dropped} if dropped else {})})
     return out
+
+
+_ARXIV_DATE = re.compile(r"(?:\bAND\s+)?\(?\s*(?:submittedDate|lastUpdatedDate):\[[^\]]*\]\s*\)?(?:\s+AND\b)?")
+
+
+def strip_arxiv_dates(query: str) -> tuple[str, str | None]:
+    """A recorded arXiv query without its own `submittedDate:[…]` /
+    `lastUpdatedDate:[…]` clause, and the clause removed. The watch adds its own
+    window: two windows ANDed would make the query empty forever, and an empty
+    answer would count as covered."""
+    found = [m.group(0).strip() for m in _ARXIV_DATE.finditer(query)]
+    if not found:
+        return query, None
+    q = _ARXIV_DATE.sub(" ", query)
+    q = re.sub(r"^\s*AND\s+|\s+AND\s*$", "", " ".join(q.split())).strip()
+    while q.startswith("(") and q.endswith(")") and q.count("(") == 1:
+        q = q[1:-1].strip()
+    return ("" if q in ("", "()") else q), " · ".join(found)
 
 
 # --------------------------------------------------------------------------
@@ -517,12 +703,9 @@ def earlier_works(pdir: Path) -> list[dict]:
     """Every candidate an earlier watch of this project listed, as a work."""
     out = []
     for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json")):
-        try:
-            for c in load_run(f).get("candidates", []):
-                out.append(_work(c["key"], c.get("title") or "", c.get("authors") or [], c.get("arxiv"),
-                                 c.get("doi"), f.name))
-        except (OSError, json.JSONDecodeError, KeyError):
-            continue
+        for c in load_run(f).get("candidates", []):
+            out.append(_work(c["key"], c.get("title") or "", c.get("authors") or [], c.get("arxiv"),
+                             c.get("doi"), f.name))
     return out
 
 
@@ -550,6 +733,33 @@ def other_version(c: dict, works: list[dict]) -> dict | None:
     return None
 
 
+def work_ids(c: dict) -> set[str]:
+    """Every id a record can be recognised by: its key, DOI, arXiv id (no version),
+    Semantic Scholar id, and its normalised title when it has four words or more."""
+    ids = {c["key"]} if c.get("key") else set()
+    if c.get("doi"):
+        ids.add("doi:" + c["doi"].lower())
+    if c.get("arxiv"):
+        ids.add("arxiv:" + re.sub(r"v\d+$", "", c["arxiv"].lower()))
+    if c.get("s2"):
+        ids.add(f"s2:{c['s2']}")
+    t = norm_title(c.get("title") or "")
+    if len(t.split()) >= 4:
+        ids.add("title:" + t)
+    return ids
+
+
+def earlier_ids(pdir: Path) -> dict[str, str]:
+    """Every id of every candidate an earlier watch listed → the key it was listed
+    under (the first run that listed it wins)."""
+    out: dict[str, str] = {}
+    for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json"), key=lambda f: f.stat().st_mtime):
+        for c in load_run(f).get("candidates", []):
+            for i in work_ids(c):
+                out.setdefault(i, c["key"])
+    return out
+
+
 def earlier_keys(pdir: Path) -> tuple[dict[str, bool], dict[str, tuple[str, dict]]]:
     """Every candidate an earlier watch listed → whether it was offered in full
     (triaged or decided; a run written before `strong` existed counts as full),
@@ -559,14 +769,13 @@ def earlier_keys(pdir: Path) -> tuple[dict[str, bool], dict[str, tuple[str, dict
     offered: dict[str, bool] = {}
     pending: dict[str, tuple[str, dict]] = {}
     for f in sorted((pdir / "_vigilancia").glob("vigilancia-*.json"), key=lambda f: f.stat().st_mtime):
-        try:
-            for c in load_run(f).get("candidates", []):
-                full = bool(c.get("triage") or c.get("decision")) or "strong" not in c
-                offered[c["key"]] = offered.get(c["key"], False) or full
-                if c.get("strong") and not full:
-                    pending.setdefault(c["key"], (c.get("pendiente_desde") or f.name, c))
-        except (OSError, json.JSONDecodeError, KeyError):
-            continue
+        for c in load_run(f).get("candidates", []):
+            # offered = someone read it: its triage line or a decision is recorded. Being
+            # picked for triage (`triage: true`) is not reading it.
+            full = bool(c.get("why") or c.get("decision")) or "strong" not in c
+            offered[c["key"]] = offered.get(c["key"], False) or full
+            if c.get("strong") and not full:
+                pending.setdefault(c["key"], (c.get("pendiente_desde") or f.name, c))
     return offered, {k: v for k, v in pending.items() if not offered[k]}
 
 
@@ -597,10 +806,21 @@ def digest_md(run: dict) -> str:
     L = [f"# Vigilancia de literatura — {run.get('project') or ''} — {run.get('until')}", "",
          f"*Ventana:* desde {run.get('since')} (consultado desde {run.get('queried_from')}) hasta {run.get('until')} · "
          f"*Consultas de:* {run.get('queries_from')}", ""]
-    if run.get("lost") or run.get("truncated"):
+    L += _warnings_md(run)
+    if run.get("plan_newer"):
+        L += ["## Hay un plan más reciente", "",
+              f"La vigilancia sigue el plan de `{run.get('queries_from')}` (el que adoptó; "
+              f"`_vigilancia/{PLAN_FOLLOWED}`), no `{run['plan_newer']}`, que es posterior — quizá una búsqueda "
+              "puntual. Para vigilar con ese plan, adóptalo explícitamente: `lit_watch.py delta … --adopt-plan "
+              f"{Path(run['plan_newer']).parent.as_posix()}`.", ""]
+    if run.get("lost") or run.get("truncated") or run.get("huecos"):
         L += ["## ⚠️ Cobertura degradada", ""]
         L += [f"- Perdida (su ventana sigue abierta): {x}" for x in run.get("lost") or []]
-        L += [f"- Truncada (su ventana sigue abierta): {x}" for x in run.get("truncated") or []]
+        L += [f"- Truncada: {x}" for x in run.get("truncated") or []]
+        if run.get("huecos"):
+            L += ["- Tramos aún sin leer (cada vigilancia relee lo más reciente de cada uno; las semanas nuevas "
+                  "sí quedan cubiertas):"]
+            L += [f"  - {x}" for x in run["huecos"]]
         L.append("")
     ranked = [q for q in run.get("queries") or [] if (q.get("source") in ("s2", "crossref") or q.get("sin_clave"))
               and not q.get("error") and (q.get("total") or 0) > (q.get("hits") or 0)]
@@ -608,13 +828,22 @@ def digest_md(run: dict) -> str:
         L += ["## Cobertura por relevancia", "",
               "Semantic Scholar y Crossref ordenan por relevancia y su total cuenta coincidencias sueltas: de estas "
               "consultas se leyeron los primeros resultados de la ventana, no la ventana entera.", ""]
+        # (OpenAlex sin clave lee sus resultados más recientes: va aquí porque tampoco se lee entera)
         if any(q.get("sin_clave") for q in ranked):
             L += ["OpenAlex sin `OPENALEX_API_KEY`: cada consulta lee solo sus "
-                  f"{KEYLESS_OPENALEX_PER_QUERY} resultados más relevantes de la ventana (una llamada), para no "
+                  f"{KEYLESS_OPENALEX_PER_QUERY} resultados más recientes de la ventana (una llamada), para no "
                   "agotar el presupuesto diario sin clave; con la clave gratuita "
                   "(https://openalex.org/settings/api) se lee la ventana entera.", ""]
         L += [f"- {q.get('id')} {q.get('source')}{' (sin clave)' if q.get('sin_clave') else ''} "
               f"«{q.get('query')}»: {q.get('hits')} leídos de {q.get('total')}" for q in ranked]
+        L.append("")
+    dated = [q for q in run.get("queries") or [] if q.get("fecha_quitada")]
+    if dated:
+        L += ["## Consultas con fecha propia", "",
+              "Estas filas de la tabla Consultas traían su propia ventana de fechas; la vigilancia se la quita y "
+              "aplica la suya (dos ventanas juntas dejarían la consulta vacía para siempre):", ""]
+        L += [f"- {q.get('facet')} {q.get('source')} «{q.get('query')}»: quitado `{q['fecha_quitada']}`"
+              for q in dated]
         L.append("")
     if run.get("sources_left_out"):
         L += ["## Fuentes fuera de la vigilancia", ""] + [f"- {x}" for x in run["sources_left_out"]] + [""]
@@ -677,9 +906,28 @@ def digest_md(run: dict) -> str:
     return "\n".join(L)
 
 
+def failure_md(run: dict) -> str:
+    """The page of a watch that lost every query: nothing offered, nothing moved."""
+    L = [f"# Vigilancia de literatura — {run.get('project') or ''} — {run.get('until')}", "",
+         "## ❌ La vigilancia falló: se perdieron todas las consultas", "",
+         "No se ha guardado ninguna ejecución y ni `last_watch` ni las ventanas de las consultas se han movido: "
+         f"la próxima vigilancia vuelve a leer desde donde estaba (consultado desde {run.get('queried_from')}).", "",
+         "Por qué (cada consulta y su error):", ""]
+    L += [f"- {x}" for x in run.get("lost") or []]
+    L.append("")
+    L += _warnings_md(run)
+    return "\n".join(L)
+
+
+def _warnings_md(run: dict) -> list[str]:
+    if not run.get("config_warnings"):
+        return []
+    return ["## ⚠️ Configuración", ""] + [f"- {w}" for w in run["config_warnings"]] + [""]
+
+
 def write_digest(run_file: Path, run: dict) -> Path:
     md = run_file.with_suffix(".md")
-    md.write_text(digest_md(run), encoding="utf-8", newline="\n")
+    atomic_write(md, digest_md(run))
     return md
 
 
@@ -688,14 +936,70 @@ def cmd_digest(a) -> dict:
     return {"digest": md.name}
 
 
+def raw_dir_of(run_file: Path) -> Path:
+    """The run's own folder of raw responses: `raw-<date>[-n]`, beside its JSON."""
+    return run_file.with_name("raw-" + run_file.stem.removeprefix("vigilancia-"))
+
+
 def run_path(pdir: Path, today: date) -> Path:
+    """This run's file name: the first `vigilancia-<date>[-n].json` that neither a
+    run nor a run's raw responses use yet, so two runs on one day never share one."""
     folder = pdir / "_vigilancia"
     folder.mkdir(exist_ok=True)
     stem = f"vigilancia-{today.isoformat()}"
     p, n = folder / f"{stem}.json", 2
-    while p.exists():
+    while p.exists() or p.with_suffix(".md").exists() or raw_dir_of(p).exists():
         p, n = folder / f"{stem}-{n}.json", n + 1
     return p
+
+
+LOCK = ".vigilancia.lock"
+LOCK_STALE_HOURS = 6       # a lock older than this is a run that died: it is taken over, and said so
+EXIT_LOST_ALL = 4          # delta: every query lost (a page saying so is written)
+EXIT_BUSY = 5              # delta: another watch of this project is running
+
+
+class Busy(Exception):
+    pass
+
+
+def take_lock(pdir: Path, now: float | None = None) -> bool:
+    """One watch of a project at a time (`_vigilancia/.vigilancia.lock`, created
+    exclusively). A lock older than LOCK_STALE_HOURS is taken over; returns
+    whether that happened."""
+    import time
+    folder = pdir / "_vigilancia"
+    folder.mkdir(exist_ok=True)
+    lock = folder / LOCK
+    now = time.time() if now is None else now
+    stale = False
+    for _ in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = now - lock.stat().st_mtime
+            except OSError:
+                continue                               # released meanwhile: try again
+            if age < LOCK_STALE_HOURS * 3600:
+                try:
+                    held = lock.read_text(encoding="utf-8").strip()
+                except OSError:
+                    held = ""
+                raise Busy(f"otra vigilancia de este proyecto está en marcha ({held or 'sin datos'}; "
+                           f"_vigilancia/{LOCK}): espera a que termine. Si murió, el cerrojo caduca a las "
+                           f"{LOCK_STALE_HOURS} h, o bórralo a mano") from None
+            lock.unlink(missing_ok=True)
+            stale = True
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"pid": os.getpid(), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+        return stale
+    raise Busy(f"no se pudo tomar _vigilancia/{LOCK}: otra vigilancia lo acaba de tomar")
+
+
+def release_lock(pdir: Path) -> None:
+    (pdir / "_vigilancia" / LOCK).unlink(missing_ok=True)
 
 
 CURSORS = "cursores.json"
@@ -704,17 +1008,59 @@ CURSORS = "cursores.json"
 def load_cursors(pdir: Path) -> dict[str, str]:
     """Per query: the last date up to which it answered (`_vigilancia/cursores.json`)."""
     f = pdir / "_vigilancia" / CURSORS
-    try:
-        return dict(json.loads(f.read_text(encoding="utf-8")).get("queries") or {})
-    except (OSError, json.JSONDecodeError, AttributeError):
+    if not f.is_file():
         return {}
+    data = load_state(f)
+    if not isinstance(data, dict) or not isinstance(data.get("queries") or {}, dict):
+        raise Refused(f"_vigilancia/{CURSORS} no tiene la forma esperada ({{\"queries\": {{…}}}}): la vigilancia no "
+                      "adivina su estado — restáuralo (git) o arréglalo a mano")
+    return dict(data.get("queries") or {})
 
 
-def save_cursors(pdir: Path, cursors: dict[str, str]) -> None:
+def load_gaps(pdir: Path) -> dict[str, list[str]]:
+    """Per query: the older part of a capped window it has not read yet
+    (`huecos` in `_vigilancia/cursores.json`, [from, to] inclusive)."""
+    f = pdir / "_vigilancia" / CURSORS
+    if not f.is_file():
+        return {}
+    data = load_state(f)
+    gaps = data.get("huecos") or {} if isinstance(data, dict) else None
+    if not isinstance(gaps, dict) or not all(isinstance(v, list) and len(v) == 2 for v in gaps.values()):
+        raise Refused(f"_vigilancia/{CURSORS}: `huecos` no tiene la forma esperada ({{firma: [desde, hasta]}}) — "
+                      "restáuralo (git) o arréglalo a mano")
+    return {k: list(v) for k, v in gaps.items()}
+
+
+def save_cursors(pdir: Path, cursors: dict[str, str], gaps: dict[str, list[str]] | None = None) -> None:
     f = pdir / "_vigilancia" / CURSORS
     f.parent.mkdir(exist_ok=True)
-    f.write_text(json.dumps({"tool": TOOL, "queries": dict(sorted(cursors.items()))}, ensure_ascii=False, indent=2)
-                 + "\n", encoding="utf-8", newline="\n")
+    data = {"tool": TOOL, "queries": dict(sorted(cursors.items()))}
+    if gaps:
+        data["huecos"] = dict(sorted(gaps.items()))
+    atomic_write(f, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def oldest_date(recs: list[dict]) -> str | None:
+    """The oldest full date (YYYY-MM-DD) among records read newest first."""
+    ds = [(r.get("date") or "")[:10] for r in recs]
+    ds = [d for d in ds if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
+    return min(ds) if ds else None
+
+
+def leaf_gap(start: date, end: date, recs: list[dict]) -> list[str]:
+    """What a capped window read newest first left unread: from its start to the
+    oldest date it read (that day included — it may have been read in part)."""
+    old = oldest_date(recs)
+    hi = min(max(date.fromisoformat(old), start), end) if old else end
+    return [start.isoformat(), hi.isoformat()]
+
+
+def merge_gap(a: list[str] | None, b: list[str] | None) -> list[str] | None:
+    """One envelope for two unread spans of a query: re-reading a little more is
+    harmless (papers already offered are dropped), leaving a day out is not."""
+    if not a or not b:
+        return a or b
+    return [min(a[0], b[0]), max(a[1], b[1])]
 
 
 def query_signature(q: dict) -> str:
@@ -741,10 +1087,20 @@ NOT_WINDOWABLE = {"openreview": "su búsqueda no filtra ni ordena por fecha: una
 
 
 def _watch_plan(plan: dict, start: date, today: date) -> dict:
+    """The plan as a watch runs it: its window, no anchors, and pages newest first
+    (`order: date`) so a capped window always holds the newest papers. The plan's
+    own `from` is the search's history, not the watch's: it stays the
+    publication-date floor (`pub_floor`)."""
     srcs = [x for x in plan.get("sources") or [] if x not in NOT_WINDOWABLE]
     return {**plan, "sources": srcs, "from": start.isoformat(), "to": today.isoformat(), "anchors": 0,
             "per_query": MAX_RESULTS, "max_per_query": MAX_RESULTS, "window_by": "indexed",
-            "pub_floor": plan.get("from")}
+            "pub_floor": plan.get("from"), "order": "date"}
+
+
+# Crossref's keyword search matches any word of the query: sorted by date its
+# first pages would be this week's loose matches. It keeps its relevance order (a
+# ranked source, its top results read; never `truncated`).
+RELEVANCE_IN_A_WATCH = {"crossref"}
 
 
 def structured_signatures(plan: dict, today: date) -> list[str]:
@@ -752,12 +1108,15 @@ def structured_signatures(plan: dict, today: date) -> list[str]:
     return [query_signature(q) for q in lit_search.build_queries(_watch_plan(plan, today, today), today.isoformat())]
 
 
-def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: date,
-                     fetch: Fetch) -> tuple[list, list[dict], set[str]]:
+def structured_delta(plan: dict, raw: Path, starts: dict[str, date], today: date,
+                     fetch: Fetch, gaps: dict[str, list[str]] | None = None) -> tuple[list, list[dict], set[str]]:
     """Re-run a lit_search plan with lit_search's own query builders and pager
-    (raw responses kept next to the run), each query over its own window."""
+    (raw responses kept next to the run), each query over its own window, newest
+    first. A window still capped after splitting has read its newest papers: the
+    older part it did not read is its `gap`, re-read (unsplit, newest first) by
+    every later watch until it is read whole (`gaps`: sig → [from, to])."""
+    gaps = gaps or {}
     import lit_search
-    raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw.mkdir(parents=True, exist_ok=True)
     results, log = [], []
 
@@ -769,13 +1128,16 @@ def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: dat
         keyless = q["source"] == "openalex" and not os.environ.get("OPENALEX_API_KEY")
         if keyless:
             p = {**p, "per_query": KEYLESS_OPENALEX_PER_QUERY, "max_per_query": KEYLESS_OPENALEX_PER_QUERY}
+        if q["source"] in RELEVANCE_IN_A_WATCH:
+            p = {**p, "order": "relevance"}
         base = q["id"]
         q["id"] = base + tag                           # each part keeps its own raw files
         recs = lit_search.run_query(q, p, raw, fetch)
         part = {"id": base, "q": q, "recs": recs if not q["error"] else [], "error": q["error"],
-                "total": q["total"], "truncated": bool(q.get("truncated")), "splits": 0}
+                "total": q["total"], "truncated": bool(q.get("truncated")), "splits": 0, "gap": None}
         if keyless:
-            # its top results by relevance, never split: read like a ranked source, not truncated
+            # its newest KEYLESS_OPENALEX_PER_QUERY, never split and never held open: the
+            # keyless daily budget is not spent re-reading one busy query (said on the page)
             part.update(truncated=False, keyless=True)
         if part["truncated"] and not q["error"] and depth < MAX_SPLIT_DEPTH and (end - start).days >= 1:
             mid = start + (end - start) // 2
@@ -785,17 +1147,33 @@ def structured_delta(plan: dict, pdir: Path, starts: dict[str, date], today: dat
             part["error"] = next((h["error"] for h in halves if h["error"]), None)
             part["truncated"] = any(h["truncated"] for h in halves)
             part["splits"] = 1 + sum(h["splits"] for h in halves)
+            part["gap"] = merge_gap(halves[0]["gap"], halves[1]["gap"])
+        elif part["truncated"] and not q["error"]:
+            part["gap"] = leaf_gap(start, end, part["recs"])
         return part
+
+    def entry(part: dict, sig: str, start: date, **extra) -> dict:
+        q = part["q"]
+        return {"id": part["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
+                "query": q["query"], "signature": sig, "from": start.isoformat(),
+                "hits": len({r.get("arxiv") or r.get("doi") or r.get("title") for r in part["recs"]})
+                if not part["error"] else None, "total": part["total"],
+                "truncated": part["truncated"], "splits": part["splits"], "error": part["error"],
+                "gap": part["gap"], **({"sin_clave": True} if part.get("keyless") else {}), **extra}
 
     for sig in structured_signatures(plan, today):
         part = window(sig, starts[sig], today, 0, "")
-        q, recs = part["q"], part["recs"]
-        log.append({"id": part["id"], "facet": q["facet"], "source": q["source"], "pass": q["pass"],
-                    "query": q["query"], "signature": sig, "from": starts[sig].isoformat(),
-                    "hits": len(recs) if not part["error"] else None, "total": part["total"],
-                    "truncated": part["truncated"], "splits": part["splits"], "error": part["error"],
-                    **({"sin_clave": True} if part.get("keyless") else {})})
-        if not part["error"]:
+        log.append(entry(part, sig, starts[sig]))
+        parts = [part]
+        if sig in gaps:
+            lo, hi = (date.fromisoformat(x) for x in gaps[sig])
+            gpart = window(sig, lo, hi, MAX_SPLIT_DEPTH, "-h")        # its newest first, never split
+            log.append(entry(gpart, sig, lo, relectura_hueco=gaps[sig]))
+            parts.append(gpart)
+        for part in parts:
+            q, recs = part["q"], part["recs"]
+            if part["error"]:
+                continue
             for r in recs:                             # a cross hit carries its own facet (or none)
                 results.append(({"facet": r.get("facet"), "source": q["source"].replace("-anchor", "")}, [{
                     "arxiv": r.get("arxiv"), "doi": r.get("doi"), "s2": r.get("s2"), "title": r["title"],
@@ -913,19 +1291,17 @@ def citation_roots(vault: Path, pdir: Path, plan_run: str | None, fetch: Fetch,
             roots.setdefault(entry["w"], seed)
     if changed:
         cache_f.parent.mkdir(exist_ok=True)
-        cache_f.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                           encoding="utf-8", newline="\n")
+        atomic_write(cache_f, json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     return roots
 
 
-def citation_delta(roots: dict[str, str], starts: dict[str, date], today: date, pdir: Path,
+def citation_delta(roots: dict[str, str], starts: dict[str, date], today: date, raw: Path,
                    fetch: Fetch) -> tuple[list, list[dict]]:
     """The works citing any root, published in each root's window: one OpenAlex
     `cites:W1|W2|…` query per group of roots sharing a start, cursor-paged up to
     MAX_RESULTS (more keeps those roots' windows open). Each citing work records
     which roots it cites (`cita_a`)."""
     import lit_search
-    raw = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw.mkdir(parents=True, exist_ok=True)
     by_start: dict[date, list[str]] = {}
     for wid in sorted(roots):
@@ -1074,11 +1450,103 @@ def own_papers_news(vault: Path, pdir: Path, fetch: Fetch, today: date) -> tuple
     return news, asked
 
 
+STATUS = "estado.json"
+
+
+def write_status(pdir: Path, today: date, status: str, res: dict | None = None, error: str | None = None) -> None:
+    """`_vigilancia/estado.json`: how the last watch went (ok / degraded / failed),
+    its counts and its page — for an interface or a cron wrapper to notify from."""
+    import time
+    res = res or {}
+    counts = ("queries", "lost", "candidates", "strong", "to_triage", "strong_not_triaged", "carried",
+              "suspicious", "publicadas")
+
+    def name(p):                                       # run and page live in _vigilancia/
+        return Path(p).name if p else None
+    atomic_write(pdir / "_vigilancia" / STATUS, json.dumps({
+        "tool": TOOL, "project": hub_field(pdir, "id"), "date": today.isoformat(),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "status": status,
+        "exit_code": 0 if status in ("ok", "degraded") else EXIT_LOST_ALL if res.get("lost_all") else 1,
+        "run": name(res.get("run")), "page": name(res.get("digest")),
+        "counts": {k: res[k] for k in counts if k in res},
+        "truncated": len(res.get("truncated") or []), "lost_queries": res.get("lost_queries") or [],
+        "open_windows": res.get("open_windows") or [], "config_warnings": res.get("config_warnings") or [],
+        "error": error}, ensure_ascii=False, indent=2) + "\n")
+
+
 def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
-          citations: bool = True, own: bool = True) -> dict:
+          citations: bool = True, own: bool = True, adopt: str | None = None) -> dict:
+    """One watch of the project, holding its lock (`take_lock`) while it runs. Every
+    run that gets the lock leaves `_vigilancia/estado.json`, a failed one too."""
     if not hub_path(pdir).is_file():
         raise Refused(f"{pdir} is not a project folder (no _hub.md)")
-    plan, plan_run = structured_plan(pdir)
+    stale = take_lock(pdir)
+    try:
+        res = _delta(vault, pdir, since, top, fetch, today, citations, own, adopt)
+    except Exception as exc:
+        write_status(pdir, today, "failed", error=str(exc)[:400])
+        raise
+    finally:
+        release_lock(pdir)
+    return {**res, "stale_lock_removed": stale}
+
+
+def advance(log: list[dict], cursors: dict[str, str], gaps: dict[str, list[str]], since: date, today: date,
+            explicit: bool) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Each query's cursor and unread gap after this run.
+
+    A query that answered is covered up to today — also one still capped after
+    splitting, when it was read newest first: it read the newest papers of its
+    window, so every new week is covered, and the older part it could not read
+    becomes its gap (merged with any earlier one), re-read by each later watch
+    from its newest end until it is read whole. A gap re-read that answered in
+    full closes the gap; still capped, the gap shrinks to what is left; lost, it
+    stays. A lost query keeps its own start, so its window stays open without
+    holding the others back; a capped one with no date order (the citation pass)
+    likewise. With --since, a cursor moves only when the run reached back to it."""
+    cursors, gaps = dict(cursors), {k: list(v) for k, v in gaps.items()}
+    for x in log:                                      # the gap re-reads first, then this run's windows
+        if not x.get("relectura_hueco") or x.get("error"):
+            continue
+        if x.get("gap"):
+            gaps[x["signature"]] = x["gap"]
+        else:
+            gaps.pop(x["signature"], None)
+    for x in log:
+        if x.get("relectura_hueco"):
+            continue
+        for sig in x.get("signatures") or [x["signature"]]:
+            start = date.fromisoformat(x["from"])
+            prev = cursors.get(sig)
+            if x.get("error") or (x.get("truncated") and not x.get("gap")):
+                if not prev:
+                    cursors[sig] = since.isoformat()
+                continue
+            if x.get("gap"):
+                gaps[sig] = merge_gap(gaps.get(sig), x["gap"])
+            if not explicit or not prev or start <= date.fromisoformat(prev):
+                cursors[sig] = today.isoformat()
+    return cursors, gaps
+
+
+def truncated_line(x: dict) -> str:
+    who = f"{x.get('id', x['facet'])} {x['source']}"
+    if x.get("gap"):
+        return (f"{who}: leídos los {x.get('hits')} más recientes; quedan sin leer los anteriores a {x['gap'][1]} "
+                f"(desde {x['gap'][0]}; {x.get('total')} en la ventana), que se releen en las próximas vigilancias")
+    return f"{who}: {x.get('hits')} de {x.get('total')} (su ventana sigue abierta)"
+
+
+def _sig_label(sig: str, log: list[dict]) -> str:
+    x = next((x for x in log if x.get("signature") == sig), None)
+    return f"{x.get('id', x.get('facet'))} {x['source']} (faceta {x.get('facet')})" if x else sig
+
+
+def _delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, today: date,
+           citations: bool, own: bool, adopt: str | None = None) -> dict:
+    out = run_path(pdir, today)                        # this run's name, and its own raw folder
+    raw_dir = raw_dir_of(out)
+    plan, plan_run, newer_plan = followed_plan(pdir, adopt)
     queries = [] if plan else recorded_queries(pdir)
     if not plan and not queries:
         raise Refused("no recorded queries to re-run: no _busquedas/<run>/plan.json (lit_search.py) and "
@@ -1088,6 +1556,8 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         lw = (hub_field(pdir, "last_watch") or "").strip()
         since = date.fromisoformat(lw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lw) else today - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     cursors = load_cursors(pdir)
+    gaps = load_gaps(pdir)
+    seen_before, backlog = earlier_keys(pdir)          # a corrupt run stops the watch before any request
     sigs = structured_signatures(plan, today) if plan else [query_signature(q) for q in queries]
     if not sigs:
         raise Refused("no query of the plan can be watched: its sources ("
@@ -1098,29 +1568,36 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     starts.update({f"citas|{w}": query_start(f"citas|{w}", cursors, since, explicit) for w in roots})
     query_from = min(starts.values())
     arx, dois, titles = known_papers(vault)
-    seen_before, backlog = earlier_keys(pdir)
     merged: dict[str, dict] = {}
     by_title: dict[str, str] = {}
     log = []
     if plan:
-        results, log, facets_all = structured_delta(plan, pdir, starts, today, fetch)
+        results, log, facets_all = structured_delta(plan, raw_dir, starts, today, fetch, gaps)
     else:
         facets_all = {q["facet"] for q in queries}
         results = []
         for q in queries:
             sig = query_signature(q)
-            entry = {**q, "signature": sig, "from": starts[sig].isoformat(),
-                     "hits": None, "error": None, "total": None, "truncated": False}
-            try:
-                got = arxiv_delta(q["query"], starts[sig], today, fetch, entry) if q["source"] == "arxiv" \
-                    else s2_delta(q["query"], starts[sig], fetch, entry)
-                entry["hits"] = len(got)
-                results.append((q, got))
-            except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
-                entry["error"] = net.redact(str(exc))[:200]
-            log.append(entry)
+            windows = [(starts[sig], today, {})]
+            if q["source"] == "arxiv" and sig in gaps:   # the older part a capped window left unread
+                windows.append((date.fromisoformat(gaps[sig][0]), date.fromisoformat(gaps[sig][1]),
+                                {"relectura_hueco": gaps[sig]}))
+            for lo, hi, extra in windows:
+                entry = {**q, "signature": sig, "from": lo.isoformat(), "hits": None, "error": None,
+                         "total": None, "truncated": False, "gap": None, **extra}
+                try:
+                    # arXiv is read newest first (submittedDate, descending)
+                    got = arxiv_delta(q["query"], lo, hi, fetch, entry) if q["source"] == "arxiv" \
+                        else s2_delta(q["query"], lo, fetch, entry)
+                    entry["hits"] = len(got)
+                    if entry["truncated"]:
+                        entry["gap"] = leaf_gap(lo, hi, got)
+                    results.append((q, got))
+                except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as exc:
+                    entry["error"] = net.redact(str(exc))[:200]
+                log.append(entry)
     if roots:
-        cit_results, cit_log = citation_delta(roots, starts, today, pdir, fetch)
+        cit_results, cit_log = citation_delta(roots, starts, today, raw_dir, fetch)
         results += cit_results
         log += cit_log
     for q, got in results:
@@ -1143,7 +1620,6 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
                 cur["sources"].append(q["source"])
     import lit_search
     enrich_log: list[dict] = []
-    raw_dir = pdir / "_vigilancia" / f"raw-{today.isoformat()}"
     raw_dir.mkdir(parents=True, exist_ok=True)
     # only a candidate that could be strong is worth a lookup: a credited facet, a facet
     # term in its title, or a citation of the project's papers — not a keyword source's
@@ -1169,9 +1645,21 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     by_vault, by_earlier = vault_works(vault), earlier_works(pdir)
     publicadas = []
     cands = []
+    # a paper listed before under another id (first a DOI, now an arXiv id carrying
+    # that DOI; the same exact title) is the paper listed before: it takes that key
+    ids_before = earlier_ids(pdir)
+    taken: set[str] = set()
     for c in merged.values():
         if in_vault(c):
             continue
+        if c["key"] not in seen_before:
+            same = sorted({ids_before[i] for i in work_ids(c) if i in ids_before})
+            if same:
+                c["otras_claves"] = [c["key"]]
+                c["key"] = same[0]
+        if c["key"] in taken:
+            continue                                   # two new records of one earlier paper
+        taken.add(c["key"])
         if c["key"] not in seen_before:
             prev = other_version(c, by_vault) or other_version(c, by_earlier)
             if prev:
@@ -1225,8 +1713,9 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
     for c in cands:
         c["novelty"] = sorted(pairs[c["key"]].values(), key=lambda x: (-x["shared"], -x["score"]))[:3]
     cands.sort(key=lambda c: c.get("date") or "", reverse=True)  # newest first within a rank
-    # the backlog first (oldest unread strong candidates), so a busy feed never starves it
-    cands.sort(key=lambda c: (not c["strong"], c.get("pendiente_desde") is None, c.get("pendiente_desde") or "",
+    # this window's strong papers take the triage slots first, then the backlog (oldest
+    # first): an old backlog never starves this week's papers, and it is carried, not dropped
+    cands.sort(key=lambda c: (not c["strong"], c.get("pendiente_desde") is not None, c.get("pendiente_desde") or "",
                               -len(c["facets"]), -max([n["score"] for n in c["novelty"]] or [0])))
     for i, c in enumerate(cands):
         c["triage"] = c["strong"] and i < top
@@ -1238,71 +1727,69 @@ def delta(vault: Path, pdir: Path, since: date | None, top: int, fetch: Fetch, t
         except Exception as exc:  # noqa: BLE001 — an extra check never costs the watch itself
             own_news = {"versiones": [], "publicadas_arxiv": [], "aceptadas_openreview": [],
                         "perdidas": [f"comprobación de tus papers: {net.redact(str(exc))[:160]}"]}
-    truncated = [x for x in log if x.get("truncated")]
+    # a gap re-read still capped is not news: what is left of it is in `huecos`
+    truncated = [x for x in log if x.get("truncated") and not x.get("relectura_hueco")]
     lost = [x for x in log if x.get("error")]
+    new_cursors, new_gaps = advance(log, cursors, gaps, since, today, explicit)
+    # citations always go through OpenAlex
+    warnings = lit_search.config_warnings(
+        {"sources": sorted(set((plan or {}).get("sources") or [q["source"] for q in queries])
+                           | ({"openalex"} if citations else set()))})
     run = {"tool": TOOL, "project": hub_field(pdir, "id"), "since": since.isoformat(),
            "queried_from": query_from.isoformat(), "until": today.isoformat(),
-           "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)",
-           "degraded": bool(lost) or bool(truncated), "lost_all": lost_all,
-           "truncated": [f"{x.get('id', x['facet'])} {x['source']}: {x.get('hits')} de {x.get('total')}"
-                         for x in truncated],
+           "queries_from": plan_run or "Estado-del-arte.md (tabla Consultas)", "plan_newer": newer_plan,
+           "degraded": bool(lost) or bool(truncated) or bool(new_gaps), "lost_all": lost_all,
+           "truncated": [truncated_line(x) for x in truncated],
+           "huecos": [f"{_sig_label(sig, log)}: {lo} – {hi}" for sig, (lo, hi) in sorted(new_gaps.items())],
            "lost": [f"{x.get('id', x['facet'])} {x['source']}: {x['error']}" for x in lost],
            "sources_left_out": [f"{x}: {NOT_WINDOWABLE[x]}" for x in (plan or {}).get("sources") or []
                                 if x in NOT_WINDOWABLE],
            "citation_roots": len(roots), "citation_root_errors": root_errors, "abstract_lookups": enrich_log,
            "queries": log, "candidates": cands, "publicadas": publicadas, "threats": [],
+           "raw_dir": raw_dir.relative_to(pdir).as_posix(), "config_warnings": warnings,
            **({"tus_papers": own_news} if own_news is not None else {})}
-    out = None
+    written = None
     moved = False
-    if not lost_all:
-        out = run_path(pdir, today)
-        save_run(out, run)
+    if lost_all:
+        # nothing is offered and no window moves; the page says the watch failed and why
+        digest = out.with_suffix(".md")
+        atomic_write(digest, failure_md(run))
+    else:
+        # the page first: a candidate is in a run file only once it is on a page
         digest = write_digest(out, run)
-        # Coverage is kept per query. One that answered — in full, or capped at
-        # MAX_RESULTS by relevance (reported as truncated, never hidden) — is covered
-        # up to today; a lost one keeps its own start, so its window stays open
-        # without holding every other query back. With --since, a cursor moves only
-        # when the run reached back to it (no gap is skipped).
-        for x in log:
-            for sig in x.get("signatures") or [x["signature"]]:
-                start = date.fromisoformat(x["from"])
-                prev = cursors.get(sig)
-                if x.get("error") or x.get("truncated"):
-                    # lost, or still capped after splitting: not covered — its window stays open
-                    if not prev:
-                        cursors[sig] = since.isoformat()
-                    continue
-                if not explicit or not prev or start <= date.fromisoformat(prev):
-                    cursors[sig] = today.isoformat()
-        save_cursors(pdir, cursors)
+        save_run(out, run)
+        written = out
+        save_cursors(pdir, new_cursors, new_gaps)
         if asked is not None:
-            (pdir / "_vigilancia" / "openreview.json").write_text(
-                json.dumps(asked, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+            atomic_write(pdir / "_vigilancia" / "openreview.json",
+                         json.dumps(asked, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
         text, nl = read_text(hub_path(pdir))
         write_text(hub_path(pdir), set_fields(text, {"last_watch": today.isoformat()}), nl)
         moved = True
-    return {"run": out.relative_to(vault).as_posix() if out else None,
-            "digest": digest.relative_to(vault).as_posix() if out else None, "since": run["since"],
-            "queried_from": run["queried_from"], "until": run["until"],
-            "queries": len(log), "lost": len(lost), "lost_all": lost_all,
-            "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
-            "open_windows": sorted({x["from"] for x in lost + truncated}),
-            "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
-            "to_triage": sum(c["triage"] for c in cands),
-            "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),
-            "carried": sum(1 for c in cands if c.get("pendiente_desde")),
-            "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
-            "novelty_candidates": sum(1 for c in cands if c["novelty"]),
-            "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
-            "publicadas": len(publicadas),
-            **({"tus_papers": {k: len(v) if isinstance(v, list) else v for k, v in own_news.items()}}
-               if own_news is not None else {}),
-            "citation_root_errors": root_errors,
-            "suspicious": sum(1 for c in cands if c.get("sospechoso")),
-            # citations always go through OpenAlex
-            "config_warnings": lit_search.config_warnings(
-                {"sources": sorted(set((plan or {}).get("sources") or [q["source"] for q in queries])
-                                   | ({"openalex"} if citations else set()))})}
+    res = {"run": written.relative_to(vault).as_posix() if written else None,
+           "digest": digest.relative_to(vault).as_posix(), "since": run["since"],
+           "queried_from": run["queried_from"], "until": run["until"],
+           "queries": len(log), "lost": len(lost), "lost_all": lost_all,
+           "lost_queries": run["lost"], "truncated": run["truncated"], "last_watch_moved": moved,
+           "open_windows": sorted({x["from"] for x in lost + truncated if not x.get("gap")}
+                                  | {g[0] for g in new_gaps.values()}),
+           "candidates": len(cands), "strong": sum(c["strong"] for c in cands),
+           "to_triage": sum(c["triage"] for c in cands),
+           "strong_not_triaged": sum(1 for c in cands if c["strong"] and not c["triage"]),
+           "carried": sum(1 for c in cands if c.get("pendiente_desde")),
+           "sources_left_out": [x.split(":")[0] for x in run["sources_left_out"]],
+           "novelty_candidates": sum(1 for c in cands if c["novelty"]),
+           "citation_roots": len(roots), "citing": sum(1 for c in cands if c.get("cita_a")),
+           "publicadas": len(publicadas), "newer_plan": newer_plan,
+           **({"tus_papers": {k: len(v) if isinstance(v, list) else v for k, v in own_news.items()}}
+              if own_news is not None else {}),
+           "citation_root_errors": root_errors,
+           "suspicious": sum(1 for c in cands if c.get("sospechoso")),
+           "config_warnings": warnings}
+    res["status"] = "failed" if lost_all else "degraded" if run["degraded"] else "ok"
+    write_status(pdir, today, res["status"], res, error=None if not lost_all else
+                 "se perdieron todas las consultas: " + "; ".join(run["lost"])[:400])
+    return res
 
 
 # --------------------------------------------------------------------------
@@ -1321,6 +1808,12 @@ def hypothesis_file(pdir: Path, hid: str) -> Path:
 
 
 def cmd_triage(a) -> dict:
+    """One triage line: by hand (`--key` + `--why`, the researcher's own), or the
+    screener's reply to the run's triage packet (`--from-store` / `--reply`)."""
+    if a.from_store or a.reply:
+        return triage_from_screener(a)
+    if not a.key or a.why is None:
+        raise Refused("triage needs --key and --why, or --from-store / --reply <file> (the screener's reply)")
     run = load_run(a.run)
     c = find_candidate(run, a.key)
     why = ws(a.why)
@@ -1329,6 +1822,113 @@ def cmd_triage(a) -> dict:
     c["why"] = why
     save_run(a.run, run)
     return {"key": a.key, "why": why}
+
+
+def _packet_plan(pdir: Path, run: dict) -> dict:
+    """The criteria the screener triages against: the followed lit_search plan,
+    else (a legacy project) the hub's name and the facets of its Consultas table."""
+    f = pdir / str(run.get("queries_from") or "") / "plan.json"
+    if str(run.get("queries_from") or "").startswith("_busquedas/") and f.is_file():
+        return json.loads(f.read_text(encoding="utf-8"))
+    facets = sorted({q.get("facet") for q in run.get("queries") or [] if q.get("facet") not in (None, "*")})
+    return {"description": hub_field(pdir, "name") or run.get("project") or "",
+            "facets": [{"id": f, "term": f} for f in facets],
+            "include": [], "exclude": [], "scope_out": []}
+
+
+def triage_packet_text(pdir: Path, run: dict) -> tuple[str, list[str]]:
+    """The screener's whole input for a run's triage: the plan's criteria and the
+    candidates marked for triage still without a line — titles and abstracts
+    exactly as fetched, in lit_search's packet format."""
+    import lit_search
+    todo = [c for c in run.get("candidates") or [] if c.get("triage") and not ws(c.get("why") or "")]
+    keys = [c["key"] for c in todo]
+    items = []
+    for c in todo:
+        item = {"key": c["key"], "title": c.get("title") or "", "year": (c.get("date") or "")[:4] or None,
+                "facets": c.get("facets") or [], "sources": c.get("sources") or [],
+                "venues": [c["venue"]] if c.get("venue") else [], "anchor": False, "in_vault": False,
+                "abstract": c.get("abstract") or ""}
+        if c.get("cita_a"):
+            item["cita_a"] = c["cita_a"]
+        if c.get("sospechoso"):
+            item["sospechoso"] = c["sospechoso"]
+        items.append(item)
+    pid = "t-" + hashlib.sha256("\n".join(keys).encode()).hexdigest()[:12]
+    return lit_search.page_packet(_packet_plan(pdir, run), pid, items), keys
+
+
+def cmd_triage_packet(a) -> dict:
+    """Store the triage packet (Kairo's packet store, named by its sha256) and
+    record it in the run. Prints its path and the keys — never a title or an
+    abstract: the session hands the path to a `screener` and never reads them."""
+    run = load_run(a.run)
+    text, keys = triage_packet_text(a.project_dir, run)
+    if not keys:
+        return {"packet": None, "sha256": None, "keys": [], "note": "nothing left to triage in this run"}
+    stored = isolation.store(text)
+    run["triage_packet"] = {"sha256": stored["sha256"], "keys": keys}
+    save_run(a.run, run)
+    return {"packet": stored["path"], "sha256": stored["sha256"], "keys": keys}
+
+
+def _screener_line(c: dict, d: dict) -> str:
+    if not isinstance(d, dict) or d.get("decision") not in ("include", "exclude") or not ws(d.get("why") or ""):
+        raise Refused(f"{c['key']}: the reply's entry is not a screener decision with its `why`")
+    head = d.get("relevance") if d["decision"] == "include" else d.get("reason")
+    line = (f"{head}: " if head else "") + ws(d["why"])
+    if c.get("cita_a"):
+        line = f"cita {', '.join(c['cita_a'])}: {line}"
+    return line[:300]
+
+
+def triage_from_screener(a) -> dict:
+    """Record a screener's reply to the run's triage packet, verbatim, as the
+    triage lines. Like lit_search's merge: the packet must have a read receipt
+    from a screener (unless --allow-unread), the reply must decide exactly the
+    packet's keys, and a reply given as a file must equal what the screener
+    answered (its reply stored by the SubagentStop hook) when one is stored."""
+    run = load_run(a.run)
+    pk = run.get("triage_packet") or {}
+    sha = pk.get("sha256")
+    if not sha:
+        raise Refused("this run has no triage packet: build it with `triage-packet` and hand its path to a screener")
+    if a.from_store:
+        got = isolation.replies(sha, "screener")
+        if not got:
+            raise Refused("no screener reply in the store for this run's packet: Kairo's SubagentStop hook did not "
+                          "run (a session without the plugin's hooks?) — save the reply unchanged and pass --reply")
+        text = got[-1]["text"]
+    else:
+        try:
+            text = Path(a.reply).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise Refused(f"--reply: cannot read it ({e})") from None
+    obj = isolation.json_of(text)
+    if not isinstance(obj, dict):
+        raise Refused("the reply carries no JSON object (the screener's ```json block)")
+    read = bool(isolation.received(sha, "screener"))
+    if not read and not a.allow_unread:
+        raise Refused(f"no screener is recorded as having read the triage packet ({sha[:12]}…): dispatch a "
+                      "`screener` with the packet path `triage-packet` printed; --allow-unread records the lines "
+                      "without that proof")
+    if set(obj) != set(pk.get("keys") or []):
+        raise Refused(f"the reply's keys are not the packet's keys (missing {sorted(set(pk['keys']) - set(obj))[:10]}, "
+                      f"not in the packet {sorted(set(obj) - set(pk['keys']))[:10]}) — re-dispatch the screener")
+    verified = True if a.from_store else isolation.reply_matches(sha, "screener", obj)
+    if verified is False:
+        raise Refused("the reply differs from what the screener answered for this packet (its reply, stored by the "
+                      "SubagentStop hook) — save the reply unchanged, or use --from-store")
+    by_key = {c["key"]: c for c in run["candidates"]}
+    lines = {k: _screener_line(by_key[k], obj[k]) for k in pk["keys"]}
+    for k, line in lines.items():
+        by_key[k]["why"] = line
+        by_key[k]["triage_by"] = {"agent": "screener", "packet_sha256": sha, "packet_read": read,
+                                  "reply_verified": verified,
+                                  "reply_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+    save_run(a.run, run)
+    return {"recorded": len(lines), "packet_read": read, "reply_verified": verified,
+            "excluded": sum(1 for k in lines if obj[k].get("decision") == "exclude")}
 
 
 def judge_packet_text(pdir: Path, run: dict, key: str, hid: str) -> str:
@@ -1460,10 +2060,15 @@ def cmd_check(a) -> dict:
 
 # --------------------------------------------------------------------------
 
-def cmd_init(vault: Path, slug: str, plan_path: Path, today: date) -> dict:
+def cmd_init(vault: Path, slug: str, plan_path: Path, today: date, since: date | None = None) -> dict:
     """A watch-only project: `_hub.md` (tipo: vigilancia) and the plan as its first
     `_busquedas/<date>/plan.json` — no search, ingestion or map. `delta` then runs
-    on it like on any project; create-project can grow it into a full one."""
+    on it like on any project; create-project can grow it into a full one.
+
+    The watch starts DEFAULT_LOOKBACK_DAYS before today, or at `since` when the
+    researcher gives one: the plan's `from` is the search's history (it stays the
+    publication-date floor), not where a weekly watch starts — a first window from
+    years back is capped and would miss this week's papers."""
     import lit_search
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
         raise Refused("--slug: lowercase letters, digits and hyphens")
@@ -1477,7 +2082,7 @@ def cmd_init(vault: Path, slug: str, plan_path: Path, today: date) -> dict:
     nums = [int(m.group(1)) for h in vault.glob("Projects/*/_hub.md")
             if (m := re.search(r"(?m)^id:\s*PROJ-(\d+)", h.read_text(encoding="utf-8", errors="replace")))]
     pid = f"PROJ-{(max(nums) + 1 if nums else 1):03d}"
-    start = plan.get("from") or (today - timedelta(days=DEFAULT_LOOKBACK_DAYS)).isoformat()
+    start = (since or today - timedelta(days=DEFAULT_LOOKBACK_DAYS)).isoformat()
     run = pdir / "_busquedas" / today.isoformat()
     run.mkdir(parents=True)
     (run / "plan.json").write_text(json.dumps({**plan, "tool": lit_search.TOOL, "date": today.isoformat()},
@@ -1499,6 +2104,7 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--vault", required=True, type=Path)
     p.add_argument("--slug", required=True)
     p.add_argument("--plan", required=True, type=Path)
+    p.add_argument("--since", default=None, help="where the watch starts (default: 30 days before today)")
     p = sub.add_parser("delta")
     p.add_argument("--vault", required=True, type=Path)
     p.add_argument("--project-dir", required=True, type=Path)
@@ -1506,18 +2112,27 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
     p.add_argument("--top", type=int, default=10)
     p.add_argument("--no-citations", action="store_true",
                    help="skip the pass over new papers citing the project's papers and seeds")
+    p.add_argument("--adopt-plan", default=None,
+                   help="follow this lit_search plan from now on (_busquedas/<run>, or `latest`) instead of the "
+                        "one recorded in _vigilancia/plan-seguido.json")
     p.add_argument("--no-own-papers", action="store_true",
                    help="skip the check of the project's own papers (new arXiv versions, published versions, "
                         "OpenReview decisions)")
-    for name in ("triage", "threat", "decide", "threat-decide", "check", "judge-packet", "digest"):
+    for name in ("triage", "triage-packet", "threat", "decide", "threat-decide", "check", "judge-packet", "digest"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
         p.add_argument("--run", required=True, type=Path)
-        if name not in ("check", "digest"):
+        if name not in ("check", "digest", "triage", "triage-packet"):
             p.add_argument("--key", required=True)
         p.add_argument("--vault", type=Path, default=None)
         if name == "triage":
-            p.add_argument("--why", required=True)
+            p.add_argument("--key", default=None)
+            p.add_argument("--why", default=None)
+            p.add_argument("--from-store", action="store_true",
+                           help="the screener's reply to the run's triage packet, as the hook stored it")
+            p.add_argument("--reply", default=None, help="the screener's reply, saved unchanged in a file")
+            p.add_argument("--allow-unread", action="store_true",
+                           help="record the lines without a receipt that a screener read the packet")
         if name == "threat":
             p.add_argument("--hypothesis", required=True)
             p.add_argument("--sentence", required=True)
@@ -1543,11 +2158,12 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
         sys.stdout.reconfigure(encoding="utf-8")
     try:
         if a.cmd == "init":
-            out = cmd_init(a.vault.resolve(), a.slug, a.plan, today or date.today())
+            out = cmd_init(a.vault.resolve(), a.slug, a.plan, today or date.today(),
+                           date.fromisoformat(a.since) if a.since else None)
         elif a.cmd == "delta":
             since = date.fromisoformat(a.since) if a.since else None
             out = delta(a.vault.resolve(), a.project_dir.resolve(), since, a.top, fetch, today or date.today(),
-                        citations=not a.no_citations, own=not a.no_own_papers)
+                        citations=not a.no_citations, own=not a.no_own_papers, adopt=a.adopt_plan)
         else:
             a.project_dir = a.project_dir.resolve()
             run_file = a.run if a.run.is_absolute() else (a.vault or Path.cwd()) / a.run
@@ -1556,7 +2172,11 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
                 raise Refused("--run must be a file in this project's _vigilancia/")
             out = {"triage": cmd_triage, "threat": cmd_threat, "decide": cmd_decide,
                    "threat-decide": cmd_threat_decide, "check": cmd_check,
-                   "judge-packet": cmd_judge_packet, "digest": cmd_digest}[a.cmd](a)
+                   "judge-packet": cmd_judge_packet, "digest": cmd_digest,
+                   "triage-packet": cmd_triage_packet}[a.cmd](a)
+    except Busy as exc:
+        print(json.dumps({"error": str(exc), "busy": True}, ensure_ascii=False))
+        return EXIT_BUSY
     except Refused as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 2
@@ -1564,6 +2184,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: dat
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 1
     print(json.dumps(out, ensure_ascii=False))
+    if a.cmd == "delta" and out.get("lost_all"):
+        return EXIT_LOST_ALL
     return 3 if out.get("complete") is False else 0
 
 
