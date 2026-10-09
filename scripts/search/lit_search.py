@@ -2401,7 +2401,10 @@ def candidate_block(n: int, c: dict) -> list[str]:
         meta.append("**Ids:** " + ", ".join(c["ids"]))
     if c.get("sources"):
         meta.append("**Fuentes:** " + ", ".join(c["sources"]))
-    fac = ", ".join(f'{k}: "{v}"' for k, v in sorted((c.get("facets") or {}).items())) or "ninguna"
+    facets = c.get("facets") or {}
+    # a search candidate maps facet → matched term; a watch candidate lists facet ids
+    fac = (", ".join(f'{k}: "{v}"' for k, v in sorted(facets.items())) if isinstance(facets, dict)
+           else ", ".join(str(f) for f in facets)) or "ninguna"
     meta.append(f"**Facetas:** {fac}")
     if c.get("anchor"):
         meta.append("**candidato ancla por citas** (`anchor: true`)")
