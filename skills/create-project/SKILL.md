@@ -212,7 +212,11 @@ screeners, and again before step 7, run
 python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --run <run dir>                       # before screening
 python "${CLAUDE_PLUGIN_ROOT}/scripts/estimate/estimate_run.py" --vault <vault> --papers <P-ids …>    # before step 7
 ```
-and show its per-stage subagents, models, tokens and minutes in a few lines.
+and show its per-stage subagents, models, tokens and minutes in a few lines,
+with the total as its `range` (low–high input tokens): it counts this session
+re-sending the skills every turn (`orchestrator`), each subagent's system
+prompt per turn, context growing while a subagent reads, and the paper-reader
+fix rounds and check_sota re-runs (`fixes`).
 With `paper_ingestion: manual`, wait for the researcher's go-ahead (they may
 narrow the plan, pick fewer papers, or switch to the `corpus` template); with
 `autonomo`, say it and go on. It is an estimate from sizes on disk, never a
