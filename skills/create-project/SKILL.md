@@ -597,7 +597,11 @@ genuinely competing schools exist; include **§9 only if** `type` is
 
 Then, always, **`## Cobertura de lectura`** (written by the Reduce pass): how
 many papers the map covers and every `no leído: P-XXXX §… (motivo)` line a
-summarizer returned, verbatim — or that every citable section was read — plus
+summarizer returned, verbatim — or that every citable section was read — the
+`lectura: P-XXXX completo | ficha + §… abiertas | solo ficha | solo abstract`
+line each summarizer returns per paper (copied verbatim; `check_sota.py`
+reports them as `lectura` and warns when «Huecos identificados» rests on a
+paper read «solo ficha»: open its sections or drop the gap), plus
 one `solo abstract: P-XXXX` line per abstract-only paper and one `no citado:
 P-XXXX (motivo)` line per project paper the map does not cite.
 `check_sota.py` reports it as `cobertura_lectura` (a warning when the section

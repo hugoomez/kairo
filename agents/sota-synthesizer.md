@@ -55,7 +55,11 @@ differs:
   one bullet each, verbatim — a section a summarizer did not read is a gap in
   this map, and the reader must see it before trusting a «no aparece en el
   corpus». No such line anywhere: write `- Todas las secciones citables se
-  leyeron.` Never drop or summarise these lines. Add one
+  leyeron.` Never drop or summarise these lines. Copy every contribution's
+  `lectura: P-XXXX …` line (`completo`, `ficha + §… abiertas`, `solo ficha`,
+  `solo abstract`) verbatim, one bullet each: the reader must see which papers
+  were read only through their card — `check_sota.py` warns when a gap rests
+  on one, so a «no aparece en el corpus» gap should not. Add one
   `- solo abstract: P-XXXX` line per paper a contribution read as abstract-only
   (cited only as `P-XXXX Resumen` «(solo abstract)»), and one
   `- no citado: P-XXXX (motivo)` line per assigned paper no sentence cites:

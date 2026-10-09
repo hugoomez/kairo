@@ -43,6 +43,10 @@ every paper of the project is either cited or declared in «Cobertura de
 lectura» (`sin_cubrir`), and an abstract-only one is declared there as
 `solo abstract: P-0007` (`solo_abstract_sin_declarar`): warnings.
 
+«Cobertura de lectura» carries each summarizer's `lectura: P-0007 completo |
+ficha + §… abiertas | solo ficha | solo abstract` line: reported as `lectura`,
+with a warning when «Huecos identificados» cites a paper read «solo ficha».
+
 None of this checks that a sentence says what its source says — only that its
 locators and figures are real. `--packet FILE [--section "<heading>"]` writes
 the fresh-verifier packet for that: every cited sentence (or row) of the
@@ -115,7 +119,7 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.9.0"
+TOOL = "kairo/check_sota@1.10.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice)\s*[A-Z]?\d+(?:\.\d+)*"
              r"|(?:Eq\.?|Ec\.?|Ecuaci[oó]n|Equation)\s*\(?\s*[A-Z]?\d+\s*\)?"
@@ -688,9 +692,32 @@ def check(vault: str, project: str | None, text: str) -> dict:
         report.setdefault("warnings", []).append(
             f"falta la sección `## {COVERAGE_HEADING}` (lo que el map no leyó): el sota-synthesizer la escribe "
             "siempre; sin ella el lector no sabe qué secciones quedaron sin leer")
+    check_reading_depth(text, cov, report)
     if project:
         check_coverage(vault, project, text, cov, report)
     return report
+
+
+READING = re.compile(r"(?m)^[ \t]*[-*]?\s*lectura:\s*(P-\d{4,5})\s+(.+?)\s*$")
+GAPS_HEADING = re.compile(r"(?m)^## (?:\d+\.\s*)?Huecos identificados\s*$")
+
+
+def check_reading_depth(text: str, cov: str, report: dict) -> None:
+    """How deep each paper was read, as the summarizers returned it (`lectura: P-XXXX
+    completo | ficha + §… abiertas | solo ficha | solo abstract`); a gap resting on a
+    paper read only through its card is a warning: the card is 8–25 items, not the paper."""
+    report["lectura"] = {m.group(1): m.group(2) for m in READING.finditer(cov)}
+    g = GAPS_HEADING.search(text)
+    if not g:
+        return
+    nxt = re.search(r"(?m)^## ", text[g.end():])
+    gaps = text[g.end():g.end() + nxt.start()] if nxt else text[g.end():]
+    thin = sorted({m.group(1) for m in CITE.finditer(gaps)
+                   if report["lectura"].get(m.group(1), "").lower().startswith("solo ficha")})
+    if thin:
+        report.setdefault("warnings", []).append(
+            "«Huecos identificados» se apoya en papers leídos solo por su ficha (lectura: solo ficha): "
+            + ", ".join(thin) + " — un hueco «no aparece» necesita las secciones abiertas")
 
 
 def project_papers(vault: str, project: str) -> list[tuple[str, list[str]]]:
