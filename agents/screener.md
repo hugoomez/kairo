@@ -1,6 +1,6 @@
 ---
 name: screener
-description: Screens ONE page of literature-search candidates against the frozen plan. Receives only the plan's description, facets, inclusion / exclusion criteria and scope_out clauses, and one page of `lit_search.py show` output (keys, titles, abstracts as fetched) — never the conversation, earlier pages or other screeners' decisions. Returns, in a fixed JSON block, one decision per key on its page in decisions.json format. literature-search step 5 dispatches one per page, all in the same turn, and merges the blocks; it never writes anything and never runs a search.
+description: Screens ONE page of literature-search candidates against the frozen plan. Receives only the plan's description, facets, inclusion / exclusion criteria and scope_out clauses, and one page of `lit_search.py show` output (keys, titles, abstracts as fetched) — never the conversation, earlier pages or other screeners' decisions. Returns, in a fixed JSON block, one decision per key on its page in decisions.json format. literature-search step 5 dispatches one per page, all in the same turn, and merges the blocks; lit-watch step 2 dispatches one on a watch run's triage packet (`lit_watch.py triage-packet`), whose decisions become the triage lines. It never writes anything and never runs a search.
 tools: Read
 model: claude-sonnet-5-5
 maxTurns: 3

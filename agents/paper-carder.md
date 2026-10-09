@@ -1,6 +1,6 @@
 ---
 name: paper-carder
-description: Reads ONE ingested Papers/ note whole and returns its reading card — what the paper does, how, on what setup, what it finds and where it stops — as items that each carry a verbatim quote and the locator it sits under. scripts/papers/ficha.py then checks every quote character for character against that locator and keeps only the items that pass, in Papers/_fichas/<P-id>.md, reused by every later map, facet and project instead of re-reading the full text. create-project step 7 dispatches one per paper that has no current card, all in the same turn.
+description: Reads ONE ingested Papers/ note whole and returns its reading card — what the paper does, how, on what setup, what it finds and where it stops — as items that each carry a verbatim quote and the locator it sits under. scripts/papers/ficha.py then checks every quote character for character against that locator and keeps only the items that pass, in Papers/_fichas/<P-id>.md, the starting point of every later map, facet and project (an item is citable for exactly what its quote says; anything else is read in the note itself). create-project step 7 dispatches one per paper that has no current card, all in the same turn.
 tools: Read, Grep, Glob
 model: claude-sonnet-5-5
 maxTurns: 30
