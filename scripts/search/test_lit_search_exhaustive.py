@@ -5,12 +5,14 @@ whole, instead of keeping the top results by relevance (invented works only)."""
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -49,7 +51,8 @@ class Exhaustive(unittest.TestCase):
         self.assertEqual(len(out["truncated"]), 1)
 
     def test_exhaustive_splits_the_window_until_it_is_read_whole(self):
-        out, queries = self.run_plan({**PLAN, "exhaustive": True})
+        with mock.patch.dict(os.environ, {"OPENALEX_API_KEY": "invented-key"}):
+            out, queries = self.run_plan({**PLAN, "exhaustive": True})
         self.assertEqual(out["candidates"], 1500)
         self.assertEqual(out["truncated"], [])
         q = next(x for x in queries if x["source"] == "openalex")

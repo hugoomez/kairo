@@ -50,7 +50,7 @@ vault (Smart Connections MCP directly).
 | Source | How each facet is queried | Notes |
 |---|---|---|
 | arXiv | one OR-group over `ti:`/`abs:`, + `cat:` categories, + `submittedDate` window; by relevance, paged by 100 | 3 s between calls, serial (enforced in `net.py`) |
-| Semantic Scholar | `/paper/search` takes **plain keywords only**: one query per term and synonym, `publicationDateOrYear` window (exact dates), paged; plus one `/paper/search/bulk` **anchor pass** per facet (`"a" \| "b"`, `sort=citationCount:desc`, top `anchors`) | keyless pool often answers `429`; `SEMANTIC_SCHOLAR_API_KEY` fixes it |
+| Semantic Scholar | `/paper/search` takes **plain keywords only**: one query per term and synonym (hyphens sent as spaces — it finds nothing for a hyphenated term; `queries.json` keeps the query as sent), `publicationDateOrYear` window (exact dates), paged; plus one `/paper/search/bulk` **anchor pass** per facet (`"a" \| "b"`, `sort=citationCount:desc`, top `anchors`) | keyless pool often answers `429`; `SEMANTIC_SCHOLAR_API_KEY` fixes it |
 | OpenAlex | `search="t1" OR "t2"`, `from/to_publication_date` filter, paged | list calls cost $0.001 against a free daily budget ($0.10 keyless, $1 with `OPENALEX_API_KEY`); keyless, a query reads only its top `per_query` (never extended to its total — `not_extended` says so) and `run` prints `openalex_list_calls` |
 | Crossref | one query per term, `from-pub-date` / `until-pub-date` | the ACM / IEEE / Springer / APS proceedings and journals (SC, IPDPS, ISC, QCE, PRX Quantum…) with DOI and venue; `KAIRO_MAILTO` joins the polite pool |
 | OpenReview | `/notes/search` (API 2), one plain-keyword query per term and synonym, paged by `offset`; no date filter, so the window is applied to each record | ICLR / NeurIPS / ICML / MLSys / TMLR papers that have no DOI, **with their decision**: a venue is kept only when the paper was accepted (`Submitted to …`, `Withdrawn`, `Rejected` stay in `openreview_venue`, never as a venue); also the DBLP records its authors imported (year only). Keyless, 1 request/s |
@@ -70,8 +70,10 @@ matched) and its state: `completa`, `truncada` (an arXiv / OpenAlex query with
 more matches than `max_per_query` — narrow the facet or raise it), `por
 relevancia` (Semantic Scholar, Crossref, OpenReview: keyword search ranked by
 relevance whose total counts loose any-word matches — the top results are read,
-complete coverage is not promised, and it is not a gap) or `perdida` (failed
-after 3 attempts with backoff). Truncated and lost queries are **degraded
+complete coverage is not promised, and it is not a gap), `por citas (top N)` (the
+Semantic Scholar anchor pass: only the N most cited of the facet) or `perdida` (failed
+after 3 attempts with backoff, a query arXiv rejected as malformed — with
+arXiv's message — or a response the parser could not read). Truncated and lost queries are **degraded
 coverage**, shown at the top of the record, never buried.
 
 **Missing abstracts are filled by DOI.** Crossref often returns ACM / IEEE /
@@ -120,7 +122,10 @@ copies it in, dated):
   kept in `raw/`; `splits` in `queries.json`). Use it for a broad question with
   no recency (e.g. a mature field's whole literature), for `linea_publicacion:
   true`, or when a run came back `truncada` and the researcher wants it whole —
-  it costs more queries and more candidates to screen; say so.
+  it costs more queries and more candidates to screen; say so. Without
+  `OPENALEX_API_KEY` an OpenAlex query is never split (each part is a paid
+  list call against the keyless daily budget): it stays `truncada` and its
+  `not_extended` says why.
 - `fields` — the research fields OpenAlex (each work's primary topic) and
   Semantic Scholar (fields of study) are limited to: `computer-science`,
   `physics`, `mathematics`, `engineering`, `materials-science`, `chemistry`,
@@ -140,6 +145,14 @@ copies it in, dated):
   codes *and* papers on the decoders, so a code-construction paper that never
   mentions decoding is in scope; "decoders for qLDPC codes" is an intersection
   (keep the default). Say which you chose and why in the hand-back.
+- `"required": true` on a facet — every candidate must reach it, on top of
+  `min_facets`. **A union is almost always one required facet plus optional
+  ones**: "qLDPC codes and their decoders" is facet A (`qLDPC codes`, …)
+  `required` + facet B (`decoder`, …) optional, with `min_facets: 1` — so a
+  qLDPC paper on codes alone is read, and a generic "decoder" paper from speech
+  or video coding is not. Anchors are exempt from `min_facets` but not from a
+  required facet; a record with no abstract must show a required facet in its
+  title.
 
 ### 2. Run, and search the vault
 
@@ -180,7 +193,15 @@ vector", "dataset" ↔ "data set"). **The run checks the vocabulary for you**
 terms no candidate shows (a term the field does not use, or a typo), and
 `sinonimos_sugeridos` the acronym ↔ expansion pairs the candidates' own
 abstracts define where the plan lists only one side ("mixture of experts" for
-`MoE`), with how many abstracts define it. Show both to the researcher before
+`MoE`), with how many abstracts define it, and `terminos_ambiguos` the
+acronym terms the candidates show far more often in another case than as
+written. **An acronym matches in its own case only** — a term word with two
+or more capitals (`ZeRO`, `DP`, `MoE`, `FSDP`, `BP-OSD`) must appear exactly so,
+as a whole word (plural `s` allowed), or the record is not credited with that
+facet: arXiv and OpenAlex search case-insensitively, so `ZeRO` also fetches
+every "zero" and `DP` every "dp". A term in `terminos_ambiguos` made noisy
+queries — in a new plan, prefer its long form or make another facet required.
+Show all three to the researcher before
 screening; if a suggestion is a real synonym, the fix is a new plan and a new
 run (the plan is frozen), never an edit to this one. An arXiv or
 OpenAlex cross-pass hit is credited with every facet (its query required all
@@ -219,14 +240,17 @@ It pages Semantic Scholar references and citations of each key (up to 2000
 per direction; more is reported as truncated); when Semantic Scholar does not
 answer (keyless `429`), the same direction comes from OpenAlex (`cites:` /
 `cited_by:`, in the window) as its own query with `fallback_for` naming the
-lost one and keeps neighbours whose
+lost one (which is then marked `recovered_by` and is not degraded coverage —
+`busqueda.md` reads «perdida, recuperada por S0nn») and keeps neighbours whose
 title/abstract match **≥ 2 facets** (any facet for a one-facet plan) and fall
 in the window; a neighbour with **no abstract** (common for publisher records)
 is kept when one facet term is in its title, since a title alone rarely
 carries two. **One hop by default** (a cost/rigor
 trade-off, adequate for hypothesis seeding); for `linea_publicacion: true`,
 snowball again from the newly added strong candidates until a round adds none
-(closure), and say so in the report.
+(closure), and say so in the report. A neighbour kept with no abstract is
+looked up in OpenAlex by DOI, as in `run` (`abstracts_completados` in the
+snowball's output).
 
 ### 4. Retraction / withdrawal check
 
@@ -236,12 +260,15 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" retraction --run <ru
 
 Crossref `updated-by` / Retraction Watch for DOI-bearing candidates, arXiv
 withdrawal notices for arXiv ids — both, since a preprint-heavy pool is mostly
-DOI-less. Only the candidates that pass the prefilter are checked (the others
+DOI-less — for every identifier a candidate holds (its `other_ids` too: a
+retraction recorded against the journal version reaches the preprint's
+candidate, the evidence naming that identifier). Only the candidates that pass the prefilter are checked (the others
 cannot be included without a decision); to include a prefiltered-out one, check
 it first with `retraction --run <run dir> --keys <key>` — `screen` refuses to
 include an unchecked candidate. Retracted / withdrawn candidates are excluded by the script itself;
-an expression of concern is kept and must be mentioned in the candidate's
-sentence. A check a source did not answer is **lost**, never
+an expression of concern is kept, shown in its `ranked.md` line, and must be
+mentioned in the candidate's sentence («expresión de preocupación»: `screen`
+refuses an include that does not). A check a source did not answer is **lost**, never
 "clear": `screen` refuses to include that candidate until
 `retraction --run <run dir> --keys <key>` re-checks it. A snowball after this step invalidates it (the script deletes
 `retraction.json`): run it again.
@@ -259,7 +286,10 @@ the first):
    `next_offset` is null. Each page has an id (`page`), recorded in the run's
    `pages.json`, and a **packet**: `show` writes the page — the plan's
    description, facets and criteria verbatim, and the page's candidates with
-   whole abstracts — to Kairo's packet store and prints its `packet.path`.
+   whole abstracts, one Markdown block each (ids, venue, OpenReview decision,
+   facets, `sospechoso`; title and abstract quoted and wrapped to lines of at
+   most 200 characters, so no reader cuts one) — to Kairo's packet store and
+   prints its `packet.path`.
    Never pass `--abstract-chars` to a screening page.
 2. Dispatch one `screener` per page, **all in the same turn** (one at a time if
    the prompt says memory is low). Its prompt is the page's `packet.path` and
@@ -288,8 +318,12 @@ the first):
    python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" merge --run <run dir> \
      --from-store [--extra <run dir>/mine.json] --out <run dir>/decisions.json
    ```
-   In a session without Kairo's hooks (`--from-store` says the store is
-   empty), save each reply **verbatim**, one file per page
+   `--from-store` takes, per page, the latest stored reply that decides
+   exactly that page's keys (a screener re-dispatched after a bad answer
+   wins) — so run `merge` before the double screening of step 5, whose
+   second screener answers the same packets. Every block it cannot read is
+   named in one refusal. In a session without Kairo's hooks (`--from-store`
+   says the store is empty), save each reply **verbatim**, one file per page
    (`<run dir>/blocks/<page id>.txt` — its ```json fence may stay), and pass
    `--blocks <run dir>/blocks/*.txt` instead: a block is checked against the
    stored answer whenever there is one (a block that differs is refused) and
@@ -339,7 +373,12 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" screen --run <run di
 ```
 
 `--screened-by` goes into `busqueda.md` («Cribado por»): the decisions are a
-model's judgement, and the record says whose.
+model's judgement, and the record says whose — next to it, the model each
+stored screener reply says answered it, when Kairo's hook recorded one
+(«modelo observado en las respuestas guardadas», flagged when it differs).
+That record lives in `screen.json`: `run` writes the plan's sha256 to
+`plan.sha256`, nothing rewrites `plan.json` afterwards, and `screen` refuses
+a run whose `plan.json` changed.
 
 It refuses a file that leaves a candidate that passed the prefilter undecided,
 uses an unknown reason, includes without a sentence (or without a retraction
@@ -349,13 +388,20 @@ check), excludes without a few words of why (`duplicado` aside), or excludes
 - **`busqueda.md`** — the *Búsqueda ejecutada* block: the degraded-coverage
   warning first when any query was lost or truncated, description, facets,
   window, criteria, every query verbatim with hits / available / state, and
-  the PRISMA counts (identified per source → after dedup → after the prefilter → after the
+  the PRISMA counts (identified per source in the databases, and on its own line
+  by citation searching — the snowball's neighbours, with how many it kept →
+  records that are not works removed («tipo no artículo»: a Crossref / OpenAlex
+  peer review, journal issue, dataset, erratum…, also counted per query) →
+  duplicates removed, so the numbers add up → after dedup → after the prefilter → after the
   retraction screen (Crossref / arXiv checked, removed, lost) → included,
   every exclusion reason on its own line, `fuera de alcance` and `relevancia
   baja` never summed; the prefilter on its own line). Exact integers computed
   by the script.
 - **`ranked.md`** — the included candidates (relevance, then facets matched,
-  then recency), each with ids, venue / published version, citation count
+  then recency), each with ids, venue / published version (a preprint server —
+  arXiv.org, bioRxiv, SSRN, Research Square… — is shown as «preprint (…)»,
+  never «publicado en»), the OpenReview decision of a paper not accepted there
+  («OpenReview: Rejected / Submitted to …»), an expression of concern, citation count
   flagged «reciente: señal poco fiable» under ~18 months, the anchor
   annotation, `ya en el vault`, its facets and your sentence; then
   `### Relevante pero fuera de alcance` with the clause each one hit.
@@ -373,6 +419,20 @@ Give the caller `busqueda.md` (it goes into Estado-del-arte.md or the
 hypothesis's *Justificación* unchanged — never retyped), `ranked.md`, and the
 run directory path. Mention degraded coverage in the first lines of what you
 say, and how many relevant papers were set aside by scope.
+
+### Reproducing a run
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" replay --run <run dir> --out <new dir> [--vault <vault>]
+```
+
+rebuilds `queries.json`, `candidates.json` and `vocabulario.json` in a new
+directory from the run's kept `raw/` responses, with the current parsers and
+no network (the plan is copied byte for byte, `plan.sha256` with it): the
+identification reproduced, or a parser fix re-applied to the same responses.
+A query lost in the original stays lost with its error; the snowball's queries
+are listed in `snowball_no_reproducido`, not replayed. Retraction, screening
+and `screen` are later steps: run them again on the new directory.
 
 ## Patents (`producto` / `hibrido` only)
 
@@ -393,8 +453,9 @@ not part of the script's PRISMA counts. Never for `ciencia` projects.
 - **Typing a count, an id or a query string the script did not produce.**
   Counts come from `screen`, ids from the candidate list, queries from
   `queries.json`. If a number is missing, run the step that produces it.
-- **Changing the criteria after reading candidates.** The plan is frozen; a
-  new criterion means a new plan and a new run.
+- **Changing the criteria after reading candidates.** The plan is frozen
+  (`screen` refuses a `plan.json` whose sha256 is not the one `run` recorded);
+  a new criterion means a new plan and a new run.
 - **OR-groups for Semantic Scholar.** Its search takes plain keywords; the
   script already splits them — don't hand-craft S2 queries.
 - **Burying degraded coverage.** Lost or truncated queries go first, in
