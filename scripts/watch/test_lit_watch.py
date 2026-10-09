@@ -838,6 +838,32 @@ class TestCitationsAndIndexedWindows(TestLitWatch):
         self.assertFalse(any("/works/doi:" in u for u in net2.urls))
         self.assertIn("citas|W961", lit_watch.load_cursors(self.p))
 
+    def test_a_citing_record_that_is_not_a_work_is_dropped_and_counted(self):
+        self.plan()
+
+        class WithReview(self.Cites):
+            def __call__(self, url, headers):
+                if "api.openalex.org/works?filter=" in url:
+                    self.urls.append(url)
+                    return json.dumps({"meta": {"count": 2, "next_cursor": None}, "results": [
+                        {"id": "https://openalex.org/W1001", "title": "A new widget method building on old work",
+                         "type": "article", "abstract_inverted_index": {"Fictional": [0], "widgets": [1]},
+                         "publication_date": "2031-02-20", "publication_year": 2031, "authorships": [],
+                         "referenced_works": ["https://openalex.org/W961"]},
+                        {"id": "https://openalex.org/W1009", "title": "Review of: an invented widget submission",
+                         "type": "peer-review", "abstract_inverted_index": {"Fictional": [0], "widgets": [1]},
+                         "publication_date": "2031-02-21", "publication_year": 2031, "authorships": [],
+                         "referenced_works": ["https://openalex.org/W961"]}]}).encode()
+                return super().__call__(url, headers)
+        code, res = self.delta(WithReview())
+        self.assertEqual(code, 0, res)
+        data = json.loads(self.run_file(res).read_text(encoding="utf-8"))
+        titles = {c["title"] for c in data["candidates"]}
+        self.assertIn("A new widget method building on old work", titles)
+        self.assertNotIn("Review of: an invented widget submission", titles)
+        citas = next(q for q in data["queries"] if q.get("pass") == "citas")
+        self.assertEqual(citas["not_work"], 1)
+
     def test_a_seed_openalex_keeps_under_its_journal_doi_is_found_through_arxiv(self):
         """OpenAlex often merges a preprint into its published version and no longer
         answers for the arXiv DOI: the DOI the arXiv record declares finds it."""

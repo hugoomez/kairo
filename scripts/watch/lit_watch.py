@@ -1340,6 +1340,10 @@ def citation_delta(roots: dict[str, str], starts: dict[str, date], today: date, 
                     got, total = lit_search.parse_openalex(data)
                     entry["total"] = total
                     for r, w in zip(got, page.get("results") or []):
+                        if lit_search.non_work(r):
+                            # a peer review, an erratum, a dataset…: it cites the paper but is no new work
+                            entry["not_work"] = entry.get("not_work", 0) + 1
+                            continue
                         refs = {x.rsplit("/", 1)[-1] for x in w.get("referenced_works") or []}
                         r["cita_a"] = sorted(roots[x] for x in refs & set(chunk))
                         recs.append(r)
