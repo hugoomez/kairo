@@ -50,7 +50,7 @@ vault (Smart Connections MCP directly).
 | Source | How each facet is queried | Notes |
 |---|---|---|
 | arXiv | one OR-group over `ti:`/`abs:`, + `cat:` categories, + `submittedDate` window; by relevance, paged by 100 | 3 s between calls, serial (enforced in `net.py`) |
-| Semantic Scholar | `/paper/search` takes **plain keywords only**: one query per term and synonym, `publicationDateOrYear` window (exact dates), paged; plus one `/paper/search/bulk` **anchor pass** per facet (`"a" \| "b"`, `sort=citationCount:desc`, top `anchors`) | keyless pool often answers `429`; `SEMANTIC_SCHOLAR_API_KEY` fixes it |
+| Semantic Scholar | `/paper/search` takes **plain keywords only**: one query per term and synonym (hyphens sent as spaces — it finds nothing for a hyphenated term; `queries.json` keeps the query as sent), `publicationDateOrYear` window (exact dates), paged; plus one `/paper/search/bulk` **anchor pass** per facet (`"a" \| "b"`, `sort=citationCount:desc`, top `anchors`) | keyless pool often answers `429`; `SEMANTIC_SCHOLAR_API_KEY` fixes it |
 | OpenAlex | `search="t1" OR "t2"`, `from/to_publication_date` filter, paged | list calls cost $0.001 against a free daily budget ($0.10 keyless, $1 with `OPENALEX_API_KEY`); keyless, a query reads only its top `per_query` (never extended to its total — `not_extended` says so) and `run` prints `openalex_list_calls` |
 | Crossref | one query per term, `from-pub-date` / `until-pub-date` | the ACM / IEEE / Springer / APS proceedings and journals (SC, IPDPS, ISC, QCE, PRX Quantum…) with DOI and venue; `KAIRO_MAILTO` joins the polite pool |
 | OpenReview | `/notes/search` (API 2), one plain-keyword query per term and synonym, paged by `offset`; no date filter, so the window is applied to each record | ICLR / NeurIPS / ICML / MLSys / TMLR papers that have no DOI, **with their decision**: a venue is kept only when the paper was accepted (`Submitted to …`, `Withdrawn`, `Rejected` stay in `openreview_venue`, never as a venue); also the DBLP records its authors imported (year only). Keyless, 1 request/s |
@@ -70,7 +70,8 @@ matched) and its state: `completa`, `truncada` (an arXiv / OpenAlex query with
 more matches than `max_per_query` — narrow the facet or raise it), `por
 relevancia` (Semantic Scholar, Crossref, OpenReview: keyword search ranked by
 relevance whose total counts loose any-word matches — the top results are read,
-complete coverage is not promised, and it is not a gap) or `perdida` (failed
+complete coverage is not promised, and it is not a gap), `por citas (top N)` (the
+Semantic Scholar anchor pass: only the N most cited of the facet) or `perdida` (failed
 after 3 attempts with backoff, a query arXiv rejected as malformed — with
 arXiv's message — or a response the parser could not read). Truncated and lost queries are **degraded
 coverage**, shown at the top of the record, never buried.

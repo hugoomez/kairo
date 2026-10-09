@@ -29,7 +29,8 @@ plan.json
 Sources and how each facet is queried
     arxiv     one OR-group over ti:/abs: per facet (+ categories, + submittedDate window),
               sorted by relevance, paged by 100 up to per_query
-    s2        /paper/search takes plain keywords only: one query per term and synonym,
+    s2        /paper/search takes plain keywords only: one query per term and synonym
+              (hyphens sent as spaces: it finds nothing for a hyphenated term),
               `publicationDateOrYear=<from>:<to>` window (exact dates), paged by 100 up
               to per_query; plus one /paper/search/bulk
               anchor pass per facet (OR-group with `|`, sort=citationCount:desc, top `anchors`)
@@ -654,6 +655,12 @@ def page_urls(source: str, query: str, plan: dict, start: int, size: int) -> tup
     raise ValueError(source)
 
 
+def s2_plain(t: str) -> str:
+    """Semantic Scholar's /paper/search finds nothing for a hyphenated term (its
+    documentation: replace hyphens with spaces) — the query as it is sent."""
+    return ws(t.replace("-", " "))
+
+
 def build_queries(plan: dict, until: str) -> list[dict]:
     qs = []
     for f in plan["facets"]:
@@ -664,7 +671,8 @@ def build_queries(plan: dict, until: str) -> list[dict]:
                            "query": arxiv_query(f, plan, until), "terms": ts})
             elif src == "s2":
                 for t in ts:
-                    qs.append({"facet": f["id"], "source": "s2", "pass": "relevance", "query": t, "terms": [t]})
+                    qs.append({"facet": f["id"], "source": "s2", "pass": "relevance", "query": s2_plain(t),
+                               "terms": [t]})
                 if plan["anchors"]:
                     qs.append({"facet": f["id"], "source": "s2-anchor", "pass": "anchor",
                                "query": "(" + " | ".join(f'"{t}"' for t in ts) + ")", "terms": ts})
@@ -683,7 +691,7 @@ def build_queries(plan: dict, until: str) -> list[dict]:
             elif src == "openalex":
                 query = " AND ".join("(" + " OR ".join(f'"{t}"' for t in terms(f)) + ")" for f in plan["facets"])
             elif src in ("s2", "crossref", "openreview"):
-                query = mains                   # plain keywords: the facets' main terms together
+                query = s2_plain(mains) if src == "s2" else mains   # plain keywords: the main terms together
             else:
                 continue                        # DBLP: title words only, a cross query adds nothing
             qs.append({"facet": "*", "source": src, "pass": "cross", "query": query, "terms": all_terms})
@@ -1859,11 +1867,14 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
           "**Consultas (verbatim):**",
           "*Estado «por relevancia»: Semantic Scholar, Crossref y OpenReview ordenan por relevancia y su "
           "«disponibles» cuenta coincidencias de cualquier palabra; se leen los primeros resultados y no se "
-          "promete cobertura completa (las consultas de arXiv y OpenAlex sí: allí «truncada» es pérdida real).*",
+          "promete cobertura completa (las consultas de arXiv y OpenAlex sí: allí «truncada» es pérdida real). "
+          "«por citas (top N)»: el pase-ancla de Semantic Scholar lee solo los N más citados de la faceta.*",
           "",
           "| id | faceta | fuente | pase | query | hits | disponibles | estado |", "|---|---|---|---|---|---|---|---|"]
     for q in queries:
-        state = "perdida" if q.get("error") else "truncada" if q.get("truncated") else             "por relevancia" if q.get("ranked") and (q.get("total") or 0) > q.get("fetched", 0) else "completa"
+        state = "perdida" if q.get("error") else "truncada" if q.get("truncated") else \
+            f"por citas (top {plan.get('anchors')})" if q["source"] == "s2-anchor" else \
+            "por relevancia" if q.get("ranked") and (q.get("total") or 0) > q.get("fetched", 0) else "completa"
         qtext = q["query"].replace("|", "\\|")
         L.append(f"| {q['id']} | {q['facet']} | {q['source']} | {q['pass']} | `{qtext}` | {q.get('fetched', 0)} | "
                  f"{q.get('total') if q.get('total') is not None else '—'} | {state} |")
