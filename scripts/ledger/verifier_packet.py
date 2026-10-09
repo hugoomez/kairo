@@ -71,7 +71,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402  (single definitions)
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"   # 1.4.0: Eq. (3), Tabla S1, Fig. A2, bare §A; named locators match headings only
 TOOL_ID = f"kairo/verifier_packet@{__version__}"
 
 # --------------------------------------------------------------------------
@@ -242,7 +242,7 @@ def citation_refs(bullet: str) -> list[tuple[str, str]]:
 
 
 LOCATOR_START_RE = re.compile(
-    r"^(?:§|App(?:endix)?\b|Apéndice|Fig|Tabla|Table|Eq\b|Ec\b)")
+    r"^(?:§|App(?:endix)?\b|Apéndice|Fig|Tabla|Table|Eqs?\b|Ecs?\b|Ecuaci[oó]n\b|Equation\b)")
 
 
 NUM = r"[A-Z]?\d+(?:\.\d+)*"
@@ -293,17 +293,20 @@ def locator_tokens(span: str) -> list[tuple[str, str]]:
     for m in re.finditer(r"\b(?:App(?:endix)?\.?|Apéndice)\s*([A-Z](?:\.\d+)*)", s):
         toks.append(("app", m.group(1)))
     # "§A.1.2": an appendix subsection written as a section (not a Roman "§I.2")
-    for m in re.finditer(r"§\s*([A-Z](?:\.\d+)+)(?![\w.])", s):
+    # "§A" alone is appendix A too (never a named section matching any heading with "a")
+    for m in re.finditer(r"§\s*([A-Z](?:\.\d+)*)(?!\w|\.\w)", s):
         if not roman_to_int(m.group(1).split(".")[0]):
             toks.append(("app", m.group(1)))
             s = s.replace(m.group(0), " ")
     s_noapp = re.sub(r"\b(?:App(?:endix)?\.?|Apéndice)\s*[A-Z](?:\.\d+)*", " ", s)
-    for m in re.finditer(r"\b(?:Fig(?:ura|ure)?s?)\.?\s*(\d+)", s_noapp):
+    # "Fig. 3", and supplementary / appendix figures "Fig. A2", "Figura S3"
+    for m in re.finditer(r"\b(?:Fig(?:ura|ure)?s?)\.?\s*([A-Z]?\d+)", s_noapp):
         toks.append(("fig", m.group(1)))
-    # "Tabla 2", and the Roman "TABLE I" of APS / IEEE papers
-    for m in re.finditer(r"\b(?i:Tabla|Table)s?\.?\s*(\d+|[IVXL]+\b)", s_noapp):
+    # "Tabla 2", "Tabla S1", and the Roman "TABLE I" of APS / IEEE papers
+    for m in re.finditer(r"\b(?i:Tabla|Table)s?\.?\s*([A-Z]?\d+|[IVXL]+\b)", s_noapp):
         toks.append(("table", m.group(1)))
-    for m in re.finditer(r"\b(?:Eq|Ec)\.?\s*(\d+)", s_noapp):
+    # "Eq. 3", "Eq. (3)", "Ec. (3)", "Ecuación (3)"
+    for m in re.finditer(r"\b(?:Eqs?|Ecs?|Equation|Ecuaci[oó]n)\.?\s*\(?\s*([A-Z]?\d+)\s*\)?", s_noapp):
         toks.append(("eq", m.group(1)))
     # section numbers: "§5.1–§5.2", "§4.1, §5.2", "§6", "§ 3"
     for m in re.finditer(rf"§\s*({NUM})(?:\s*[–-]\s*§?\s*({NUM}))?", s_noapp):
@@ -457,16 +460,24 @@ def unit_matches(unit: dict, tok: tuple[str, str], inline_ok: bool = True) -> bo
     if kind == "app":
         num = unit.get("num") or ""
         structural = bool(re.match(r"[A-Z]", num)) and (num == v or num.startswith(v + "."))
-        return structural or bool(re.search(
+        # like a section: a paragraph that only mentions "Appendix A" counts only
+        # when the text has no appendix A heading at all
+        return structural or bool(inline_ok and re.search(
             rf"\b(?:App(?:endix)?\.?|Apéndice)\s*{ev}(?:\.\d+)*(?![\d])", text))
     if kind == "fig":
-        return bool(re.search(rf"\bFig(?:ura|ure)?s?\.?\s*{ev}(?![\d])", text))
+        return bool(re.search(rf"\bFig(?:ura|ure)?s?\.?\s*{ev}(?![\w])", text))
     if kind == "table":
         tail = r"(?![\d])" if v.isdigit() else r"(?![\w])"
         return bool(re.search(rf"\b(?i:Tabla|Table)s?\.?\s*{ev}{tail}", text))
     if kind == "eq":
-        return bool(re.search(rf"\b(?:Eq|Ec)\.?\s*{ev}(?![\d])", text))
+        # "Eq. (3)" / "Ec. 3" in the prose, or the display equation labelled "(3)" / \tag{3}
+        return bool(re.search(rf"\b(?:Eqs?|Ecs?|Equation|Ecuaci[oó]n)\.?\s*\(?\s*{ev}(?![\w])", text)
+                    or re.search(rf"(?m)(?:\(\s*{ev}\s*\)\s*\$*\s*$|\\tag\{{\s*{ev}\s*\}})", text))
     return False
+
+
+# a paragraph's bold / italic run-in title: "**Ablations.** Removing …", "*Setup:* …"
+RUNIN_TITLE_RE = re.compile(r"^(?:\*\*|__|\*|_)([^*_\n]{1,80}?)[.:]?(?:\*\*|__|\*|_)")
 
 
 def _title_names(title: str, name: str) -> bool:
@@ -560,16 +571,18 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
                     chosen.append("[## Resumen]\n" + txt)
                 continue
             for u in source_units(texto):
+                # a named locator is a heading: the section under it, or a paragraph
+                # whose bold / italic run-in title names it — never a sentence that
+                # merely uses the word ("Our results show…" is not §Results)
                 under = any(_title_names(t, name) for t in u.get("titles", []))
-                # a one- or two-letter name counts only as a heading, never as text
-                in_text = len(name) >= 3 and name in u["text"].lower()[:80]
-                if (under or in_text) and u["text"] not in chosen:
+                runin = RUNIN_TITLE_RE.match(u["text"])
+                if (under or (runin and _title_names(runin.group(1), name))) and u["text"] not in chosen:
                     chosen.append(u["text"])
             continue
         units = source_units(texto)
         # a section locator reaches the section itself; a paragraph elsewhere that only
         # mentions "Section N" counts only when the text has no such section at all
-        inline_ok = tok[0] != "sec" or not any(unit_matches(u, tok, inline_ok=False) for u in units)
+        inline_ok = tok[0] not in ("sec", "app") or not any(unit_matches(u, tok, inline_ok=False) for u in units)
         for i, u in enumerate(units):
             if unit_matches(u, tok, inline_ok) and u["text"] not in chosen:
                 chosen.append(u["text"])

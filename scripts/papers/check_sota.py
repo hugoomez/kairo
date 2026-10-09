@@ -107,9 +107,10 @@ from verifier_packet import (  # noqa: E402
     split_frontmatter,
 )
 
-TOOL = "kairo/check_sota@1.7.0"
+TOOL = "kairo/check_sota@1.8.0"
 _LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
-             r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice|Eq\.?|Ec\.?)\s*[A-Z]?\d+(?:\.\d+)*)")
+             r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice)\s*[A-Z]?\d+(?:\.\d+)*"
+             r"|(?:Eq\.?|Ec\.?|Ecuaci[oó]n|Equation)\s*\(?\s*[A-Z]?\d+\s*\)?)")
 CITE = re.compile(rf"\b(P-\d{{4,5}})((?:[ ,;]*{_LOC_PART})*)")
 # A unit glued to a figure ("530B", "80GB", "7B", "1.2k", "312 TFLOPS") is a result
 # whatever its size: model sizes, memory and throughput live in these.
