@@ -210,13 +210,55 @@ class PaperCard(unittest.TestCase):
         self.assertIn("year = {2031}", bib)
         self.assertIn("eprint = {0000.44444}", bib)
 
-    def test_a_retitled_version_by_the_same_first_author_counts_and_shows_its_title(self):
+    def test_a_retitled_version_by_the_same_first_author_is_a_candidate_never_the_bibtex(self):
+        # a close title is what a retitled camera-ready looks like — and what a follow-up
+        # looks like too: like a Crossref title-search hit, it is shown to be confirmed
         page = self.openreview("ICLR 2031 Poster", title="Distributed Toy (Almost) State-Vector Simulation")
         code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
         card = json.loads(out)
-        src = next(p["source"] for p in card["published"] if p["source"].startswith("OpenReview"))
-        self.assertIn("título publicado: «Distributed Toy (Almost) State-Vector Simulation»", src)
-        self.assertTrue(card["bibtex"].startswith("@inproceedings{"), card["bibtex"])
+        self.assertNotIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+        cand = [c for c in card.get("published_candidates") or [] if "OpenReview" in c["why"]]
+        self.assertEqual([c["title"] for c in cand], ["Distributed Toy (Almost) State-Vector Simulation"])
+        self.assertTrue(card["bibtex"].startswith("@misc{"), card["bibtex"])
+
+    def page_of(self, *notes):
+        return {"count": len(notes), "notes": [n for p in notes for n in p["notes"]]}
+
+    def test_an_exact_title_by_another_first_author_is_not_this_paper(self):
+        page = self.openreview("ICLR 2031 Poster", authors=("Rui Roe",))
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        self.assertNotIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+        self.assertTrue(card["bibtex"].startswith("@misc{"), card["bibtex"])
+
+    def test_the_exact_title_wins_over_a_close_follow_up_listed_first(self):
+        follow = self.openreview("NeurIPS 2032 Poster", title="Distributed Toy (Almost) State-Vector Simulation",
+                                 bib_year="2032")
+        page = self.page_of(follow, self.openreview("ICLR 2031 Poster"))
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        orv = [p for p in card["published"] if p["source"].startswith("OpenReview")]
+        self.assertEqual([p["year"] for p in orv], ["2031"])
+        self.assertIn("year = {2031}", card["bibtex"])
+
+    def test_a_long_title_with_the_papers_title_as_its_first_words_is_not_it(self):
+        page = self.openreview("ICLR 2031 Poster",
+                               title="Distributed Toy State-Vector Simulation of Invented Noisy Gadgets at Scale")
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        self.assertNotIn("OpenReview", [p["source"].split(" ")[0] for p in card["published"]])
+        self.assertFalse([c for c in card.get("published_candidates") or [] if "OpenReview" in c["why"]])
+
+    def test_a_workshop_is_shown_but_never_the_published_version(self):
+        page = self.openreview("ICLR 2031 Workshop on Invented Toys")
+        code, out = self.run_cli("--arxiv", "0000.44444", "--json", fetch=self._with_openreview(page))
+        card = json.loads(out)
+        ws = [p for p in card["published"] if p["source"].startswith("OpenReview")]
+        self.assertEqual(len(ws), 1)
+        self.assertTrue(ws[0].get("workshop"))
+        self.assertTrue(card["bibtex"].startswith("@misc{"), card["bibtex"])
+        self.assertNotIn("booktitle", card["bibtex"])
+        self.assertIn("workshop", pc.markdown(card))
 
     def test_a_rejected_or_differently_titled_openreview_record_is_not_a_publication(self):
         for page in (self.openreview("Submitted to ICLR 2031"),

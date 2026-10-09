@@ -190,8 +190,11 @@ def normalize_title(t: str) -> str:
     return fold(t)
 
 
-def title_level(note: str, source: str) -> tuple[str, float]:
-    """(exact | close | differs, similarity score in [0,1])."""
+def title_level(note: str, source: str, min_prefix: int = 3, prefix_share: float = 0.0) -> tuple[str, float]:
+    """(exact | close | differs, similarity score in [0,1]). One title being the
+    first words of the other counts as close when it has at least `min_prefix`
+    words and at least `prefix_share` of the longer title's words (a caller that
+    must not take a follow-up paper for this one raises both)."""
     a, b = normalize_title(note), normalize_title(source)
     if not a or not b:
         return "missing", 0.0
@@ -202,7 +205,8 @@ def title_level(note: str, source: str) -> tuple[str, float]:
     sa, sb = set(ta), set(tb)
     jac = len(sa & sb) / len(sa | sb)
     short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
-    prefix = len(short) >= 3 and long_[:len(short)] == short
+    prefix = (len(short) >= min_prefix and long_[:len(short)] == short
+              and len(short) >= prefix_share * len(long_))
     score = max(ratio, jac)
     if ratio >= 0.90 or jac >= 0.80 or prefix:
         return "close", round(max(score, 0.9 if prefix else score), 3)

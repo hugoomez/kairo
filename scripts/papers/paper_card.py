@@ -16,8 +16,10 @@ Sources (no model involved, each answer kept with --raw-dir):
     counted (`openalex_works`) and the citing list covers both (`cites:W1|W2`);
   - Crossref (a non-arXiv DOI): container title, issue date, and the
     `is-preprint-of` / `has-preprint` relations publishers register;
-  - OpenReview: an accepted record with exactly this title (ICLR, NeurIPS,
-    ICML, MLSys, TMLR — venues with no DOI) gives the venue and its year;
+  - OpenReview: an accepted record with exactly this title and the same first
+    author (ICLR, NeurIPS, ICML, MLSys, TMLR — venues with no DOI) gives the
+    venue and its year; a close title by the same first author is only a
+    candidate, and a workshop is shown, never the published version;
   - Semantic Scholar: citation count and the list of citing papers
     (the newest first, up to --citations; `--citing-order cited` lists the most
     cited ones instead, each with its own citation count); a page that does not come marks
@@ -74,7 +76,7 @@ import resolve_refs as rr  # noqa: E402
 import retraction  # noqa: E402
 from fill_abstract import from_jats  # noqa: E402
 
-TOOL = "kairo/paper_card@1.4.0"
+TOOL = "kairo/paper_card@1.5.0"
 S2 = "https://api.semanticscholar.org/graph/v1"
 # preprint servers and repositories: where a preprint is, never a published version
 REPOSITORY = re.compile(r"arxiv|biorxiv|medrxiv|chemrxiv|techrxiv|ssrn|research ?square|preprints\.org|zenodo|"
@@ -170,27 +172,44 @@ def openreview_search_url(title: str) -> str:
             + "&type=terms&content=all&source=forum&limit=10")
 
 
+OR_WORKSHOP = re.compile(r"\bworkshops?\b", re.I)
+# a follow-up paper often starts with its predecessor's title: for OpenReview, one
+# title being the first words of the other counts only when it is long and most of it
+OR_PREFIX = {"min_prefix": 6, "prefix_share": 0.7}
+
+
 def openreview_acceptance(title: str, authors: list, raw: bytes | None) -> dict | None:
     """The OpenReview record (from a `notes/search` answer) that shows this paper
-    accepted: exactly this title, or a close one (a retitled camera-ready) by the
-    same first author, with a venue (submitted / withdrawn / rejected are none).
-    `retitled` holds the published title's note, empty for an exact title."""
-    recs = lit_search.parse_openreview(raw)[0] if raw else []
+    accepted: same first author always, and exactly this title (`level: exact`)
+    or a close one (`close`: a retitled camera-ready — or a follow-up, so only a
+    candidate), with a venue (submitted / withdrawn / rejected are none). An
+    exact title wins over a close one wherever it is listed, a main venue over a
+    workshop (`workshop: True`, never the published version)."""
+    try:
+        recs = lit_search.parse_openreview(raw)[0] if raw else []
+    except (ValueError, AttributeError):
+        recs = []
     first = rr.surname_of((authors or [""])[0] or "")
-
-    def same(r: dict) -> str | None:
-        level = rr.title_level(title, r.get("title") or "")[0]
-        if level == "exact":
-            return ""
-        if level == "close" and first and r.get("authors") and rr.surname_matches(first, r["authors"][0]):
-            return f"; título publicado: «{r['title']}»"
+    if not first:
         return None
+    found = []
     for r in recs:
-        if r.get("venue"):
-            s = same(r)
-            if s is not None:
-                return {**r, "retitled": s}
-    return None
+        if not r.get("venue") or not r.get("authors") or not rr.surname_matches(first, r["authors"][0]):
+            continue
+        level = rr.title_level(title, r.get("title") or "", **OR_PREFIX)[0]
+        if level in ("exact", "close"):
+            ws = bool(OR_WORKSHOP.search(f"{r.get('venue') or ''} {r.get('openreview_venue') or ''}"))
+            found.append({**r, "level": level, "workshop": ws,
+                          "retitled": f"; título publicado: «{r['title']}»" if level == "close" else ""})
+    found.sort(key=lambda r: (r["level"] != "exact", r["workshop"]))      # stable: listed order otherwise
+    return found[0] if found else None
+
+
+def counts_as_published(p: dict) -> bool:
+    """A piece of evidence that can stand for the published version: a venue that
+    is not the arXiv pointer, a workshop or a preprint repository."""
+    return bool(p.get("venue")) and "preprint en arXiv" not in p["venue"] and not p.get("workshop") \
+        and not p.get("repository")
 
 
 def arxiv_record(c: Card, card: dict, arxiv: str, primary: bool) -> dict | None:
@@ -395,13 +414,24 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
         # card then shows the published title.
         raw = c.get("openreview.json", openreview_search_url(ident["title"]), {"Accept": "application/json"})
         hit = openreview_acceptance(ident["title"], ident.get("authors") or [], raw)
-        if hit:
-            card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}{hit['retitled']})",
+        if hit and hit["level"] == "exact":
+            card["published"].append({"source": f"OpenReview (decisión: {hit['openreview_venue']}"
+                                                + ("; workshop: no es la versión publicada" if hit["workshop"] else "")
+                                                + ")",
                                       "doi": hit.get("doi") or "", "venue": hit["venue"],
-                                      "year": str(hit.get("year") or ""), "url": hit["url"]})
-    if arxiv and ident.get("title") and not [p for p in card["published"]
-                                             if p.get("venue") and "preprint en arXiv" not in p["venue"]]:
-        card["published_candidates"] = retitled_candidates(c, ident)
+                                      "year": str(hit.get("year") or ""), "url": hit["url"],
+                                      **({"workshop": True} if hit["workshop"] else {})})
+        elif hit:
+            # a close title by the same first author: a retitled camera-ready, or a
+            # follow-up — like a Crossref title-search hit, to confirm, never in the BibTeX
+            card.setdefault("published_candidates", []).append({
+                "doi": hit.get("doi") or "", "title": hit.get("title") or "", "venue": hit["venue"],
+                "year": str(hit.get("year") or ""), "url": hit["url"],
+                "why": f"título parecido y mismo primer autor en OpenReview (decisión: {hit['openreview_venue']}"
+                       + ("; workshop" if hit["workshop"] else "")
+                       + "), sin enlace declarado: confírmalo antes de citarlo así"})
+    if arxiv and ident.get("title") and not [p for p in card["published"] if counts_as_published(p)]:
+        card.setdefault("published_candidates", []).extend(retitled_candidates(c, ident))
     if doi or arxiv:
         # the same detection rules as check_retraction.py, on the records fetched above
         checks = []
@@ -425,7 +455,7 @@ def build(arxiv: str | None, doi: str | None, n_cit: int, fetch: Fetch, raw_dir:
         card["vault"] = hit.name.split(" ")[0] if hit else None
     # for the BibTeX: the publisher's own record first (clean venue name and year),
     # then OpenAlex, then what arXiv's authors declared (journal_ref is free text)
-    real = [p for p in card["published"] if p.get("venue") and "preprint en arXiv" not in p["venue"]]
+    real = [p for p in card["published"] if counts_as_published(p)]
     pub = next((p for src in ("Crossref (", "OpenReview", "OpenAlex", "Semantic", "arXiv") for p in real
                 if p["source"].startswith(src)), None)
     meta = {"title": ident.get("title") or "", "authors": ident.get("authors") or [], "year": ident.get("year") or "",
@@ -464,8 +494,9 @@ def markdown(card: dict) -> str:
         or ["- no consta en arXiv, OpenAlex, Crossref ni Semantic Scholar"]
     if card.get("published_candidates"):
         L += ["", "**Posible versión publicada (candidata, no confirmada):**", ""]
-        L += [f"- {p['title']} — {p['venue'] or '—'} ({p['year'] or 's. f.'}) · DOI {p['doi']} — {p['why']}"
-              for p in card["published_candidates"]]
+        L += [f"- {p['title']} — {p['venue'] or '—'} ({p['year'] or 's. f.'})"
+              + (f" · DOI {p['doi']}" if p.get("doi") else "") + (f" · {p['url']}" if p.get("url") else "")
+              + f" — {p['why']}" for p in card["published_candidates"]]
     r = card["retraction"] or {}
     L += ["", "## Estado", "", f"- Retracción / retirada: **{r.get('status', 'no comprobado')}**"
           + (f" ({'; '.join(r.get('evidence') or [])})" if r.get("evidence") else "")]

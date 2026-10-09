@@ -57,6 +57,15 @@ class TestTitleLevel(unittest.TestCase):
         # a 2-word prefix of a longer title is not accepted as "subtitle dropped"
         self.assertEqual(rr.title_level("Deep Learning", "Deep Learning for Protein Folding at Scale")[0], "differs")
 
+    def test_a_strict_caller_needs_a_long_prefix(self):
+        short, longer = "Deep Double Descent", "Deep Double Descent: Where Bigger Models and More Data Hurt"
+        self.assertEqual(rr.title_level(short, longer, min_prefix=6, prefix_share=0.7)[0], "differs")
+        six = "Invented sparse widgets for toy gadget learning"
+        self.assertEqual(rr.title_level(six, six + " at scale", min_prefix=6, prefix_share=0.7)[0], "close")
+        self.assertEqual(rr.title_level(six, six + " for many invented machines")[0], "close")
+        self.assertEqual(rr.title_level(six, six + " for many invented machines",
+                                        min_prefix=6, prefix_share=0.7)[0], "differs")
+
     def test_missing(self):
         self.assertEqual(rr.title_level("", "x")[0], "missing")
 
