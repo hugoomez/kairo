@@ -59,6 +59,11 @@ cross hit satisfied a query that ANDs every facet, so it is credited with all
 of them (`matched: "consulta cruzada Qnnn"` for a facet its text does not
 show); a Semantic Scholar or Crossref cross hit (keyword ranking, not AND) only
 with the facets whose terms its title or abstract contains.
+A facet term's acronym (a word with two or more capitals: ZeRO, DP, MoE, BP-OSD)
+matches only in its own case, as a whole word (plural `s` allowed); a record whose
+text shows it only in another case ("zero") is not credited with the facet, and
+`run` lists in `terminos_ambiguos` an acronym the candidates show far more often in
+another case (the sources search case-insensitively: its queries were noisy).
 Facet terms are matched as whole-word sequences after light suffix stripping
 (`stem`): "decoder" matches "decoders" and "decoding", "parallelism" matches
 "tensor-parallel", a short acronym its plural ("LLM" ~ "LLMs"); two different
@@ -814,7 +819,8 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
             # text does not show are credited to the query itself, and say so
             hits = facet_matches(r, plan)
             if q["source"] in BOOLEAN_CROSS:
-                hits = {f["id"]: hits.get(f["id"], f"consulta cruzada {q['id']}") for f in plan["facets"]}
+                hits = {f["id"]: hits.get(f["id"], f"consulta cruzada {q['id']}") for f in plan["facets"]
+                        if f["id"] in hits or not case_folded_only(r, terms(f))}
             out += [{**r, "facet": fid, "matched": t} for fid, t in hits.items()] or \
                    [{**r, "facet": None, "matched": None}]
         elif q["source"].replace("-anchor", "") in RANKED and q["source"] != "s2-anchor":
@@ -823,6 +829,9 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
             fm = facet_matches(r, plan)
             r.update(facet=q["facet"] if q["facet"] in fm else None,
                      matched=fm.get(q["facet"]))
+            out.append(r)
+        elif case_folded_only(r, q["terms"]):
+            r.update(facet=None, matched=None)     # an acronym seen only in another case
             out.append(r)
         else:
             r.update(facet=q["facet"], matched=matched_term(r, q))
@@ -884,11 +893,22 @@ def run_exhaustive(q: dict, plan: dict, raw_dir: Path, fetch: Fetch, until: str)
 def matched_term(r: dict, q: dict) -> str:
     if len(q["terms"]) == 1:
         return q["terms"][0]
-    hay = stems(r.get("title", "") + " " + r.get("abstract", ""))
+    raw = r.get("title", "") + " " + r.get("abstract", "")
+    hay = stems(raw)
     for t in q["terms"]:
-        if stems(t) and f" {stems(t)} " in f" {hay} ":
+        if stems(t) and f" {stems(t)} " in f" {hay} " and acronyms_shown(t, raw):
             return t
     return q["query"]
+
+
+def case_folded_only(r: dict, ts: list[str]) -> bool:
+    """The record's text shows one of these terms only in another case than the
+    acronym's ("zero" for ZeRO, "dp" for DP): the source's case-insensitive search
+    found it, the facet is not credited."""
+    raw = (r.get("title") or "") + " " + (r.get("abstract") or "")
+    hay = stems(raw).split()
+    seen = [t for t in ts if term_matches(t, hay)]
+    return bool(seen) and not any(acronyms_shown(t, raw) for t in seen)
 
 
 # --------------------------------------------------------------------------
@@ -1182,7 +1202,8 @@ def cmd_run(plan_path: Path, out: Path, vault: Path | None, fetch: Fetch, today:
     save(out / "candidates.json", cands)
     hits = term_hits(cands, plan)
     vocab = {"terminos_sin_coincidencias": [f"{fid}: {t}" for fid, ts in hits.items() for t, n in ts.items() if not n],
-             "sinonimos_sugeridos": suggest_synonyms(cands, plan)}
+             "sinonimos_sugeridos": suggest_synonyms(cands, plan),
+             "terminos_ambiguos": ambiguous_terms(cands, plan)}
     save(out / "vocabulario.json", {"term_hits": hits, **vocab})
     return {**summary(queries, cands, out), "config_warnings": config_warnings(plan), "abstracts_completados": filled,
             "sin_abstract": sum(1 for c in cands if not ws(c.get("abstract"))), **vocab}
@@ -1265,6 +1286,52 @@ def term_matches(t: str, hay_words: list[str]) -> bool:
     return False
 
 
+# An acronym in a facet term ("ZeRO", "DP", "MoE", "FSDP", "BP-OSD", "qLDPC": a word
+# with two or more capitals as written) is matched in its own case, as a whole
+# word (a plural `s` allowed; a hyphen may be a space): lowercased, ZeRO would be
+# every "zero" and DP every "dp". The rest of the term matches as usual.
+@functools.lru_cache(maxsize=4096)
+def acronym_tokens(t: str) -> tuple[str, ...]:
+    words = (w.strip("()[]{},.;:!?\"'") for w in re.split(r"[\s/]+", t or ""))
+    return tuple(w for w in words if sum(ch.isupper() for ch in w) >= 2)
+
+
+@functools.lru_cache(maxsize=4096)
+def _acronym_re(tok: str, fold: bool = False) -> re.Pattern:
+    parts = [re.escape(x) for x in tok.split("-") if x]
+    return re.compile(r"(?<![A-Za-z0-9])" + r"[-\s]?".join(parts) + r"s?(?![A-Za-z0-9])", re.I if fold else 0)
+
+
+def acronyms_shown(t: str, text: str) -> bool:
+    """Every acronym of term `t` in `text`, in its own case, as a whole word."""
+    return all(_acronym_re(a).search(text or "") for a in acronym_tokens(t))
+
+
+def term_shown(t: str, hay_words: list[str], text: str) -> bool:
+    """A facet term in a text: `term_matches` on its stems, and its acronyms in
+    their own case in the text as written."""
+    return term_matches(t, hay_words) and acronyms_shown(t, text)
+
+
+def ambiguous_terms(cands: list[dict], plan: dict) -> list[dict]:
+    """Acronym terms the candidates show far more often in another case ("zero",
+    "Zero") than as written ("ZeRO"): arXiv and OpenAlex search case-insensitively,
+    so that term's queries brought mostly noise — a reason to replace it in a new
+    plan by its long form, or to require another facet."""
+    out = []
+    texts = [(c.get("title") or "") + " " + (c.get("abstract") or "") for c in cands]
+    for f in plan["facets"]:
+        for t in terms(f):
+            toks = acronym_tokens(t)
+            if not toks:
+                continue
+            exact = sum(1 for x in texts if all(_acronym_re(a).search(x) for a in toks))
+            other = sum(1 for x in texts if all(_acronym_re(a, True).search(x) for a in toks)) - exact
+            if other >= 3 and other > 2 * exact:
+                out.append({"facet": f["id"], "term": t, "forma_exacta": exact, "otra_forma": other})
+    return out
+
+
 def facet_matches(c: dict, plan: dict, title_only: bool = False) -> dict[str, str]:
     """Per facet, the first of its terms found in the title (+ abstract): whole words,
     as a phrase, with its words close together in any order, or with a compound
@@ -1274,7 +1341,7 @@ def facet_matches(c: dict, plan: dict, title_only: bool = False) -> dict[str, st
     out = {}
     for f in plan["facets"]:
         for t in terms(f):
-            if term_matches(t, hay):
+            if term_shown(t, hay, text):
                 out[f["id"]] = t
                 break
     return out
@@ -1342,7 +1409,7 @@ def term_hits(cands: list[dict], plan: dict) -> dict[str, dict[str, int]]:
         hay = stems(text).split()
         for f in plan["facets"]:
             for t in terms(f):
-                if term_matches(t, hay):
+                if term_shown(t, hay, text):
                     out[f["id"]][t] += 1
     return out
 

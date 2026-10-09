@@ -185,7 +185,15 @@ vector", "dataset" ↔ "data set"). **The run checks the vocabulary for you**
 terms no candidate shows (a term the field does not use, or a typo), and
 `sinonimos_sugeridos` the acronym ↔ expansion pairs the candidates' own
 abstracts define where the plan lists only one side ("mixture of experts" for
-`MoE`), with how many abstracts define it. Show both to the researcher before
+`MoE`), with how many abstracts define it, and `terminos_ambiguos` the
+acronym terms the candidates show far more often in another case than as
+written. **An acronym matches in its own case only** — a term word with two
+or more capitals (`ZeRO`, `DP`, `MoE`, `FSDP`, `BP-OSD`) must appear exactly so,
+as a whole word (plural `s` allowed), or the record is not credited with that
+facet: arXiv and OpenAlex search case-insensitively, so `ZeRO` also fetches
+every "zero" and `DP` every "dp". A term in `terminos_ambiguos` made noisy
+queries — in a new plan, prefer its long form or make another facet required.
+Show all three to the researcher before
 screening; if a suggestion is a real synonym, the fix is a new plan and a new
 run (the plan is frozen), never an edit to this one. An arXiv or
 OpenAlex cross-pass hit is credited with every facet (its query required all
