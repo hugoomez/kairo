@@ -71,7 +71,8 @@ more matches than `max_per_query` — narrow the facet or raise it), `por
 relevancia` (Semantic Scholar, Crossref, OpenReview: keyword search ranked by
 relevance whose total counts loose any-word matches — the top results are read,
 complete coverage is not promised, and it is not a gap) or `perdida` (failed
-after 3 attempts with backoff). Truncated and lost queries are **degraded
+after 3 attempts with backoff, a query arXiv rejected as malformed — with
+arXiv's message — or a response the parser could not read). Truncated and lost queries are **degraded
 coverage**, shown at the top of the record, never buried.
 
 **Missing abstracts are filled by DOI.** Crossref often returns ACM / IEEE /
@@ -120,7 +121,10 @@ copies it in, dated):
   kept in `raw/`; `splits` in `queries.json`). Use it for a broad question with
   no recency (e.g. a mature field's whole literature), for `linea_publicacion:
   true`, or when a run came back `truncada` and the researcher wants it whole —
-  it costs more queries and more candidates to screen; say so.
+  it costs more queries and more candidates to screen; say so. Without
+  `OPENALEX_API_KEY` an OpenAlex query is never split (each part is a paid
+  list call against the keyless daily budget): it stays `truncada` and its
+  `not_extended` says why.
 - `fields` — the research fields OpenAlex (each work's primary topic) and
   Semantic Scholar (fields of study) are limited to: `computer-science`,
   `physics`, `mathematics`, `engineering`, `materials-science`, `chemistry`,

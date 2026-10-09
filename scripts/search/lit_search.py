@@ -71,7 +71,7 @@ after retries is `lost`. Both are listed as
 degraded coverage, never hidden. With `exhaustive`, a truncated arXiv /
 OpenAlex query has its date window split in halves (up to SPLIT_DEPTH times)
 until every part is read whole — one query in the record, its parts' raw
-responses beside it (`splits`). Semantic Scholar, Crossref and OpenReview rank
+responses beside it (`splits`); never a keyless OpenAlex query (`not_extended` says why). Semantic Scholar, Crossref and OpenReview rank
 keyword matches by relevance and their totals count records matching any word
 (Crossref: ~7,000 for a three-word query over two weeks), so their queries read
 the top `per_query` and are recorded «por relevancia», never as truncated.
@@ -168,7 +168,7 @@ import net  # noqa: E402
 import retraction  # noqa: E402
 from untrusted import suspicious  # noqa: E402
 
-TOOL = "kairo/lit_search@1.5.0"
+TOOL = "kairo/lit_search@1.6.0"
 SOURCES = ("arxiv", "s2", "openalex", "crossref", "openreview", "dblp")
 # DBLP's API now sits behind an anti-bot challenge, which Kairo never works
 # around: it stays available on request but is not a default source. Crossref
@@ -403,7 +403,9 @@ def parse_arxiv(raw: bytes) -> tuple[list[dict], int]:
     for e in root.findall(f"{ATOM}entry"):
         rid = (e.findtext(f"{ATOM}id") or "")
         if "/api/errors" in rid:
-            continue
+            # a malformed query: arXiv answers one error entry (and totalResults 1) —
+            # the query is lost, with arXiv's own message, never «0 of 1»
+            raise ValueError("arXiv: " + (ws(e.findtext(f"{ATOM}summary")) or rid.rsplit("#", 1)[-1]))
         aid = retraction.normalize_arxiv(rid.rsplit("/abs/", 1)[-1])
         out.append({"title": ws(e.findtext(f"{ATOM}title")), "abstract": ws(e.findtext(f"{ATOM}summary")),
                     "authors": [ws(a.findtext(f"{ATOM}name")) for a in e.findall(f"{ATOM}author")],
@@ -712,6 +714,11 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
         except (net.HttpError, ET.ParseError, json.JSONDecodeError, ValueError) as e:
             q["error"] = net.redact(str(e))[:200]
             break
+        except Exception as e:                  # noqa: BLE001 — a parser bug or a cut response
+            # (TypeError / KeyError in a parser, http.client.IncompleteRead): this query
+            # is lost and says why; the run goes on with the others
+            q["error"] = net.redact(f"{type(e).__name__}: {e}")[:200]
+            break
         name = f"{q['id']}-{len(q['raw']) + 1}.{'xml' if q['source'] == 'arxiv' else 'json'}"
         (raw_dir / name).write_bytes(data)
         q["raw"].append({"file": name, "url": net.redact(url), "sha256": hashlib.sha256(data).hexdigest()})
@@ -727,11 +734,13 @@ def run_query(q: dict, plan: dict, raw_dir: Path, fetch: Fetch) -> list[dict]:
                 cap = total                     # the whole result fits: read it all, never truncate it
                 q["extended_to"] = total
         full_page = len(got) >= size
-        got = got[:cap] if q["source"] == "s2-anchor" else got[:want]
+        # `start` is always the first record of the page just read (OpenAlex: a page
+        # boundary), so the next page starts `size` further on — never re-read, never skipped
+        got = got[:cap - start]
         recs.extend(got)
         if q["source"] == "s2-anchor" or not full_page or start + size >= total:
             break
-        start += want
+        start += size
     q["fetched"] = len(recs)
     if plan.get("window_by") == "indexed" and q["source"] == "crossref":
         # windowed by registration date: a record keeps any publication date from the
@@ -783,6 +792,12 @@ def run_exhaustive(q: dict, plan: dict, raw_dir: Path, fetch: Fetch, until: str)
     the first page's, which they contain."""
     recs = run_query(q, plan, raw_dir, fetch)
     if not (plan.get("exhaustive") and q.get("truncated") and not q.get("error") and q["source"] in BOOLEAN_CROSS):
+        return recs
+    if q["source"] == "openalex" and not os.environ.get("OPENALEX_API_KEY"):
+        # keyless, every part would be a paid list call against the ~100-call daily
+        # budget: the query stays truncated and says why, the window is never split
+        q["not_extended"] = (f"sin OPENALEX_API_KEY: {q['total']} resultados, leídos los primeros {q['fetched']}; "
+                             "`exhaustive` no divide la ventana sin clave")
         return recs
     sig = (q["facet"], q["source"], q["pass"])
     stats = {"splits": 0, "truncated": False, "error": None, "fetched": 0, "outside": 0}
