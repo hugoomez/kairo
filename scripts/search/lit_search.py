@@ -271,7 +271,8 @@ def norm_title(t: str) -> str:
 # -ating ("simulation", "simulator", "simulate", "simulating" → "simul"), -ization /
 # -izer / -ize, and -ion / -ing after ct, ut, pt, ss, is ("correction", "correcting"
 # → "correct"; "precision", "precise" → "precis"). That -ion rule is narrow on
-# purpose: "station" ≠ "state", "tension" ≠ "tensor".
+# purpose: "station" ≠ "state", "tension" ≠ "tensor". A word ending in -ss keeps
+# it ("class" ~ "classes") and one in the Greek -is drops it ("analysis" ~ "analyses").
 _SUFFIXES = ("izations", "ization", "isations", "isation", "izers", "izer", "izing", "ized", "izes", "ize",
              "ations", "ation", "ators", "ator", "ating", "ated", "ates", "ate", "ions", "ion",
              "ings", "ing", "isms", "ism", "ities", "ity", "ers", "er", "ors", "or", "ies", "es", "ed", "s")
@@ -284,12 +285,16 @@ def stem(w: str) -> str:
     if len(w) <= 4:
         # a short acronym's plural is the acronym ("llms", "gpus" → "llm", "gpu")
         return w[:-1] if len(w) >= 3 and w.endswith("s") and not w.endswith("ss") else w
+    if w.endswith("is"):
+        return w[:-2]                       # Greek -is / -es: "analysis", "analyses" → "analys"
     for s in _SUFFIXES:
         if w.endswith(s) and len(w) - len(s) >= 3:
             if s == "es" and not w[:-2].endswith(("s", "x", "ch", "sh", "z")):
                 continue                    # "codes" → "code" by the plain "s" below
             if s in ("ions", "ion") and not w[:-len(s)].endswith(_ION_AFTER):
                 continue                    # "station", "region", "tension" keep their -ion
+            if s == "s" and w.endswith("ss"):
+                continue                    # "class", "process" keep it: "classes" → "class"
             w = w[:-len(s)] + ("y" if s == "ies" else "")
             break
     return w[:-1] if len(w) > 4 and w.endswith("e") else w
@@ -1432,9 +1437,6 @@ def term_hits(cands: list[dict], plan: dict) -> dict[str, dict[str, int]]:
                 if term_shown(t, hay, text):
                     out[f["id"]][t] += 1
     return out
-
-
-snowball_terms_match = facet_matches         # the old name, kept for callers
 
 
 def snowball_keep(r: dict, plan: dict) -> dict[str, str]:
