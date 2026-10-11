@@ -122,6 +122,24 @@ class Locators(unittest.TestCase):
         self.assertEqual(self.units("§S1.2"), ["A deeper invented detail."])
         self.assertNotIn("The invented supplement starts here.", self.units("§1"))
 
+    def test_a_supplement_prefix_reaches_the_supplements_own_section(self):
+        # an APS-style supplement: same heading level as its Roman sections, which
+        # restart at I — "Supl. §I" is the supplement's I, never the main text's
+        note = NOTE.replace("### Appendix A Toy proof", (
+            "### Supplemental Material: An invented toy study\n\n"
+            "### I Toy annealing details\n\nThe invented supplement section one.\n\n"
+            "### Appendix A Toy proof"))
+        note = note.replace("### 1 Introduction", "### I Introduction")
+        (self.vault / "Papers" / "P-0951 toy.md").write_text(note, encoding="utf-8")
+        for span in ("Supl. §I", "Suplemento §I", "Supplementary §I", "Suppl. §I"):
+            units = self.units(span)
+            self.assertEqual(units, ["The invented supplement section one."], span)
+        self.assertIn("Our results show that the invented toy method is fast in the intro.", self.units("§I"))
+        refs = vp.citation_refs("- P-0951 Supl. §I — the toy claim")
+        self.assertEqual(refs, [("P-0951", "Supl. §I")])
+        m = cs.CITE.search("x — P-0951 Suplemento §I, Fig. A2")
+        self.assertIn("Suplemento §I", m.group(2))
+
     def test_check_sota_reads_the_same_locators(self):
         for text in ("x — P-0951 Eq. (3)", "x — P-0951 Tabla S1", "x — P-0951 Fig. A2", "x — P-0951 §A"):
             m = cs.CITE.search(text)

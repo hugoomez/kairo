@@ -241,8 +241,15 @@ def citation_refs(bullet: str) -> list[tuple[str, str]]:
     return refs
 
 
+# "Supl. §I", "Suplemento §II", "Supplementary Fig. 3", "SM §S1": a locator inside
+# the paper's supplementary material, never a main-text section of the same number
+SUPPL = (r"(?:Supl(?:emento|ementario)?\.?|Material\s+suplementario|Suppl\.?|"
+         r"Supplement(?:ary|al)?(?:\s+(?:Material|Information))?|SM)")
+SUPPL_PREFIX_RE = re.compile(rf"^\s*{SUPPL}\s*(?=§|Fig|Tabla|Table|Eq|Ec)")
+SUPPL_HEADING_RE = re.compile(r"suppl|suplement|supporting information|material suplementario", re.I)
 LOCATOR_START_RE = re.compile(
-    r"^(?:§|App(?:endix)?\b|Apéndice|Fig|Tabla|Table|Eqs?\b|Ecs?\b|Ecuaci[oó]n\b|Equation\b|Resumen\b|Abstract\b)")
+    rf"^(?:{SUPPL}\s*)?"
+    r"(?:§|App(?:endix)?\b|Apéndice|Fig|Tabla|Table|Eqs?\b|Ecs?\b|Ecuaci[oó]n\b|Equation\b|Resumen\b|Abstract\b)")
 
 
 NUM = r"[A-Z]?\d+(?:\.\d+)*"
@@ -382,6 +389,7 @@ def source_units(texto: str) -> list[dict]:
     heading_nums: dict[int, str | None] = {}
     heading_titles: dict[int, str] = {}
     current: dict | None = None
+    suppl = False   # past the supplementary material's heading: every later unit is in it
 
     def ctx_titles() -> list[str]:
         return [heading_titles[lvl] for lvl in sorted(heading_titles)]
@@ -426,6 +434,7 @@ def source_units(texto: str) -> list[dict]:
                 num = f"{ctx_num()}.{lm.group(1)}"
             heading_nums[level] = num
             heading_titles[level] = title
+            suppl = suppl or bool(SUPPL_HEADING_RE.search(title))
             continue
         if not stripped:
             close()
@@ -437,10 +446,10 @@ def source_units(texto: str) -> list[dict]:
             # "- 1. first point" is an enumeration inside the current section
             nm = re.match(r"^(\d+\.\d+(?:\.\d+)*)\.?\s", item)
             current = {"lines": [line.rstrip()],
-                       "num": nm.group(1) if nm else ctx_num(), "titles": ctx_titles()}
+                       "num": nm.group(1) if nm else ctx_num(), "titles": ctx_titles(), "suppl": suppl}
             continue
         if current is None:
-            current = {"lines": [line.rstrip()], "num": ctx_num(), "titles": ctx_titles()}
+            current = {"lines": [line.rstrip()], "num": ctx_num(), "titles": ctx_titles(), "suppl": suppl}
         else:
             current["lines"].append(line.rstrip())
     close()
@@ -602,6 +611,12 @@ def resolve_citation(vault: str, pid: str, span: str) -> dict:
                         if units[j]["text"] not in chosen:
                             chosen.append(units[j]["text"])
                         j += 1
+    if SUPPL_PREFIX_RE.match(span):
+        # only what sits under the supplementary material's heading, when the note has one
+        suppl = {u["text"] for u in source_units(texto) if u.get("suppl")}
+        inside = [c for c in chosen if c in suppl]
+        if inside:      # a "Supl. … Fig. 2" whose figure is the main text's keeps it
+            chosen = inside
     res["units"] = [strip_hidden(u) for u in chosen]
     if not chosen:
         res["note"] = ("ningún fragmento de ## Texto completo coincide con "

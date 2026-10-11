@@ -109,6 +109,7 @@ sys.path.insert(0, str(HERE.parent / "security"))
 import isolation  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402, I001  (path set by verifier_packet)
 from verifier_packet import (  # noqa: E402
+    SUPPL,
     TOOL_ID as VERIFIER_PACKET_ID,
     body_sections,
     find_paper,
@@ -120,7 +121,7 @@ from verifier_packet import (  # noqa: E402
 )
 
 TOOL = "kairo/check_sota@1.10.0"
-_LOC_PART = (r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
+_LOC_PART = (rf"(?:{SUPPL}\s*)?" r"(?:§\s*[A-Za-zÁÉÍÓÚáéíóú0-9][\w.]*(?:\s*[–-]\s*§?\s*[\w.]+)?"
              r"|(?:Tabla|Table|Figura|Figure|Fig\.?|App(?:endix)?\.?|Apéndice)\s*[A-Z]?\d+(?:\.\d+)*"
              r"|(?:Eq\.?|Ec\.?|Ecuaci[oó]n|Equation)\s*\(?\s*[A-Z]?\d+\s*\)?"
              r"|(?:Resumen|Abstract)\b)")
