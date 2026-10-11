@@ -150,7 +150,7 @@ _UNIT_AFTER = re.compile(r"^\s+((?:[A-Za-z-]+\s+)?" + COUNT_UNITS + r"s?)\b", re
 POW = re.compile(
     r"(?<![\w.,])(?:(\d+(?:[.,]\d+)?)" + _TEX_SP + r"(?:\\times|\\cdot|×|·|\*|x)" + _TEX_SP + r")?"
     r"(?<![\d.])10(?:\s*\^\s*\{?\s*([-−–+]?)\s*(\d+)\s*\}?|([⁻⁺]?)([⁰¹²³⁴⁵⁶⁷⁸⁹]+))"
-    r"|(?<![\w.,])(\d+(?:[.,]\d+)?)[eE]([-−+]?\d+)(?![\w])")
+    r"|(?<![\w.,])(\d+(?:[.,]\d+)?)[eE](?:\^\s*\{\s*([-−+]?\d+)\s*\}|([-−+]?\d+)(?![\w]))")
 _SUPERSCRIPT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _TEX_NUM = re.compile(r"\\(?:num|SI)\{([^{}]*)\}")
 # Code parameters [[n,k,d]] / [n,k,d] (any spacing, LaTeX \llbracket … \rrbracket): one tuple
@@ -244,7 +244,7 @@ def _unwrap_num(s: str) -> str:
 def _pow_parts(m: re.Match) -> tuple[str, int] | None:
     """(mantissa as written, exponent) of a POW match."""
     if m.group(6):
-        mant, sign, digits = m.group(6), "", m.group(7)
+        mant, sign, digits = m.group(6), "", m.group(7) or m.group(8)    # 1e-3, $1e^{-3}$
     elif m.group(3):
         mant, sign, digits = m.group(1) or "1", m.group(2), m.group(3)
     else:
@@ -258,7 +258,15 @@ def _pow_parts(m: re.Match) -> tuple[str, int] | None:
 
 
 _LABEL_NUM = re.compile(r"\b(?:Tablas?|Tables?|Figuras?|Figures?|Figs?\.?|Ec\.?|Eqs?\.?|Ecuaci[oó]n|Equation|"
-                        r"Ap[eé]ndice|Appendix|Secci[oó]n|Section|Sec\.)\s*\(?[A-Z]?\d+(?:\.\d+)*\)?")
+                        r"Ap[eé]ndice|Appendix|Secci[oó]n|Section|Sec\.|Teoremas?|Theorems?|Thm\.|Lemas?|Lemmas?|"
+                        r"Proposici[oó]n|Propositions?|Prop\.|Corolario|Corollary|Definici[oó]n|Definition|"
+                        r"Algoritmos?|Algorithms?)\s*\(?[A-Z]?\d+(?:\.\d+)*\)?")
+# A graph's name is not a figure: K_{1,6}, K_{3,3}^{+}, C_{2k}, K_{2,2,2}′, K₁,₆ (a subscript
+# with a digit in it; D_{min} has none and is left to the parameter check)
+_GRAPH_NAME = re.compile(r"(?<![A-Za-z])[A-Z]_\{[^{}]*\d[^{}]*\}(?:\^\{[^{}]*\}|\^[+*′'])?[′']?"
+                         r"|(?<![A-Za-z])[A-Z][₀-₉]+(?:,[₀-₉]+)*")
+# "11. **Opcionales:**": the number of a list item
+_LIST_ITEM = re.compile(r"^\s*(?:[-*]\s+)?\d{1,3}[.)](?=\s|$)")
 
 
 def numbers_at(sentence: str, every: bool = False) -> list[tuple[str, int]]:
@@ -267,7 +275,7 @@ def numbers_at(sentence: str, every: bool = False) -> list[tuple[str, int]]:
     (a reading card's claim against its own quote)."""
     s = PLOT.sub(lambda m: " " * len(m.group(0)), _unwrap_num(sentence))
     for rx in (CITE, re.compile(r"\b(?:H|E|C|PROJ|ADR|F)-\d+\b"), re.compile(r"\d{4}-\d{2}-\d{2}"),
-               re.compile(r"§\s*[\w.]+"), _LABEL_NUM):
+               re.compile(r"§\s*[\w.]+"), _LABEL_NUM, _GRAPH_NAME, _LIST_ITEM):
         s = _blank(rx, s)          # a label is not a figure: "Figura 12", "Table 3", "Eq. (4)"
     out: list[tuple[str, int]] = []
     for m in POW.finditer(s):
@@ -376,7 +384,7 @@ def _param_in(pm: re.Match, texts: list[str]) -> bool:
     names = [name] + PARAM_ALIAS.get(name.lower(), [])
     alts = "|".join(re.escape(n) if len(n) == 1 else f"(?i:{re.escape(n)})" for n in names)
     plain = [_plain_names(t) for t in texts]
-    rx = re.compile(rf"(?<![\w\\])(?:{alts})\s*(?:=|:|of\b|de\b)?\s*\$?\s*{val}(?![\d]|[.,]\d)")
+    rx = re.compile(rf"(?<![\w\\])(?:{alts})\s*(?:=|:|-|of\b|de\b)?\s*\$?\s*{val}(?![\d]|[.,]\d)")   # degree-$5$
     if any(rx.search(t) for t in plain):
         return True
     named = re.compile(rf"(?<![\w\\])(?:{alts})(?![\w])")
@@ -386,6 +394,9 @@ def _param_in(pm: re.Match, texts: list[str]) -> bool:
 
 
 def number_in(tok: str, texts: list[str]) -> bool:
+    if re.fullmatch(r"\d{1,3},\d{3}", tok.strip()):
+        # "10,255" is ten thousand two hundred fifty-five or, in Spanish, 10.255: either
+        return any(_figure_in(tok.replace(",", sep), False, t) for sep in ("", ".") for t in texts)
     cm = COUNT_TOK.fullmatch(tok)
     if cm:
         words = cm.group(2).split()

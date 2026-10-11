@@ -321,6 +321,24 @@ class NumberMatching(unittest.TestCase):
         self.assertTrue(cs.number_in("10000", ["over 10,000 toy samples"]))
         self.assertTrue(cs.number_in("10,000", ["over 10000 toy samples"]))
 
+    def test_a_comma_before_three_digits_may_be_a_spanish_decimal(self):
+        self.assertTrue(cs.number_in("12,345", ["the toy radius is $12.345\\ \\mu m$"]))
+        self.assertTrue(cs.number_in("12,345", ["over 12345 toy samples"]))
+        self.assertFalse(cs.number_in("12,345", ["a toy radius of 12.34"]))
+
+    def test_latex_exponent_and_hyphenated_parameter_forms(self):
+        self.assertTrue(cs.number_in("1e-4", ["a toy learning rate equal to $1e^{-4}$"]))
+        self.assertFalse(cs.number_in("1e-4", ["a toy learning rate equal to $1e^{-5}$"]))
+        self.assertTrue(cs.number_in("grado 6", ["two adjacent degree-$6$ toy vertices"]))
+        self.assertFalse(cs.number_in("grado 6", ["two adjacent degree-$4$ toy vertices"]))
+
+    def test_graph_names_theorem_labels_and_list_items_are_not_figures(self):
+        s = ("1. El grafo K_{1,7} y K_{2,4}^{+} y C_{2k} y K_{2,2,3}′ y K₁,₇ no son toy-UDG "
+             "(Teorema 5.2, Lema 6.1, Proposición 7.3); P_{MIS} = 0.31.")
+        self.assertEqual(cs.numbers(s), ["0.31"])
+        self.assertEqual(cs.numbers("14. **Opcionales:** una toy-red de 93 nodos"), ["93"])
+        self.assertEqual(cs.numbers("el toy-modelo usa K_{12} nodos y 17 capas"), ["17"])
+
 
 
 class PlotValuesAndSmallCounts(unittest.TestCase):
