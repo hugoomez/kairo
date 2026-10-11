@@ -675,8 +675,10 @@ From `${CLAUDE_PLUGIN_ROOT}/templates/hypothesis-template.md`. Set at minimum:
   known-failure/severe-test"` (or `"rounds exhausted — flagged for human review"`,
   or `"override manual de un clear fail (Check N)"`).
 - `needs_human_review: true` in the exhausted-rounds outcome, in the
-  logged clear-fail override (option 3 of "On a clear fail"), **and** when the
-  fresh verification returned `errors_found` / `cannot_assess`; otherwise `false`.
+  logged clear-fail override (option 3 of "On a clear fail"), and when the
+  fresh verification could not run; otherwise `false`. A verifier's
+  `errors_found` / `cannot_assess` is **not** a reason: it lives in
+  `verification_reviewed: false`, which `verifications.py append` sets.
 - `verifications:` — never hand-written; appended by `verifications.py append`
   after creation (see "Fresh verification").
 - `depends_on:` — the `H-XXXX` / `C-XXXX` ids this claim logically **relies
@@ -776,8 +778,8 @@ count never exceeded budget and no tournament was needed.
   verbatim, is the whole prompt.
 - **Discarding (or refining away) a candidate because the verifier found
   errors.** `errors_found` / `cannot_assess` → the note is still created at
-  `propuesta` with `needs_human_review: true`; a human decides whether to fix
-  and re-verify. The verifier never decides a claim's fate.
+  `propuesta` with `verification_reviewed: false` (set by the script, never
+  `needs_human_review`); a human decides whether to fix and re-verify. The verifier never decides a claim's fate.
 - **Editing an old `verifications:` entry after a fix.** Re-verify and append;
   the latest entry per scope governs.
 - **Writing `en_cola` (or any transition) directly.** This skill only creates
