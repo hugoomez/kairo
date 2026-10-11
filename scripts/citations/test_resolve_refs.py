@@ -715,6 +715,42 @@ class TestVersionsLinkedByArxiv(unittest.TestCase):
         self.assertEqual(self.decide(records, oa).status, "mismatch")
 
 
+class TestPreprintMergedIntoPublishedWork(unittest.TestCase):
+    """A note with only its arXiv id: OpenAlex, fetched by the arXiv DOI, returns
+    the merged published work, two years later (invented works)."""
+
+    note = {**X, "year": 2028, "id": "P-0055", "prev_status": None, "doi": None, "arxiv": "9999.00071"}
+
+    def recs(self, ax_title=None, oa_doi="https://doi.org/10.9999/jour.2030.7", oa_author="Marta Alvarez"):
+        ax = rec("arxiv", ax_title or X["title"], ["Marta Alvarez"], 2028, id_key="arxiv:9999.00071")
+        oa = rec("openalex", X["title"], [oa_author], 2030, openalex_id="W71", found_by="arxiv-doi",
+                 id_key="arxiv:9999.00071", raw={"doi": oa_doi})
+        return [oa, ax], oa
+
+    def decide(self, records, oa):
+        return rr.decide(self.note, records, oa, False, "clear", [], False, trace("openalex", "arxiv"))
+
+    def test_published_year_is_a_version_not_a_chimera(self):
+        records, oa = self.recs()
+        r = self.decide(records, oa)
+        self.assertEqual((r.status, r.match, r.resolved), ("resolved", "close", True))
+        self.assertIn("version", [d["level"] for d in r.diff])
+        self.assertTrue(any("record for the note's arXiv id is the published work" in f["message"] for f in r.flags))
+        self.assertFalse(any(f["severity"] in ("crítico", "importante") for f in r.flags))
+
+    def test_openalex_record_still_on_the_arxiv_doi_is_not_merged(self):
+        records, oa = self.recs(oa_doi="https://doi.org/10.48550/arxiv.9999.00071")
+        self.assertEqual(self.decide(records, oa).status, "mismatch")
+
+    def test_arxiv_record_not_matching_the_note_is_not_merged(self):
+        records, oa = self.recs(ax_title="An Unrelated Study of Lattice Widgets")
+        self.assertEqual(self.decide(records, oa).status, "mismatch")
+
+    def test_another_first_author_is_never_a_version(self):
+        records, oa = self.recs(oa_author="Ngozi Okafor")
+        self.assertEqual(self.decide(records, oa).status, "mismatch")
+
+
 class TestPublishedVersion(unittest.TestCase):
     """A note anchored on an arXiv preprint learns where the work was published."""
 

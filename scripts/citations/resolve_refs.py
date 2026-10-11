@@ -442,8 +442,25 @@ def openalex_links_ids(note: dict, records: list[SourceRecord]) -> bool:
     return False
 
 
+def preprint_merged(note: dict, records: list[SourceRecord]) -> bool:
+    """A note anchored on an arXiv preprint (no DOI of its own) whose OpenAlex
+    record, fetched by that same arXiv id, is the published work: OpenAlex merged
+    the preprint into it, so the record carries the journal DOI and year. The
+    arXiv registrar record for the id must itself match the note -- then the
+    identity is the note's own identifier, and only the version differs."""
+    mine = note_keys(note)
+    if "doi" in mine or "arxiv" not in mine:
+        return False
+    arxiv_ok = any(rec.source == "arxiv" and rec.id_key == mine["arxiv"] and match_record(note, rec)[0] != "mismatch"
+                   for rec in records)
+    return arxiv_ok and any(
+        rec.source == "openalex" and rec.id_key == mine["arxiv"]
+        and key_for_doi((rec.raw or {}).get("doi")).startswith("doi:")
+        for rec in records)
+
+
 def versions_linked(note: dict, records: list[SourceRecord]) -> bool:
-    return registrar_links_ids(note, records) or openalex_links_ids(note, records)
+    return registrar_links_ids(note, records) or openalex_links_ids(note, records) or preprint_merged(note, records)
 
 
 def published_version(note: dict, records: list[SourceRecord]) -> dict | None:
@@ -720,6 +737,7 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
     levels = []
     linked = versions_linked(note, records)
     by_openalex = linked and not registrar_links_ids(note, records)
+    merged = by_openalex and preprint_merged(note, records)
     mine = note_keys(note)
     for rec, lvl, diff in per:
         # a record of the OTHER version of a work arXiv links to the note's DOI:
@@ -733,7 +751,9 @@ def decide(note: dict, records: list[SourceRecord], oa_rec: SourceRecord | None,
                     d["level"] = "version"
             if not any("version" in f["message"] for f in r.flags):
                 r.flags.append({"severity": "menor",
-                                "message": ("two versions of one work: OpenAlex lists the arXiv preprint as a "
+                                "message": ("two versions of one work: OpenAlex's record for the note's arXiv id "
+                                            "is the published work" if merged else
+                                            "two versions of one work: OpenAlex lists the arXiv preprint as a "
                                             "location of the DOI's work" if by_openalex else
                                             "two versions of one work: the arXiv record declares the note's DOI")
                                            + " (preprint/postprint vs published); year or title differ between them"})
