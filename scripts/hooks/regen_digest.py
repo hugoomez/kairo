@@ -9,8 +9,9 @@ row per hypothesis:
     | id | claim | estado | lección |
 
 Fires on any create/edit of a hypothesis note, not only status changes -- the
-rebuild is idempotent and cheap, which avoids fragile diff parsing. Notes are the
-source of truth; the digest is a derived view. Standard library only. Always
+rebuild is idempotent and cheap, which avoids fragile diff parsing. It is a
+merge: only the H-XXXX rows come from the notes; discard rows and everything
+after the table (## Meta-revisión) are kept as they are. Standard library only. Always
 exits 0 -- a digest failure must never break the session.
 """
 
@@ -62,6 +63,29 @@ def project_dir(p: Path) -> Path | None:
     return None
 
 
+_HYP_ROW = re.compile(r"^\|\s*H-\d+\s*\|")
+
+
+def split_existing(digest: Path) -> tuple[list[str], list[str], list[str]]:
+    """The parts of the current digest the notes don't own: the lines before
+    the table, the table rows that aren't H-XXXX rows (hypothesis-cycle's
+    discard rows, an append-only ledger) and everything after the table
+    (the ## Meta-revisión section). The H-XXXX rows are rebuilt from the notes."""
+    try:
+        lines = digest.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return [], [], []
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("|")), None)
+    if start is None:
+        return [], [], lines
+    end = start
+    while end < len(lines) and lines[end].startswith("|"):
+        end += 1
+    body = lines[start + 2:end]  # past the header and the separator
+    kept = [ln for ln in body if not _HYP_ROW.match(ln)]
+    return lines[:start], kept, lines[end:]
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -91,8 +115,10 @@ def main() -> int:
         rows.append((hid, claim, estado, leccion))
 
     rows.sort(key=lambda r: r[0])
-    out = ["| id | claim | estado | lección |", "|----|-------|--------|---------|"]
+    before, kept, after = split_existing(proj / "_digest.md")
+    out = before + ["| id | claim | estado | lección |", "|----|-------|--------|---------|"]
     out += [f"| {cell(a)} | {cell(b)} | {cell(c)} | {cell(d)} |" for a, b, c, d in rows]
+    out += kept + after
     try:
         (proj / "_digest.md").write_text("\n".join(out) + "\n", encoding="utf-8")
     except OSError as exc:
