@@ -72,7 +72,8 @@ ESTIMATORS = {
 # metric_kind absent = proportion (notes written before the field existed)
 ANALYSIS_SCRIPTS = {("frequentist", "proportion"): "two_proportion_test",
                     ("bayesian", "proportion"): "bayes_factor_proportions",
-                    ("frequentist", "continuous"): "mean_difference"}
+                    ("frequentist", "continuous"): "mean_difference",
+                    ("frequentist", "logistic_contrast"): "logistic_contrast"}
 
 
 class AuditError(Exception):

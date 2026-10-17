@@ -398,6 +398,23 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/mean_difference.py \
 `effect` (or `ratio` with `--log`), `ci`, `p_value`, `standardized_effect` and
 `verdict` verbatim; `effect` and `se` are what `combine_effects.py` pools.
 
+**`analysis_plan: frequentist`, `metric_kind: logistic_contrast`** — the
+contrast of two logistic-regression moves, on a CSV with one row per instance
+(the 0/1 outcome, the predictor columns and, if frozen, the strata column):
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/analysis/logistic_contrast.py \
+    --data <runs.csv> --outcome <column> --predictors <c1,c2,...> \
+    --a <NAME:FROM:TO> --b <NAME:FROM:TO> --alpha <frozen alpha> \
+    [--direction-a <increase|decrease>] [--strata <column>] \
+    --ridge <frozen> --n-boot <frozen> --seed <frozen> \
+    --min-effect <frozen T_apoyo> --floor-effect <frozen T_refuta> --json
+```
+
+Every flag exactly as frozen. Take `move_a`, `move_b`, `effect` (D), `ci`, `se`
+and `verdict` verbatim. D is in log-odds; `effect` and `se` are the inputs
+`combine_effects.py` takes, with the caveat that `se` is a bootstrap sd.
+
 **`analysis_plan: bayesian`** — the Beta-Binomial Bayes factor:
 
 ```
@@ -520,7 +537,8 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
   verdict.
 - **Calling the wrong script for the frozen `analysis_plan` / `metric_kind`.**
   `frequentist` -> `two_proportion_test.py` (proportion) or
-  `mean_difference.py` (continuous); `bayesian` -> `bayes_factor_proportions.py`.
+  `mean_difference.py` (continuous) or `logistic_contrast.py` (logistic
+  contrast); `bayesian` -> `bayes_factor_proportions.py`.
   The frozen fields decide which one runs, not which one is more familiar
   (`pitfall-audit` blocks a mismatch as `crítico`).
 - **Applying your own "does this support it?" judgment.** The frozen threshold
@@ -587,6 +605,9 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/mean_difference.py` — the
   `frequentist` test for a `continuous` metric (Welch / paired t, `--log` for
   ratios), same three-way verdict.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/logistic_contrast.py` — the
+  `frequentist` test for `metric_kind: logistic_contrast` (bootstrap CI of the
+  difference between two moves of a logistic regression), same three-way verdict.
 - `${CLAUDE_PLUGIN_ROOT}/scripts/paper_to_tool/tool_hash.py` — the pre-flight
   check of every `environment.tools` hash (step 1); tools are built by
   `paper-to-tool`.

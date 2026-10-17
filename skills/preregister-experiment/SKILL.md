@@ -239,15 +239,29 @@ domain-judgement-chosen figure. Record the exact command, its output, and the
 SESOI/alpha/power inputs in `## Plan de análisis` (step 3b).
 
 **c. Metric kind and analysis plan.** First the kind of primary metric —
-`metric_kind: proportion` (successes out of trials) or `metric_kind:
+`metric_kind: proportion` (successes out of trials), `metric_kind:
 continuous` (one value per seed or run: accuracy, loss, throughput, time to
-solution, speedup). Then ask the researcher: `frequentist` (default) or
-`bayesian`. Set both fields in frontmatter. The script each pair runs:
+solution, speedup) or `metric_kind: logistic_contrast` (a 0/1 outcome per run,
+where the claim says one factor moves its log-odds more than another —
+"depends more on A than on B"; two arms cannot express it). Then ask the
+researcher: `frequentist` (default) or `bayesian`. Set both fields in
+frontmatter. The script each pair runs:
 
-| `analysis_plan` | `proportion` | `continuous` |
-|---|---|---|
-| `frequentist` | `two_proportion_test.py` | `mean_difference.py` — Welch's t, `--paired` when both arms share seeds, `--log` for a ratio (speedup, throughput, time: thresholds then are ratios, e.g. `T_apoyo` 1.10 = 10 % better) |
-| `bayesian` | `bayes_factor_proportions.py` | **none** — say so and use `frequentist`; never freeze a plan no script can apply |
+| `analysis_plan` | `proportion` | `continuous` | `logistic_contrast` |
+|---|---|---|---|
+| `frequentist` | `two_proportion_test.py` | `mean_difference.py` — Welch's t, `--paired` when both arms share seeds, `--log` for a ratio (speedup, throughput, time: thresholds then are ratios, e.g. `T_apoyo` 1.10 = 10 % better) | `logistic_contrast.py` — `--a NAME:FROM:TO --b NAME:FROM:TO` fix the two moves, thresholds are on D = \|move a\| − \|move b\| in log-odds |
+| `bayesian` | `bayes_factor_proportions.py` | **none** — say so and use `frequentist`; never freeze a plan no script can apply | **none** — same |
+
+For `logistic_contrast`, freeze in `## Plan de análisis` everything the script
+takes as input: the outcome and predictor columns, both moves, `--ridge`,
+`--n-boot`, `--seed`, `--strata` and, when the claim fixes the sign of move a,
+`--direction-a`. Two cautions to state there: (1) a covariate that is a function
+of one of the two compared predictors (a density or occupancy derived from N)
+leaves that predictor's coefficient unidentified — check the correlation in a
+pilot, or leave the covariate out; (2) there is no a-priori sample-size script
+for this kind, so a `completo` requirement (step 1a) cannot be met by it: flag
+`crítico` and decide with the researcher (a simulation-based power analysis
+written and frozen first, or another metric).
 
 - **`frequentist`:** step 3b states alpha and the min/floor effect thresholds,
   as today.

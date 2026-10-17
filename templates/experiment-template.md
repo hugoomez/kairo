@@ -43,7 +43,11 @@ analysis_plan: <frequentist | bayesian>
 #               speedup)                  -> frequentist only:
 #               scripts/analysis/mean_difference.py (Welch or --paired t; --log
 #               for ratios such as a speedup). No bayesian script exists for it.
-metric_kind: <proportion | continuous>
+#   logistic_contrast  a 0/1 outcome per run, and the claim compares how far two
+#               factors move its log-odds ("A matters more than B") -> frequentist
+#               only: scripts/analysis/logistic_contrast.py (bootstrap CI of
+#               D = |move A| - |move B|). No bayesian script exists for it.
+metric_kind: <proportion | continuous | logistic_contrast>
 status: <preregistered | running | completed>
 # frozen_at — timestamp when the preregistration was frozen (before any code ran)
 frozen_at: <YYYY-MM-DDTHH:MM:SSZ>

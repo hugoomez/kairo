@@ -312,6 +312,10 @@ there and are not marked — the instruction-like-text heuristic still applies.
     (accuracy or loss per seed, throughput, time, speedup — `--log` for a
     ratio), with the same three-way verdict; `sample_size.py --d` sizes it.
     Chosen by `metric_kind: continuous` in the preregistration.
+  - `logistic_contrast.py` — bootstrap contrast of two moves of a logistic
+    regression (does factor A shift a 0/1 outcome's log-odds more than factor
+    B), with the same three-way verdict. Chosen by
+    `metric_kind: logistic_contrast`.
   - `combine_effects.py` — combines two independent effect estimates
     (random-effects DerSimonian–Laird by default) and flags heterogeneity /
     disagreement.

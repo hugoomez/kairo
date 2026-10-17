@@ -377,6 +377,29 @@ class Metric(Base):
                         analysis_record(script="two_proportion_test.py@1.0.0"))
         self.assertIn("wrong_analysis_script", self.kinds(self.run_audit(), "metric", "crítico"))
 
+    def test_a_logistic_contrast_is_analysed_by_logistic_contrast(self):
+        """metric_kind: logistic_contrast (does factor A move a 0/1 outcome more than
+        factor B) is the frequentist plan's logistic_contrast.py, not the two-proportion test."""
+        self.exp.write_text(EXP.replace("analysis_plan: frequentist",
+                                        "analysis_plan: frequentist\nmetric_kind: logistic_contrast"),
+                            encoding="utf-8", newline="\n")
+        self.fill_trace()
+        self.write_json(self.exp_dir / "trazas" / "E-0901.analysis.json",
+                        analysis_record(script="logistic_contrast.py@1.0.0"))
+        self.assertNotIn("wrong_analysis_script", self.kinds(self.run_audit(), "metric"))
+        self.write_json(self.exp_dir / "trazas" / "E-0901.analysis.json",
+                        analysis_record(script="two_proportion_test.py@1.0.0"))
+        self.assertIn("wrong_analysis_script", self.kinds(self.run_audit(), "metric", "crítico"))
+
+    def test_a_bayesian_plan_for_a_logistic_contrast_has_no_script(self):
+        self.exp.write_text(EXP.replace("analysis_plan: frequentist",
+                                        "analysis_plan: bayesian\nmetric_kind: logistic_contrast"),
+                            encoding="utf-8", newline="\n")
+        self.fill_trace()
+        self.write_json(self.exp_dir / "trazas" / "E-0901.analysis.json",
+                        analysis_record(script="bayes_factor_proportions.py@1.0.0"))
+        self.assertIn("no_analysis_script", self.kinds(self.run_audit(), "metric", "crítico"))
+
     def test_a_bayesian_plan_for_a_continuous_metric_has_no_script(self):
         self.exp.write_text(EXP.replace("analysis_plan: frequentist", "analysis_plan: bayesian\nmetric_kind: continuous"),
                             encoding="utf-8", newline="\n")
