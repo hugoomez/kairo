@@ -88,6 +88,13 @@ kind = "job"
 tier = "opus"
 label = "Mapa de la frontera (taxonomía, matrices, huecos y posicionamiento)"
 
+# sonnet: same work as create-project's search stage (facets, queries, screening
+# by the screener agents); launched from a frontier cell with that cell as focus.
+[tasks.literature_search]
+kind = "job"
+tier = "sonnet"
+label = "Buscar en la literatura (desde una casilla de la frontera o un tema)"
+
 [tasks.create_project]
 kind = "job"
 tier = "sonnet"
