@@ -78,6 +78,16 @@ kind = "job"
 tier = "opus"
 label = "Explicar papers, una casilla de la frontera o el proyecto (explicación didáctica)"
 
+# opus: the job's own work is judgement, not reading — proposing the taxonomy,
+# marking every empty cell hueco / sin_sentido / no_buscado with its reason,
+# and weighing each gap (cheap? how it fits the bet?). It runs rarely, once per
+# project plus an `actualizar` per new batch of papers; the per-paper reading
+# runs in frontier-extractor (sonnet) below.
+[tasks.frontier_map]
+kind = "job"
+tier = "opus"
+label = "Mapa de la frontera (taxonomía, matrices, huecos y posicionamiento)"
+
 [tasks.create_project]
 kind = "job"
 tier = "sonnet"
@@ -189,6 +199,13 @@ kind = "agent"
 file = "agents/paper-carder.md"
 tier = "sonnet"
 label = "Ficha de un paper (una vez por paper; citas comprobadas literales)"
+reads_papers = true     # reads paper text: read and search tools only (check)
+
+[tasks.frontier_extractor]
+kind = "agent"
+file = "agents/frontier-extractor.md"
+tier = "sonnet"
+label = "Extractor de la frontera: valores por eje con citas literales, por lote de papers"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
 [tasks.screener]

@@ -136,8 +136,8 @@ class TestSetTier(unittest.TestCase):
     def test_the_agents_that_read_paper_text_are_marked_and_held_to_read_tools(self):
         raw = mp.load(self.root / "config/models.toml")["tasks"]
         marked = {k for k, t in raw.items() if t.get("reads_papers")}
-        self.assertEqual(marked, {"corpus_reader", "explainer", "facet_summarizer", "paper_carder", "paper_reader",
-                                  "sota_synthesizer"})
+        self.assertEqual(marked, {"corpus_reader", "explainer", "facet_summarizer", "frontier_extractor",
+                                  "paper_carder", "paper_reader", "sota_synthesizer"})
         self.assertEqual(mp.check(self.root), [])
         for agent, task in (("paper-reader", "paper_reader"), ("sota-synthesizer", "sota_synthesizer")):
             f = self.root / f"agents/{agent}.md"
