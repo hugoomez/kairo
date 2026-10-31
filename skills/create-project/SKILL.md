@@ -685,10 +685,17 @@ Hypothesis generation runs on the policy's hard-task model as its own job
 («Generar hipótesis»), never inside project creation. End the run saying the
 gaps are ready for it.
 
-Input = the **"Huecos identificados"** section. Feed **3–5** gaps as candidates —
-never more than 5 on this first pass.
+Input = the **"Huecos identificados"** section — or, **when the project has a
+frontier map** (`Projects/<slug>/Frontera/mapa.json`, e.g. `kairo:frontier-map`
+already ran on this corpus), the map: its `huecos` (highest `prioridad` first)
+and its cells marked `hueco`, never `no_buscado` or `sin_sentido` cells (rules
+in `hypothesis-cycle` "Gap-derived with a frontier map"). If `Frontera/mapa.yaml`
+and `${CLAUDE_PLUGIN_ROOT}/scripts/frontier/frontier.py` both exist, run
+`frontier.py build --vault <vault> --project <slug>` first. Without a frontier,
+nothing changes. Feed **3–5** gaps as candidates — never more than 5 on this
+first pass. Each seed from the map carries its cells in `frontier_cells`.
 
-- **The `hypothesis-cycle` skill is available — delegate to it** (gap-derived entry point). It runs the full gate (incl. the Duhem check
+- **The `hypothesis-cycle` skill is available — delegate to it** (gap-derived entry point; it also runs «¿Merece la pena?» on each note it creates). It runs the full gate (incl. the Duhem check
   and the written `## Hipótesis rival descartada`), creates the passing notes at
   `status: propuesta`, and — if more than the budget pass — hands the overflow to
   `update-confidence` (trigger `budget overflow`) for `en_cola`. Do not
@@ -704,7 +711,12 @@ never more than 5 on this first pass.
   - `generated_by`: `origin: agent`, `model: <this session's model id>`,
     `skill_version: create-project@v1`, `pipeline_config: <hub path>`.
   - `history`: first entry — `date` today, `status: propuesta`,
-    `by: <agent id>`, `evidence: "seeded from Estado-del-arte.md §Huecos"`.
+    `by: <agent id>`, `evidence: "seeded from Estado-del-arte.md §Huecos"`
+    (or `"seeded from Frontera/mapa.json hueco G-N"`).
+  - `frontier_cells`: the hueco's cells when seeded from the map, else `[]`.
+    Leave the worth fields (`vale_la_pena` … `evaluado`) as template
+    placeholders: `next_steps.py` lists the note as `hipotesis_sin_evaluar`
+    until `hypothesis-cycle`'s «¿Merece la pena?» fills them.
 
 ### 9. Initialize `_digest.md`
 
