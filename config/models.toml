@@ -73,6 +73,11 @@ kind = "job"
 tier = "opus"
 label = "Revisión didáctica de la literatura"
 
+[tasks.explain]
+kind = "job"
+tier = "opus"
+label = "Explicar papers, una casilla de la frontera o el proyecto (explicación didáctica)"
+
 [tasks.create_project]
 kind = "job"
 tier = "sonnet"
@@ -192,6 +197,13 @@ file = "agents/screener.md"
 isolated = true          # reads only its page packet (hook-enforced): no shell or network tool
 tier = "sonnet"
 label = "Cribado de una página de candidatos (literature-search)"
+
+[tasks.explainer]
+kind = "agent"
+file = "agents/explainer.md"
+tier = "opus"
+label = "Redactor de explicaciones didácticas (kairo:explain): lee los papers, sin shell ni red"
+reads_papers = true     # reads paper text: read and search tools only (check)
 
 # --- tools --------------------------------------------------------------------
 [tasks.evolve_program]
