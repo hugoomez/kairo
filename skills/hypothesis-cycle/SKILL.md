@@ -1,6 +1,6 @@
 ---
 name: hypothesis-cycle
-description: Use when turning a research gap or a researcher's one-line claim into a vetted hypothesis note for a project in a Kairo vault. Runs dedup, falsifiability/novelty, known-failure, and severe-test checks with a short refinement loop before creating a `propuesta` note. v1 (default) is a single-critic cycle. v2 (opt-in, needs `DEEPINFRA_TOKEN`) adds a second, independent critic on Checks 3/4 and escalates any disagreement to human review instead of resolving it automatically. On budget overflow (orthogonal to v1/v2), runs a pairwise Elo tournament, an evolution step, and an opportunistic serendipity-scan-seeded wildcard to decide who advances now vs. queues, plus an end-of-cycle meta-review note. Invoked by create-project for gap-derived candidates, or directly when the user proposes a claim.
+description: Use when turning a research gap or a researcher's one-line claim into a vetted hypothesis note for a project in a Kairo vault. Runs dedup, falsifiability/novelty, known-failure, and severe-test checks with a short refinement loop before creating a `propuesta` note, then records whether it is worth testing and what it will cost (measured basis from hypothesis_cost.py). With a frontier map (Frontera/mapa.json), gap-derived candidates come from its huecos and cells. v1 (default) is a single-critic cycle. v2 (opt-in, needs `DEEPINFRA_TOKEN`) adds a second, independent critic on Checks 3/4 and escalates any disagreement to human review instead of resolving it automatically. On budget overflow (orthogonal to v1/v2), runs a pairwise Elo tournament, an evolution step, and an opportunistic serendipity-scan-seeded wildcard to decide who advances now vs. queues, plus an end-of-cycle meta-review note. Invoked by create-project for gap-derived candidates, or directly when the user proposes a claim.
 ---
 
 # Hypothesis Cycle
@@ -71,11 +71,46 @@ Both parts are refined together across loop rounds.
 
 | Trigger | Start at |
 |---|---|
-| Gap-derived (from `create-project` / a "Huecos" bullet) | Generate the candidate package (claim + test sketch) from the gap, then **Check 1**. |
+| Gap-derived (from `create-project` / a "Huecos" bullet) | Generate the candidate package (claim + test sketch) from the gap, then **Check 1**. With a frontier map, the gaps come from it — see "Gap-derived with a frontier map". |
 | **Human-submitted** — user gives a single-sentence claim | **Skip generation.** Wrap the sentence as the claim, draft a test sketch with the user's help if absent, go straight to **Check 1**. |
 
 For a human-submitted claim, confirm which project it belongs to if it isn't
 obvious. The human-origin citation exception (below) applies to this path.
+
+### Gap-derived with a frontier map
+
+When `Projects/<slug>/Frontera/mapa.json` exists (built by
+`scripts/frontier/frontier.py` from `mapa.yaml`), gap-derived candidates come
+from the map, not from re-reading `Estado-del-arte.md`. If `Frontera/mapa.yaml`
+exists and `scripts/frontier/frontier.py` exists, first rebuild it so the
+«nuestro» layer is current:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/frontier/frontier.py build --vault <vault> --project <slug>
+```
+
+(without either file, there is no frontier: use the "Huecos identificados" of
+`Estado-del-arte.md` as before). Then, for the context of one cell,
+`frontier.py cell <M1:fila|col> --vault <vault> --project <slug>` when the script
+exists, else read that cell in `mapa.json`. Candidates:
+
+- **`huecos`** of `mapa.json` (highest `prioridad` first; their `celdas`,
+  `barato` and `encaje` inform the test sketch), and **cells marked `hueco`**.
+- A **`no_buscado`** cell is *not* a gap yet — nobody looked. Either run
+  `literature-search` on it first (the cell's axes are the facets) and use the
+  cell only if the search leaves it empty, or report it to the researcher as an
+  `importante` lead («casilla M1:… sin buscar») and do **not** propose a claim
+  from it as novel.
+- A **`sin_sentido`** cell is never a candidate.
+- **Skip cells already attacked** — a hueco whose `atacado_por` is non-empty, or
+  a cell whose `nuestros` lists a hypothesis, or a cell in any existing note's
+  `frontier_cells` — unless the researcher asks for that cell explicitly. Say
+  which were skipped and by whom.
+
+Write the cell ids the candidate attacks in the note's `frontier_cells`
+(e.g. `[M1:fila_a|col_b]`) and name the hueco / cell in `## Génesis` →
+**Entrada**. A human-submitted claim may also get `frontier_cells` when the
+researcher or the map makes the cell obvious; otherwise `[]`.
 
 ## Start of every cycle — read the ledger, not the whole project
 
@@ -430,7 +465,8 @@ what the interface shows first. Facts only, one line each:
 ```
 ## Génesis
 
-- **Entrada:** hueco del Estado-del-arte | afirmación del investigador |
+- **Entrada:** hueco del Estado-del-arte | hueco de la frontera G-N / casilla
+  M1:fila|col | afirmación del investigador |
   spawn-hypothesis desde F-XXX | comodín de serendipity | evolución.
   Texto de entrada literal: «…» (the gap or claim exactly as given).
 - **Ciclo:** kairo/hypothesis-cycle v1 | v2 (crítico dual) · <fecha> ·
@@ -518,9 +554,63 @@ status change" step 2). So appending here is safe — a later regeneration will 
 drop your row, and it must not: losing it would let the rejected candidate be
 re-proposed.
 
+## ¿Merece la pena? — after the note exists
+
+Every note this skill creates (any outcome that creates one, wildcard and
+evolution candidates included) gets this step right after creation and its
+fresh verification, **before** the budget check of "Budget overflow". It does
+not re-open a check and never changes `status`: it says whether testing the
+hypothesis is worth what it costs, so the researcher can choose.
+
+1. **Measured basis for the cost.**
+
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/estimate/hypothesis_cost.py --vault <vault> --hypothesis H-XXXX [--metric <metric_kind>] --json
+   ```
+
+   It lists the vault's past experiments with what was recorded (wall time of
+   their runs in `trazas/index.jsonl`, seeds, conditions, `cost_actual`,
+   hardware, `estimado → real`), ranks the most similar to this hypothesis
+   (same project, shared `frontier_cells`, same metric_kind, claim wording) and
+   gives the hub's `compute_budget` / `completo_cost_threshold` /
+   `ladder_cost_threshold` (null = still `<value>`). Its
+   `coste_base_sugerido` is either `medido: E-XXXX …` or `sin base medida` —
+   it never extrapolates. Scaling a measured time to this test sketch is your
+   reasoning: write it as `estimado: <E-XXXX tardó X con N; este sketch pide
+   ~k veces N → ~kX>` with the assumption stated. With no base, `coste_base:
+   estimado: sin base medida — <la suposición>`. Never a bare number.
+2. **What it unblocks if it comes out.** The cells (`frontier_cells`) and
+   `huecos` of `mapa.json` it would resolve; the hypotheses whose `depends_on`
+   names it (`_ledger.md`); a `linea_publicacion` thread it feeds. If it
+   unblocks nothing beyond itself, say so — that lowers `importancia`.
+3. **A cheaper version that answers the same.** A rung of the simplification
+   ladder below (offer it if its triggers fire), or a narrower claim that
+   decides the same question. «Ninguna» is valid, with why.
+4. **Fill the fields** (flat scalars in the frontmatter; template comments
+   explain each): `vale_la_pena: si | dudoso | no`, `vale_la_pena_razon`
+   (one line), `importancia: alta | media | baja`, `dificultad: baja | media |
+   alta`, `coste_computo` (e.g. `"CPU, ~2 h"`), `coste_tiempo` (researcher
+   time), `coste_base`, `evaluado: <today>`; and write `## Evaluación` with
+   the three points above (unblocks · cost and its basis, against the hub
+   budget · cheaper version). Change only those lines and that section;
+   never rewrite the whole note.
+5. **A `no` is told to the researcher** in the cycle report, with its reason
+   and the cheaper version if there is one. The note **stays `propuesta`**: it
+   is never discarded by this step (discarding is the researcher's
+   `review.py discard`). `dudoso` is reported the same way.
+
+The tournament's dimensions (b) impact and (c) feasibility in "Budget
+overflow" Step 2 read these fields — `importancia`, `dificultad`, the cost and
+its basis — instead of re-judging them from scratch; a `no` candidate is not
+excluded from the tournament, it just argues with its own evaluation.
+`scripts/ledger/next_steps.py` lists open hypotheses whose fields are missing
+(`hipotesis_sin_evaluar`): this step on an older note fills them the same way,
+without touching anything else.
+
 ## Optional stage — simplification ladder for an expensive or hard test
 
-After a candidate passes and its note exists, look at its test sketch. If the
+After a candidate passes and its note exists, look at its test sketch (and the
+cost estimated in «¿Merece la pena?»). If the
 confirmatory test will be **expensive** (above the hub's
 `ladder_cost_threshold`; without that field: it needs a GPU, or ≥ 1 GPU-h, or
 the cost is unknown) or **hard** (it reproduces a paper's method with no
@@ -689,6 +779,11 @@ From `${CLAUDE_PLUGIN_ROOT}/templates/hypothesis-template.md`. Set at minimum:
   `build_graph.py --vault <vault> --project <slug> --write` (the PostToolUse
   hook does this too once installed) and report any new `crítico` it prints —
   e.g. a dangling id you just wrote.
+- `frontier_cells:` — the `M<n>:<fila>|<col>` cells the candidate attacks
+  ("Gap-derived with a frontier map"); `[]` without a frontier.
+- `vale_la_pena`, `vale_la_pena_razon`, `importancia`, `dificultad`,
+  `coste_computo`, `coste_tiempo`, `coste_base`, `evaluado` — written by
+  «¿Merece la pena?» right after creation.
 
 Sections:
 
@@ -696,6 +791,9 @@ Sections:
 - `## Justificación (evidencia citada)` = per the Citation requirement.
 - `## Hipótesis rival descartada` = the rival from Check 4 and the discriminating
   prediction (required — see Check 4).
+- `## Evaluación` = what it unblocks, what it costs and on what basis, and a
+  cheaper version — written by «¿Merece la pena?». Not evidence; the
+  fresh-verifier packet (an allow-list) never includes it.
 - `## Revisión del ciclo` = per the single rule in "Loop and stopping rule":
   present whenever ≥ 1 refinement round ran (short per-round entries on a pass;
   full exchange when rounds were exhausted; also the logged clear-fail override).
@@ -787,6 +885,16 @@ count never exceeded budget and no tournament was needed.
   `update-confidence` (trigger `budget overflow`, then `evidence result` etc.)
   — the tournament decides the *order* it hands over, never the transition
   itself.
+- **Proposing from a `no_buscado` cell as if it were a gap.** Nobody searched
+  it: `literature-search` first, or report it as an `importante` lead — never a
+  novel claim. A `sin_sentido` cell is never a candidate.
+- **Re-attacking a cell an existing hypothesis already attacks** without the
+  researcher asking for it.
+- **A cost without a basis.** `coste_base` is `medido: …` (from
+  `hypothesis_cost.py`) or `estimado: …` with the assumption; «sin base
+  medida» when there is none. Never a bare figure, never an invented one.
+- **Discarding a `vale_la_pena: no` note.** It is told to the researcher and
+  stays `propuesta`; only the researcher discards.
 - **Running an exhaustive round-robin tournament.** `min(N-1, 4)` Swiss-style
   rounds is the ceiling — "a handful of comparisons," not every pair.
 - **Citing the wildcard's serendipity lead directly in its `Justificación`.**
