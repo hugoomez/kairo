@@ -32,6 +32,26 @@ generated_by:
   skill_version: <e.g. kairo/hypothesis-cycle@1.0.0>
   pipeline_config: <path or identifier of the pipeline config used>
 linea_publicacion: false
+# frontier_cells — the frontier-map cells this hypothesis attacks, by their
+# stable id `M<n>:<fila>|<col>` from Projects/<slug>/Frontera/mapa.json.
+# Written by hypothesis-cycle when the candidate came from the map; [] when the
+# project has no frontier or the claim is not tied to a cell.
+frontier_cells: []     # e.g. [M1:fila_a|col_b]
+# Worth / cost — hypothesis-cycle step «¿Merece la pena?», after the note exists.
+# Flat scalars (the Kairo parser is line-based). The reasoning goes in
+# ## Evaluación. `vale_la_pena: no` is told to the researcher; the note stays
+# `propuesta` — it is never discarded automatically.
+vale_la_pena: <si | dudoso | no>
+vale_la_pena_razon: <una línea>
+importancia: <alta | media | baja>
+dificultad: <baja | media | alta>
+coste_computo: <p. ej. "CPU, ~2 h" | "GPU, ~1 día">
+coste_tiempo: <tiempo del investigador, p. ej. "medio día">
+# coste_base — what the cost rests on: `medido: …` (an experiment of this vault,
+# from scripts/estimate/hypothesis_cost.py) or `estimado: …` (an explicit
+# assumption). Never a bare number.
+coste_base: <medido: E-XXXX tardó 40 min con N=12 | estimado: …>
+evaluado: <YYYY-MM-DD>
 # needs_human_review — optional: set true by hypothesis-cycle (rounds exhausted,
 # v2 critic disagreement, verification not run). Cleared once a human has looked.
 # NOT used for fresh-verifier findings: those use verification_reviewed.
@@ -105,6 +125,22 @@ fresca. Solo hechos. No es evidencia y nunca va al verificador.>
 
 <La hipótesis rival plausible contra la que se contrastó (Check 4 de
 hypothesis-cycle) y la predicción concreta que discrimina este claim de ella.>
+
+## Evaluación
+
+<Escrita por hypothesis-cycle en el paso «¿Merece la pena?», después de crear
+la nota. Razona los campos `vale_la_pena`…`evaluado` del frontmatter:
+  - **Qué desbloquea si sale:** las casillas (`frontier_cells`) y huecos de
+    Frontera/mapa.json que resuelve, y las hipótesis que dependen de ella
+    (`depends_on` de otras notas). Si no desbloquea nada, decirlo.
+  - **Qué cuesta y en qué se basa:** cómputo y tiempo del investigador, con la
+    base de `scripts/estimate/hypothesis_cost.py` (experimentos parecidos ya
+    medidos en el vault) y el presupuesto del hub (`compute_budget`). Sin base
+    medida, escribir «sin base medida» y la suposición explícita.
+  - **Versión más barata que responda lo mismo:** un rung de la escalera de
+    simplificación (preregister-experiment paso 0) o un claim acotado; o
+    «ninguna» y por qué.
+Un `no` se le dice al investigador; la nota sigue `propuesta`.>
 
 ## Revisión del ciclo
 

@@ -107,6 +107,18 @@ code_generated_by:
 # send: never
 ---
 
+## Trabajo previo
+
+<Obligatoria, escrita por preregister-experiment antes de diseñar (paso
+«Trabajo previo»): la salida de `scripts/ledger/similar_work.py` — experimentos,
+hipótesis y descartes del digest que se solapan con este plan (similitud léxica
+y por casillas de la frontera, no semántica). Para cada solapamiento, una de
+dos: **se reutiliza** (el experimento previo entra en `collateral_evidence` de la
+hipótesis, o en `informed_by_rungs` si es un rung) o **se justifica un
+experimento nuevo** (qué cambia: condición, escala, métrica, réplica
+independiente). Sin solapamientos: «similar_work.py no encontró trabajo previo
+solapado» con la fecha.>
+
 ## Predicción
 
 <Qué se espera observar si la hipótesis es cierta, en términos cuantitativos.>
