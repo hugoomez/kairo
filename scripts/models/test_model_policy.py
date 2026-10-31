@@ -57,7 +57,8 @@ class TestPolicy(unittest.TestCase):
     def test_tier_assignment(self):
         tier = {k: v["tier"] for k, v in self.r["tasks"].items()}
         for k in ("hypothesis_generation", "critique", "preregister", "theorem_work", "manuscript_draft", "repo_review",
-                  "adjudicate", "fresh_verifier", "devils_advocate", "sota_synthesizer", "novelty_judge"):
+                  "adjudicate", "fresh_verifier", "devils_advocate", "sota_synthesizer", "novelty_judge",
+                  "explain", "explainer"):
             self.assertEqual(tier[k], "opus", k)
         for k in ("create_project", "lit_watch", "project_chat", "ask_corpus", "digest", "run_local", "kaggle_prepare",
                   "slurm_prepare", "run_analysis", "repo_health", "facet_summarizer", "second_critic",
@@ -135,7 +136,7 @@ class TestSetTier(unittest.TestCase):
     def test_the_agents_that_read_paper_text_are_marked_and_held_to_read_tools(self):
         raw = mp.load(self.root / "config/models.toml")["tasks"]
         marked = {k for k, t in raw.items() if t.get("reads_papers")}
-        self.assertEqual(marked, {"corpus_reader", "facet_summarizer", "paper_carder", "paper_reader",
+        self.assertEqual(marked, {"corpus_reader", "explainer", "facet_summarizer", "paper_carder", "paper_reader",
                                   "sota_synthesizer"})
         self.assertEqual(mp.check(self.root), [])
         for agent, task in (("paper-reader", "paper_reader"), ("sota-synthesizer", "sota_synthesizer")):
