@@ -105,6 +105,44 @@ script). Chosen once, at step 1c, regardless of tier.
 
 ## Procedure
 
+### Prior work — mandatory, before any design (rungs included)
+
+Before designing anything (step 0 included), look for work the vault already
+did that overlaps this plan:
+
+```
+python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/similar_work.py --vault <vault> --project <slug> \
+    --hypothesis H-XXXX [--metric <planned metric_kind>] [--keywords "<the test sketch's key terms>"] --json
+```
+
+It lists the project's experiments (status, role, verdict, validity) whose
+hypothesis is this one, shares a frontier cell with it, or has similar wording;
+hypotheses in the same cells or with similar claims; and `_digest.md` discard
+rows with similar wording. The comparison is **lexical** (shared words) plus
+frontier cells, not semantic: read what it lists, and do not take an empty
+list as proof that nothing similar exists — also check the `_ledger.md` you
+already read.
+
+For **each** overlap, decide one of two and write it down (it goes into
+`## Trabajo previo` at step 2):
+
+- **Reuse.** A completed, valid experiment that already informs this
+  hypothesis without adjudicating it → append its id to the hypothesis's
+  `collateral_evidence:` (context only: never an input to combine_effects.py,
+  never moves a status). An earlier experiment that already adjudicated *this*
+  hypothesis → the new one is a replication (`replicates: E-XXXX`, same
+  prediction, thresholds and plan) or not needed at all. An earlier rung of the
+  same question → cite it instead of re-running it. If the prior work already
+  answers the question, **stop and tell the researcher** — do not preregister a
+  duplicate.
+- **Justify a new experiment.** Say exactly what differs (condition, scale,
+  metric, data, an independent replication) and why the prior one cannot
+  answer this. A discarded digest row with the same idea needs its reason
+  addressed.
+
+No overlap → `## Trabajo previo` says «similar_work.py no encontró trabajo
+previo solapado (<fecha>)».
+
 ### 0. Simplification ladder — optional, offered before the confirmatory design
 
 Before fixing an expensive or hard confirmatory design, **offer** (never force)
@@ -302,6 +340,13 @@ under `secondary_hypotheses: [<H-YYYY>]` and write a `## Evidencia colateral`
 entry for each (step 3e). Leave `sanity_checks`, `experiment_validity`,
 `cost_actual`, `result` as placeholders — a later run/analysis skill fills
 them.
+
+Write **`## Trabajo previo`** now, from the "Prior work" step: one line per
+overlap (`E-XXXX` / `H-XXXX` / digest row, its status and verdict, why
+similar_work listed it) → **reutilizado** (where: `collateral_evidence`,
+`replicates`, a cited rung) or **experimento nuevo justificado** (what
+differs). It is frozen with the rest of the preregistration. An exploratory
+rung writes it too (its own short list).
 
 ### 3. Fix the protocol
 
@@ -605,6 +650,11 @@ disclosed as such when results are reported.
 - **Forcing the ladder.** It is offered with the trigger and an estimate; the
   researcher may decline.
 
+- **Designing before checking prior work, or ignoring what it found.** The
+  "Prior work" step runs `similar_work.py` first; every overlap ends in
+  `## Trabajo previo` as reused or as a justified new experiment. An empty
+  lexical result is not proof that nothing similar exists.
+
 - **Freezing before the protocol is exact.** "Improves accuracy" is not a
   prediction; give direction + magnitude + units.
 - **No `inconclusa` band.** The decision rule must have three regions, not a
@@ -658,6 +708,8 @@ disclosed as such when results are reported.
 
 ## Related
 
+- `${CLAUDE_PLUGIN_ROOT}/scripts/ledger/similar_work.py` — prior experiments,
+  hypotheses and digest discards that overlap the plan ("Prior work" step).
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/sample_size.py` — a-priori power
   analysis for the `completo` tier (step 1b). `--help` documents the formula.
 - `${CLAUDE_PLUGIN_ROOT}/scripts/analysis/two_proportion_test.py` — the
