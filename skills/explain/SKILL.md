@@ -117,7 +117,11 @@ write tool — so nothing in a paper can make anything run or leave the machine.
      como respaldo` when `conflict` is true;
    - `Notas del proyecto:` `<project_dir>/_hub.md`, and in proyecto mode every
      `project_notes` path; in papers / celda mode also
-     `<project_dir>/Frontera/mapa.yaml` when it exists (for «Cómo encaja»);
+     `<project_dir>/Frontera/mapa.yaml` when it exists, **and** the hypothesis /
+     experiment / claim paths of `--list --mode proyecto` (kinds `Hipotesis`,
+     `Experimentos`, `Claims`) — «Cómo encaja» must name the hypotheses a paper
+     bears on (cited `[H-XXXX §…]`), or an explanation of a paper ignores the
+     project's own progress;
    - in celda mode, `Contexto de la casilla: <tmp>/celda.json`.
    Nothing else: no opinion of yours, no earlier explanation.
 2. Take the text between `<<<BORRADOR` and `BORRADOR>>>` from its reply and
