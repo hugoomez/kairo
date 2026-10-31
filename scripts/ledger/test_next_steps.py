@@ -111,6 +111,19 @@ class NextSteps(unittest.TestCase):
         v.mapa(p, mapa_example(atacado_por=("H-9001",)))
         self.assertEqual(self.kinds(self.run_json(), "hueco_sin_hipotesis"), [])
 
+    def test_gap_cells_as_objects_from_frontier_py(self):
+        # frontier.py writes huecos[].celdas as [{celda, cubierta_por, marca}], not strings.
+        v, p = self.v, self.p
+        m = mapa_example()
+        for g in m["huecos"]:
+            g["celdas"] = [{"celda": c, "cubierta_por": [], "marca": "hueco"} for c in g["celdas"]]
+        v.mapa(p, m)
+        gaps = self.kinds(self.run_json(), "hueco_sin_hipotesis")
+        self.assertEqual([g["target"] for g in gaps], ["G1"])
+        self.assertEqual(gaps[0]["refs"], ["M1:fila_a|col_y"])
+        v.hypothesis(p, "H-9001", "x", cells=["M1:fila_a|col_y"], worth="si")
+        self.assertEqual(self.kinds(self.run_json(), "hueco_sin_hipotesis"), [])
+
     def test_layer_in_sync_and_newer_paper(self):
         v, p = self.v, self.p
         v.hypothesis(p, "H-9001", "x", cells=["M1:fila_a|col_x"], worth="si")

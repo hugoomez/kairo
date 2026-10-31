@@ -236,7 +236,10 @@ def frontier(vault: Path, pdir: Path, pid: str, hyps: list[dict]) -> list[dict]:
     for g in ps.mapa_huecos(mapa):
         gid = str(g.get("id") or "?")
         by_map = [str(a.get("id")) for a in g.get("atacado_por") or [] if isinstance(a, dict)]
-        by_notes = sorted({hid for cid in g.get("celdas") or [] for hid in attacked.get(cid, [])})
+        # frontier.py writes each gap cell as {celda, cubierta_por, marca}; a hand-written
+        # mapa.json may still list plain "M1:fila|col" strings.
+        gap_cells = [str(c.get("celda")) if isinstance(c, dict) else str(c) for c in g.get("celdas") or []]
+        by_notes = sorted({hid for cid in gap_cells for hid in attacked.get(cid, [])})
         if by_map or by_notes:
             continue
         pr = g.get("prioridad")
@@ -244,7 +247,7 @@ def frontier(vault: Path, pdir: Path, pid: str, hyps: list[dict]) -> list[dict]:
                         f"El hueco {gid}{f' (prioridad {pr})' if pr not in (None, '') else ''} "
                         f"«{g.get('titulo') or ''}» no tiene ninguna hipótesis que lo ataque.",
                         f"hypothesis-cycle con el hueco {gid} como entrada (gap-derived desde la frontera).",
-                        [str(c) for c in g.get("celdas") or []]))
+                        gap_cells))
     return out
 
 
