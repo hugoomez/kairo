@@ -6,6 +6,7 @@
     frontier.py stale    --vault <vault> --project <PROJ-XXX|slug>
     frontier.py cell     --vault <vault> --project <PROJ-XXX|slug> M1:fila|col [--con-citas]
     frontier.py taxonomy --vault <vault> --project <PROJ-XXX|slug>
+    frontier.py sample   --vault <vault> --project <PROJ-XXX|slug> [--n 5] [--seed S]
     frontier.py save-extraction --vault <vault> --project <PROJ-XXX|slug> --reply <file> [--date AAAA-MM-DD]
 
 Everything lives in the vault, in `Projects/<slug>/Frontera/`:
@@ -45,7 +46,11 @@ whether it is cheap and how it fits.
 
 `cell` prints one cell's context as JSON (axes, covering papers, mark, reason,
 our hypotheses, related gaps) — what the app and the skills seed a chat or a
-cycle with. Locators only; `--con-citas` adds the quoted text.
+cycle with. Locators only; `--con-citas` adds the quoted text. `taxonomy`
+prints the approved axes and ideas with their sha (the extractor's input);
+`save-extraction` checks a frontier-extractor reply and writes its
+extractions; `sample` draws covered cells at random (seeded) with what to
+check in one covering paper — the skill's spot check with paper-reader.
 
 Exit codes: 0 ok · 1 the map does not validate (nothing written) · 2 bad input.
 Requires PyYAML (`pip install pyyaml`); otherwise standard library only.
@@ -1073,6 +1078,32 @@ def cmd_cell(mapa: Mapa, celda: str, con_citas: bool = False) -> dict:
             "aviso_cobertura": (mapa.d.get("meta") or {}).get("aviso_cobertura")}
 
 
+def cmd_sample(mapa: Mapa, n: int, seed: str) -> dict:
+    """`n` covered cells drawn at random (seeded), each with one covering paper
+    and what to check in it: the paper-reader requests of the spot check."""
+    import random
+    cubiertas = [e for m in mapa.matrices if mapa._matriz_bien_formada(m)
+                 for e in mapa.calcular_matriz(m).values() if e["papers"]]
+    rng = random.Random(seed)
+    elegidas = rng.sample(cubiertas, min(n, len(cubiertas)))
+    out = []
+    for e in sorted(elegidas, key=lambda x: x["id"]):
+        _, fila, col = parse_celda(e["id"])
+        m = mapa.matriz(e["id"].split(":", 1)[0])
+        pid = rng.choice(e["papers"])
+        pp = mapa.papers[pid]
+        checks = []
+        for eje, valor in ((m["filas"]["eje"], fila), (m["columnas"]["eje"], col)):
+            locs = sorted({str(x.get("loc")) for x in pp.get("evidencia") or [] if x.get("eje") == eje and x.get("loc")})
+            checks.append({"eje": eje, "valor": valor, "desc": mapa.desc_valor(eje, valor),
+                           "regla": (mapa.ejes.get(eje) or {}).get("regla"), "locs": locs,
+                           "nota": (pp.get("notas_ejes") or {}).get(eje),
+                           "frase": f"{pid} tiene «{valor}» en el eje «{mapa.nombre_eje(eje)}»: "
+                                    f"{mapa.desc_valor(eje, valor)}"})
+        out.append({"celda": e["id"], "paper": pid, "ruta": mapa.meta_papers[pid].get("ruta"), "checks": checks})
+    return {"proyecto": mapa.proy.id, "semilla": seed, "cubiertas": len(cubiertas), "muestra": out}
+
+
 def cmd_taxonomy(vault: Path, project: str) -> dict:
     proy = resolver_proyecto(vault, project)
     datos = cargar_yaml(proy.frontera / "mapa.yaml")
@@ -1224,13 +1255,15 @@ def cmd_save_extraction(vault: Path, project: str, reply: Path, fecha: str) -> t
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=("build", "check", "stale", "cell", "taxonomy", "save-extraction"))
+    ap.add_argument("command", choices=("build", "check", "stale", "cell", "taxonomy", "save-extraction", "sample"))
     ap.add_argument("cell_id", nargs="?", help="cell id for `cell` (M1:fila|col)")
     ap.add_argument("--vault", required=True, type=Path)
     ap.add_argument("--project", required=True)
     ap.add_argument("--con-citas", action="store_true", help="cell: include the quoted text of the evidence")
     ap.add_argument("--reply", type=Path, help="save-extraction: the frontier-extractor's reply, saved unchanged")
     ap.add_argument("--date", default=None, help="save-extraction: extraction date (default today)")
+    ap.add_argument("--n", type=int, default=5, help="sample: how many covered cells")
+    ap.add_argument("--seed", default=None, help="sample: random seed (default today's date)")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -1246,7 +1279,9 @@ def main(argv: list[str] | None = None) -> int:
             code, out = cmd_save_extraction(vault, a.project, a.reply, a.date or _dt.date.today().isoformat())
         else:
             mapa = cargar(vault, a.project)
-            if a.command == "cell":
+            if a.command == "sample":
+                out, code = cmd_sample(mapa, a.n, a.seed or _dt.date.today().isoformat()), 0
+            elif a.command == "cell":
                 if not a.cell_id:
                     raise Refused("cell necesita el id de la casilla (M1:fila|col)")
                 out, code = cmd_cell(mapa, a.cell_id, a.con_citas), 0

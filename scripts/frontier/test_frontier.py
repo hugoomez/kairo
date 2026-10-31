@@ -446,6 +446,18 @@ class Cell(Base):
         code, rep = self.run_cli("cell", "M1:grafo|por_instancia", "--con-citas")
         self.assertIn("cita", rep["papers"][0]["evidencia"][0])
 
+    def test_sample_is_seeded_and_names_what_to_check(self):
+        code, a = self.run_cli("sample", "--n", "5", "--seed", "s1")
+        _, b = self.run_cli("sample", "--n", "5", "--seed", "s1")
+        self.assertEqual(code, 0)
+        self.assertEqual(a, b)
+        self.assertEqual(a["cubiertas"], 2)
+        self.assertEqual({x["celda"] for x in a["muestra"]}, {"M1:grafo|por_instancia", "M1:imagen|amortizado"})
+        g = next(x for x in a["muestra"] if x["celda"] == "M1:grafo|por_instancia")
+        self.assertEqual(g["paper"], "P-9001")
+        self.assertEqual(g["checks"][0]["locs"], ["§2"])
+        self.assertTrue(g["ruta"].startswith("Papers/P-9001"))
+
     def test_unknown_cell(self):
         code, rep = self.run_cli("cell", "M1:grafo|volador")
         self.assertEqual(code, 2)
