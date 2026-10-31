@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install test tools
-        run: python -m pip install pytest ruff
+        run: python -m pip install pytest ruff pyyaml   # pyyaml: scripts/frontier reads mapa.yaml
       - name: Configure git identity for tests that create repos
         run: |
           git config --global user.email "ci@example.invalid"
