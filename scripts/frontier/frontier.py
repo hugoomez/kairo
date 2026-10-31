@@ -6,6 +6,7 @@
     frontier.py stale    --vault <vault> --project <PROJ-XXX|slug>
     frontier.py cell     --vault <vault> --project <PROJ-XXX|slug> M1:fila|col [--con-citas]
     frontier.py taxonomy --vault <vault> --project <PROJ-XXX|slug>
+    frontier.py summary  --vault <vault> --project <PROJ-XXX|slug>
     frontier.py sample   --vault <vault> --project <PROJ-XXX|slug> [--n 5] [--seed S]
     frontier.py save-extraction --vault <vault> --project <PROJ-XXX|slug> --reply <file> [--date AAAA-MM-DD]
 
@@ -50,7 +51,9 @@ cycle with. Locators only; `--con-citas` adds the quoted text. `taxonomy`
 prints the approved axes and ideas with their sha (the extractor's input);
 `save-extraction` checks a frontier-extractor reply and writes its
 extractions; `sample` draws covered cells at random (seeded) with what to
-check in one covering paper — the skill's spot check with paper-reader.
+check in one covering paper — the skill's spot check with paper-reader;
+`summary` lists what the map knows of each paper with no quoted text, and the
+empty cells still unmarked.
 
 Exit codes: 0 ok · 1 the map does not validate (nothing written) · 2 bad input.
 Requires PyYAML (`pip install pyyaml`); otherwise standard library only.
@@ -1078,6 +1081,28 @@ def cmd_cell(mapa: Mapa, celda: str, con_citas: bool = False) -> dict:
             "aviso_cobertura": (mapa.d.get("meta") or {}).get("aviso_cobertura")}
 
 
+def cmd_summary(mapa: Mapa) -> dict:
+    """What the map knows of each paper, without any quoted text: axis values
+    and notes, results (aspect, value, conditions, locator), limitations,
+    ideas — what the skill assembles matrices, frontier and gaps from."""
+    papers = []
+    for pid, p in mapa.papers.items():
+        ex = mapa.vigentes.get(pid) or {}
+        papers.append({"id": pid, "titulo": mapa.meta_papers[pid].get("titulo"), "origen": mapa.origen[pid],
+                       "confianza": mapa._confianza(pid), "ejes": p.get("ejes") or {},
+                       "notas_ejes": p.get("notas_ejes") or {},
+                       "resultados": [{k: r.get(k) for k in ("id", "aspecto", "valor", "condiciones", "loc")}
+                                      for r in p.get("resultados") or []],
+                       "limitaciones": [{k: li.get(k) for k in ("origen", "texto", "loc")}
+                                        for li in p.get("limitaciones") or []],
+                       "ideas": p.get("ideas") or [], "ideas_nuevas": ex.get("ideas_nuevas") or [],
+                       "no_leido": p.get("no_leido") or [], "descartado": len(ex.get("descartado") or [])})
+    vacias = [e["id"] for m in mapa.matrices if mapa._matriz_bien_formada(m)
+              for e in mapa.calcular_matriz(m).values() if not e["papers"] and not e["marca"]]
+    return {"proyecto": mapa.proy.id, "taxonomia_sha": mapa.sha, "papers": papers,
+            "extracciones_obsoletas": list(mapa.obsoletas), "casillas_sin_marca": vacias}
+
+
 def cmd_sample(mapa: Mapa, n: int, seed: str) -> dict:
     """`n` covered cells drawn at random (seeded), each with one covering paper
     and what to check in it: the paper-reader requests of the spot check."""
@@ -1216,6 +1241,8 @@ def limpiar_extraccion(vault: Path, ex: dict, ejes: dict, ideas: set | None, sha
             ideas_ok.append(idea)
     return {"paper": pid, "taxonomia_sha": sha, "extraido": fecha, "herramienta": TOOL,
             "ejes": out_ejes, "resultados": resultados, "limitaciones": limitaciones, "ideas": ideas_ok,
+            "ideas_nuevas": [{k: i.get(k) for k in ("nombre", "descripcion", "loc")}
+                             for i in ex.get("ideas_nuevas") or [] if isinstance(i, dict) and i.get("nombre")],
             "no_leido": list(ex.get("no_leido") or []), "descartado": fuera}
 
 
@@ -1255,7 +1282,8 @@ def cmd_save_extraction(vault: Path, project: str, reply: Path, fecha: str) -> t
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=("build", "check", "stale", "cell", "taxonomy", "save-extraction", "sample"))
+    ap.add_argument("command", choices=("build", "check", "stale", "cell", "taxonomy", "save-extraction", "sample",
+                                       "summary"))
     ap.add_argument("cell_id", nargs="?", help="cell id for `cell` (M1:fila|col)")
     ap.add_argument("--vault", required=True, type=Path)
     ap.add_argument("--project", required=True)
@@ -1279,7 +1307,9 @@ def main(argv: list[str] | None = None) -> int:
             code, out = cmd_save_extraction(vault, a.project, a.reply, a.date or _dt.date.today().isoformat())
         else:
             mapa = cargar(vault, a.project)
-            if a.command == "sample":
+            if a.command == "summary":
+                out, code = cmd_summary(mapa), 0
+            elif a.command == "sample":
                 out, code = cmd_sample(mapa, a.n, a.seed or _dt.date.today().isoformat()), 0
             elif a.command == "cell":
                 if not a.cell_id:

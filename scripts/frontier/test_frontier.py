@@ -500,6 +500,17 @@ class SaveExtraction(Base):
         self.assertIn("inventada", motivos)
         self.assertEqual(rep["rechazados"][0]["paper"], "P-0001")
 
+    def test_summary_has_no_quoted_text(self):
+        d = copy.deepcopy(MAPA)
+        del d["matrices"][0]["vacias"]["imagen|por_instancia"]
+        self.write_map(d)
+        code, rep = self.run_cli("summary")
+        self.assertEqual(code, 0)
+        self.assertEqual(rep["casillas_sin_marca"], ["M1:imagen|por_instancia"])
+        p1 = next(p for p in rep["papers"] if p["id"] == "P-9001")
+        self.assertEqual(p1["resultados"][0]["valor"], "razón de aproximación 0.93")
+        self.assertNotIn("approximation ratio", json.dumps(rep))
+
     def test_taxonomy_lists_axes_and_sha(self):
         code, rep = self.run_cli("taxonomy")
         self.assertEqual(rep["taxonomia_sha"], fr.sha_taxonomia(EJES))
