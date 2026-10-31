@@ -81,7 +81,7 @@ never runs unless you ask for it:
 | One paper: versions, published version, who cites it, BibTeX | `scripts/papers/paper_card.py --arxiv … \| --doi … \| --title "…"` |
 | A weekly watch of a topic | *"vigila este tema cada semana"* (`lit-watch`, topic mode: starts 30 days back unless `init --since`); schedule `lit_watch.py delta` on the vault's machine (Task Scheduler / cron) and read `_vigilancia/vigilancia-<date>.md`; a failed run exits non-zero and leaves `_vigilancia/estado.json` (`ok` / `degraded` / `failed`) for a notification |
 | An answer from your papers, only in their own words | `ask-corpus` |
-| To really understand a paper, several, a frontier cell or your own project | *"explícame P-0012"* (`explain`) |
+| To really understand a paper, several, a frontier cell or your own project | *"explícame P-9012"* (`explain`) |
 | A bibliography | `scripts/papers/export_bib.py --project PROJ-XXX` (BibTeX / CSL-JSON) |
 
 **The `literatura` profile.** Set `KAIRO_PROFILE=literatura` in the environment

@@ -23,7 +23,7 @@ Los ejemplos de este documento son inventados (ids `P-9001`, `H-9001`…), nunca
   de verdad; `scripts/frontier/frontier.py` valida y genera las vistas y `mapa.json`, que es
   lo que lee la app. Nada de la frontera vive en el repo del plugin salvo el motor.
 - **La taxonomía es por proyecto** y la aprueba el investigador (fase 1 de la skill), igual
-  que se hizo a mano en PROJ-002. Los ejes y sus valores se declaran en `mapa.yaml`.
+  que se hizo a mano para un proyecto real. Los ejes y sus valores se declaran en `mapa.yaml`.
 - **Lo que se lee se guarda**: cada paper extraído deja `Frontera/extracciones/P-XXXX.json`
   (valores por eje con citas literales). Al añadir un paper solo se extrae ese paper.
 - **La capa «nuestro» se calcula de las notas**: hipótesis con `frontier_cells` y su
@@ -37,7 +37,7 @@ Los ejemplos de este documento son inventados (ids `P-9001`, `H-9001`…), nunca
 
 ### `Projects/<slug>/Frontera/mapa.yaml`
 
-Mismo esquema que el mapa de PROJ-002 hecho a mano, generalizado:
+Mismo esquema que el mapa hecho a mano, generalizado:
 
 ```yaml
 meta:
@@ -168,7 +168,7 @@ barata que responda lo mismo (enlaza con la escalera de simplificación existent
     «Buscar en la literatura»; `hueco` → «¿Es un hueco real?» y «Proponer hipótesis desde
     aquí» (ciclo con `gap`); cubierta → «Explícame estos papers» (job `explain`).
   - Frontera, huecos (★ y encaje), ideas, posicionamiento y papers, como en el prototipo
-    `mwis-pulser/docs/frontera/mapa.html`.
+    hecho a mano (mapa.html).
   - Botones «Crear el mapa» / «Actualizar» (job `frontier_map`), con aviso si está obsoleto.
 - **Explicaciones**: job `explain` con selector de papers (o casilla, o proyecto); render de
   mermaid en la app.
@@ -178,4 +178,4 @@ barata que responda lo mismo (enlaza con la escalera de simplificación existent
 ## Fuera de alcance
 
 Cambiar la búsqueda bibliográfica; ejecutar en hardware; migrar automáticamente mapas
-hechos a mano (el de PROJ-002 se importará una vez, a mano, desde `mwis-pulser`).
+hechos a mano (un mapa existente se importa una vez, a mano).

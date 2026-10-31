@@ -1,6 +1,6 @@
 ---
 name: explain
-description: Use when the researcher wants to really understand one or several papers, the papers of one frontier cell, or their own project's work — "explícame P-0012", "explícame estos papers", "explica la casilla M1:…", "explícame el proyecto", "no entiendo este método". Writes a didactic explanation with a one-page summary, mermaid diagrams of the concepts and the method, a small checkable worked example, a comparison table, self-check questions with folded answers, a glossary and how it fits the project. The isolated `explainer` agent reads and writes the draft; scripts/papers/check_review.py checks every quote, locator and project-note citation and lints every diagram before the note is saved. Model-written and non-citable.
+description: Use when the researcher wants to really understand one or several papers, the papers of one frontier cell, or their own project's work — "explícame P-9012", "explícame estos papers", "explica la casilla M1:…", "explícame el proyecto", "no entiendo este método". Writes a didactic explanation with a one-page summary, mermaid diagrams of the concepts and the method, a small checkable worked example, a comparison table, self-check questions with folded answers, a glossary and how it fits the project. The isolated `explainer` agent reads and writes the draft; scripts/papers/check_review.py checks every quote, locator and project-note citation and lints every diagram before the note is saved. Model-written and non-citable.
 ---
 
 # explain — understand papers, a frontier cell, or your own project
@@ -56,7 +56,7 @@ Find the project id (`PROJ-XXX`) and run, by mode:
 - **papers**:
   ```
   python <plugin>/scripts/papers/check_review.py --vault <vault> --project <PROJ-XXX> \
-    --list --papers P-0012,P-0034
+    --list --papers P-9012,P-9034
   ```
   A P-id in `requested_missing` is not a citable paper of the project (not
   ingested, `send: never`, or another project's): say so; continue with the
@@ -90,7 +90,7 @@ Find the project id (`PROJ-XXX`) and run, by mode:
 `Projects/<slug>/Informes/explicacion-<AAAA-MM-DD>-<slug-corto>.md`, where
 `<slug-corto>` is:
 
-- papers: the ids in lower case joined by `-` (`p-0012-p-0034`); more than
+- papers: the ids in lower case joined by `-` (`p-9012-p-9034`); more than
   three → the first three and `-y-<n>-mas`;
 - celda: the cell id, lower case, every run of characters outside `[a-z0-9]`
   as one `-` (`M1:udg|amortizado` → `m1-udg-amortizado`);
@@ -154,7 +154,7 @@ python <plugin>/scripts/papers/check_review.py --vault <vault> --project <PROJ-X
   --review "<draft path>" --out "<output path>" --title "<title>"
 ```
 
-Titles: `Explicación — P-0012, P-0034` · `Explicación — casilla M1:fila|col` ·
+Titles: `Explicación — P-9012, P-9034` · `Explicación — casilla M1:fila|col` ·
 `Explicación del proyecto — PROJ-XXX`. In proyecto mode pass no `--papers`.
 
 The script writes the note: frontmatter `tipo: explicacion`, `modo`, `papers`,
