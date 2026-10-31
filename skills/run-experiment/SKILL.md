@@ -526,6 +526,28 @@ This skill does **not** touch hypothesis `status`, `history`, `_digest.md`, or
   (`## Resultado` / `## Qué informa` body sections) with the exact analysis
   output, as for the experiment note.
 
+### 9. Frontier map and what is left pending
+
+After the result is recorded (and after `update-confidence` returns, when step
+8 fired it):
+
+- **Frontier.** The map's «nuestro» layer reads the project's hypotheses and
+  experiments. If `update-confidence` already rebuilt it in this run, skip;
+  otherwise (an exploratory rung, an invalid run, no trigger) rebuild it only if
+  both `Projects/<slug>/Frontera/mapa.yaml` and
+  `${CLAUDE_PLUGIN_ROOT}/scripts/frontier/frontier.py` exist:
+  `python ${CLAUDE_PLUGIN_ROOT}/scripts/frontier/frontier.py build --vault <vault> --project <slug>`,
+  and commit `Frontera/` with the run. No frontier → nothing to do.
+- **Pending.** Run
+  `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/next_steps.py --vault <vault> --project <slug>`
+  and add its `importante` / `crítico` lines, in one or two sentences, after
+  the one-line report of step 7 (e.g. «E-XXXX completed sin adjudicar» when
+  step 8 could not fire update-confidence). Report only.
+- The run's times in `trazas/index.jsonl` (step 1 / 7) are what
+  `scripts/estimate/hypothesis_cost.py` later quotes as the measured basis for
+  the cost of similar hypotheses — another reason they must be the runtime's
+  real UTC times, never estimates.
+
 ## Common mistakes
 
 - **Firing `update-confidence` for an exploratory rung, or hiding a failed

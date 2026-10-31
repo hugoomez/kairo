@@ -414,7 +414,26 @@ diverged (different data regime, population, scale, implementation detail…):
    is installed it also fires on the note edit; running it here is what makes
    the ledger current when the edit came from a script.)
 
-5. **Commit** — `Update H-XXXX: <new status>` (with `_ledger.md`).
+5. **Rebuild the frontier map, if the project has one** — the map's «nuestro»
+   layer (each cell's `nuestros`, each hueco's `atacado_por`) is computed from
+   hypothesis `status` and `frontier_cells`, so it is stale after any change.
+   Only if both `Projects/<slug>/Frontera/mapa.yaml` and
+   `${CLAUDE_PLUGIN_ROOT}/scripts/frontier/frontier.py` exist:
+
+   ```
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/frontier/frontier.py build --vault <vault> --project <slug>
+   ```
+
+   No frontier → skip silently. A failing build is reported, never a reason to
+   undo the transition.
+6. **Mention what is still pending** —
+   `python ${CLAUDE_PLUGIN_ROOT}/scripts/ledger/next_steps.py --vault <vault> --project <slug>`
+   and give the researcher its `importante` / `crítico` lines in one or two
+   sentences (e.g. another completed experiment still unadjudicated, a hueco
+   this result leaves without a hypothesis). Report only; act on none of them
+   here.
+7. **Commit** — `Update H-XXXX: <new status>` (with `_ledger.md`, and
+   `Frontera/mapa.json` + views if step 5 rebuilt them).
 
 ## Callers
 
