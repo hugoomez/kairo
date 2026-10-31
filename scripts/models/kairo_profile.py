@@ -9,9 +9,9 @@
 
   - unset or `completo` — everything, as always;
   - `literatura` — the literature path only: search, screening, ingestion, the
-    state-of-the-art map, the corpus questions and the watch
+    state-of-the-art map and its frontier map, the corpus questions and the watch
     (`create-project` with the `ligero`, `corpus` or `revision` template,
-    `literature-search`, `lit-watch`, `ask-corpus`, `idea`). The programme's
+    `literature-search`, `lit-watch`, `ask-corpus`, `idea`, `frontier-map`). The programme's
     skills (hypotheses, preregistration, experiments, theorems, manuscripts,
     program evolution, code repositories, ADRs) refuse with one line, and the
     hooks that serve only the programme (the lab notebook's commit log) do
@@ -28,7 +28,8 @@ import os
 import sys
 
 PROFILES = ("completo", "literatura")
-LITERATURE_SKILLS = frozenset({"create-project", "literature-search", "lit-watch", "ask-corpus", "idea"})
+LITERATURE_SKILLS = frozenset({"create-project", "literature-search", "lit-watch", "ask-corpus", "idea",
+                               "frontier-map"})
 LITERATURE_TEMPLATES = frozenset({"ligero", "corpus", "revision"})
 PROGRAMME_SKILLS = frozenset({
     "hypothesis-cycle", "spawn-hypothesis", "preregister-experiment", "run-experiment", "update-confidence",
