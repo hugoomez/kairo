@@ -165,5 +165,135 @@ class TestFingerprints(unittest.TestCase):
         self.assertTrue(rg.overlap(PAPER_TEXT, idx))
 
 
+class TestNewBranches(Base):
+    """A branch that does not exist on the remote yet is compared with the
+    main branch, from the merge base, not scanned whole."""
+
+    def seed_main(self, files):
+        self.commit(files)
+        git(self.repo, "push", "-q", "origin", "main")
+        git(self.repo, "fetch", "-q", "origin")
+
+    def sha(self, rev="HEAD"):
+        return git(self.repo, "rev-parse", rev).stdout.strip()
+
+    def test_new_branch_only_scans_what_differs_from_main(self):
+        self.seed_main({"viejo.md": f"{PAPER_TEXT}\n"})
+        git(self.repo, "checkout", "-q", "-b", "feat")
+        self.commit({"limpio.py": "x = 1\n"})
+        self.assertEqual(rg.changed_files(self.repo, self.sha(), rg.ZERO), ["limpio.py"])
+
+    def test_new_branch_is_compared_at_the_merge_base(self):
+        self.seed_main({"base.py": "a = 1\n"})
+        git(self.repo, "checkout", "-q", "-b", "feat")
+        self.commit({"rama.py": "b = 2\n"})
+        branch_sha = self.sha()
+        git(self.repo, "checkout", "-q", "main")
+        self.seed_main({"avance.py": "c = 3\n"})
+        self.assertEqual(rg.changed_files(self.repo, branch_sha, rg.ZERO), ["rama.py"])
+
+    def test_new_branch_without_remote_main_scans_whole_tree(self):
+        self.commit({"a.py": "a = 1\n", "b.py": "b = 2\n"})
+        self.assertIsNone(rg.main_ref(self.repo))
+        self.assertEqual(set(rg.changed_files(self.repo, self.sha(), rg.ZERO)), {"a.py", "b.py"})
+
+    def test_main_ref_falls_back_to_origin_master(self):
+        self.commit({"a.py": "a = 1\n"})
+        git(self.repo, "update-ref", "refs/remotes/origin/master", self.sha())
+        self.assertEqual(rg.main_ref(self.repo), "origin/master")
+
+    def test_overlap_in_a_file_the_branch_changes_still_blocks(self):
+        self.seed_main({"base.py": "a = 1\n"})
+        git(self.repo, "checkout", "-q", "-b", "feat")
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        index = rg.load_index(self.index, self.vault)
+        files = rg.changed_files(self.repo, self.sha(), rg.ZERO)
+        res = rg.scan(self.repo, self.vault, self.proj, index, self.sha(), files, None)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["blocking"][0]["kind"], "verbatim_overlap")
+
+    def test_scan_rev_uses_that_branchs_upstream_not_heads(self):
+        import io
+        from contextlib import redirect_stdout
+        self.seed_main({"base.py": "a = 1\n"})
+        git(self.repo, "checkout", "-q", "-b", "feat")
+        self.commit({"x.py": "x = 1\n"})
+        git(self.repo, "push", "-q", "-u", "origin", "feat")
+        self.commit({"y.py": "y = 1\n"})
+        git(self.repo, "checkout", "-q", "main")  # HEAD's upstream is origin/main
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = rg.main(["scan", "--repo", str(self.repo), "--vault", str(self.vault),
+                            "--project-dir", str(self.proj), "--index", str(self.index), "--rev", "feat"])
+        res = json.loads(buf.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(res["files"], 1)
+
+    def test_scan_of_a_branch_without_upstream_compares_with_main(self):
+        import io
+        from contextlib import redirect_stdout
+        self.seed_main({"viejo.md": f"{PAPER_TEXT}\n"})
+        git(self.repo, "checkout", "-q", "-b", "feat")
+        self.commit({"limpio.py": "x = 1\n"})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = rg.main(["scan", "--repo", str(self.repo), "--vault", str(self.vault),
+                            "--project-dir", str(self.proj), "--index", str(self.index), "--rev", "feat"])
+        self.assertEqual(code, 0, buf.getvalue())
+        self.assertEqual(json.loads(buf.getvalue())["files"], 1)
+
+
+class TestFingerprintScope(Base):
+    def test_fingerprints_exclude_project_repositorio_folder(self):
+        pr = self.vault / "Projects" / "demo" / "Repositorio" / "acme-solver" / "PRs"
+        pr.mkdir(parents=True)
+        (pr / "PR-0001.md").write_text("Nota derivada de un PR inventado.\n", encoding="utf-8")
+        hip = self.vault / "Projects" / "demo" / "Hipotesis"
+        hip.mkdir(parents=True)
+        (hip / "x.md").write_text("Una hipótesis inventada.\n", encoding="utf-8")
+        notes = rg.build_index(self.vault)["notes"]
+        self.assertFalse(any("/Repositorio/" in n for n in notes), notes)
+        self.assertIn("Projects/demo/Hipotesis/x.md", notes)
+
+    def test_index_of_an_older_guard_version_is_rebuilt(self):
+        rg.load_index(self.index, self.vault)
+        idx = json.loads(self.index.read_text(encoding="utf-8"))
+        idx["tool"] = "kairo/repo_guard@0.9.0"
+        self.index.write_text(json.dumps(idx), encoding="utf-8")
+        self.assertEqual(rg.load_index(self.index, self.vault)["tool"], f"kairo/repo_guard@{rg.__version__}")
+        self.assertEqual(rg.__version__, "1.1.0")
+
+
+class TestHooksEffective(Base):
+    def hook(self):
+        return self.repo / ".git" / "hooks" / "pre-push"
+
+    def test_install_refuses_foreign_pre_push_hook(self):
+        self.hook().parent.mkdir(parents=True, exist_ok=True)
+        self.hook().write_text("#!/bin/sh\necho ajeno\n", encoding="utf-8")
+        self.assertEqual(self.install(), 3)
+        self.assertEqual(self.hook().read_text(encoding="utf-8"), "#!/bin/sh\necho ajeno\n")
+
+    def test_install_refuses_core_hookspath(self):
+        git(self.repo, "config", "core.hooksPath", "otros-hooks")
+        self.assertEqual(self.install(), 3)
+        self.assertFalse(self.hook().exists())
+        self.assertIn("hooksPath", rg.hooks_problem(self.repo))
+
+    def test_install_over_own_guard_is_allowed(self):
+        self.assertEqual(self.install(), 0)
+        self.assertIsNone(rg.hooks_problem(self.repo))
+        self.assertEqual(self.install(), 0)
+
+
+class TestGhArgv(unittest.TestCase):
+    def test_gh_cmd_env_replaces_gh(self):
+        with mock.patch.dict(os.environ, {"KAIRO_GH_CMD": '["python", "x.py"]'}):
+            self.assertEqual(rg.gh_argv(), ["python", "x.py"])
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KAIRO_GH_CMD", None)
+            self.assertEqual(rg.gh_argv(), ["gh"])
+
+
 if __name__ == "__main__":
     unittest.main()

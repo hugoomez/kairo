@@ -52,7 +52,7 @@ from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 SHINGLE = 12
 MIN_SHARED = 3
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -91,7 +91,13 @@ def shingles(text: str) -> set[str]:
 
 
 def vault_notes(vault: Path) -> list[Path]:
-    return [p for area in VAULT_AREAS if (vault / area).is_dir() for p in sorted((vault / area).rglob("*.md"))]
+    """Notes fingerprinted. Projects/<slug>/Repositorio/ holds notes derived
+    from the code repository itself (PRs, issues): not vault content."""
+    def derived(p: Path) -> bool:
+        parts = p.relative_to(vault).parts
+        return len(parts) > 3 and parts[0] == "Projects" and parts[2] == "Repositorio"
+    return [p for area in VAULT_AREAS if (vault / area).is_dir()
+            for p in sorted((vault / area).rglob("*.md")) if not derived(p)]
 
 
 def build_index(vault: Path) -> dict:
@@ -119,6 +125,7 @@ def load_index(path: Path | None, vault: Path) -> dict:
         idx = json.loads(path.read_text(encoding="utf-8"))
         built = path.stat().st_mtime
         fresh = (idx.get("vault") == str(vault.resolve())
+                 and idx.get("tool") == f"kairo/repo_guard@{__version__}"
                  and all(p.stat().st_mtime <= built for p in vault_notes(vault)))
         if fresh:
             return idx
@@ -181,14 +188,20 @@ def hub_value(project_dir: Path, key: str) -> str | None:
     return m.group(1).strip().strip("'\"") if m else None
 
 
+def gh_argv() -> list[str]:
+    """The command that stands for `gh`: KAIRO_GH_CMD (a JSON list, for tests) or ["gh"]."""
+    raw = os.environ.get("KAIRO_GH_CMD")
+    return [str(x) for x in json.loads(raw)] if raw else ["gh"]
+
+
 def visibility_problem(repo: Path, project_dir: Path, remote_url: str | None) -> tuple[str | None, str | None]:
     """(problem, note). No `gh` → no problem, but a note that it was not checked."""
     expected = (hub_value(project_dir, "code_visibility") or "private").lower()
     if not remote_url or "github.com" not in remote_url.lower():
         return None, None  # only GitHub remotes have a visibility to check
-    if not shutil.which("gh"):
+    if "KAIRO_GH_CMD" not in os.environ and not shutil.which("gh"):
         return None, "visibilidad del remoto no comprobada: gh no está instalado"
-    r = subprocess.run(["gh", "repo", "view", remote_url, "--json", "visibility", "-q", ".visibility"],
+    r = subprocess.run([*gh_argv(), "repo", "view", remote_url, "--json", "visibility", "-q", ".visibility"],
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         return None, f"visibilidad del remoto no comprobada: {r.stderr.strip()[:200]}"
@@ -202,9 +215,37 @@ def visibility_problem(repo: Path, project_dir: Path, remote_url: str | None) ->
 # Scanning pushed content
 # --------------------------------------------------------------------------
 
+def main_ref(repo: Path) -> str | None:
+    """The remote's main branch as a local ref name: origin/HEAD's target,
+    else origin/main, else origin/master, else None."""
+    head = git(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD", check=False).strip()
+    if head:
+        return head
+    for cand in ("origin/main", "origin/master"):
+        if git(repo, "rev-parse", "-q", "--verify", f"refs/remotes/{cand}", check=False).strip():
+            return cand
+    return None
+
+
+def hooks_problem(repo: Path) -> str | None:
+    """Why the pre-push guard could not be relied on in this repository, or None."""
+    hp = git(repo, "config", "--get", "core.hooksPath", check=False).strip()
+    if hp:
+        return (f"core.hooksPath is set ({hp}): git would not run .git/hooks/pre-push, "
+                "so the guard would never fire. Unset it or move the guard there by hand")
+    hook = repo / ".git" / "hooks" / "pre-push"
+    if hook.is_file() and "repo_guard" not in hook.read_text(encoding="utf-8", errors="replace"):
+        return f"{hook} already exists and is not Kairo's guard; refusing to overwrite it"
+    return None
+
+
 def changed_files(repo: Path, local: str, remote: str) -> list[str]:
     if remote == ZERO:
-        out = git(repo, "ls-tree", "-r", "--name-only", local)
+        base = main_ref(repo)
+        if base:
+            out = git(repo, "diff", "--name-only", "--diff-filter=ACMR", f"{base}...{local}")
+        else:
+            out = git(repo, "ls-tree", "-r", "--name-only", local)
     else:
         out = git(repo, "diff", "--name-only", "--diff-filter=ACMR", f"{remote}..{local}")
     return [f for f in out.splitlines() if f]
@@ -301,6 +342,9 @@ def cmd_install(a) -> dict:
         raise Refused("; ".join(probs))
     if not (repo / ".git").is_dir():
         raise Refused(f"{repo} is not a git repository")
+    problem = hooks_problem(repo)
+    if problem:
+        raise Refused(problem)
     index = a.index or default_index(vault)
     load_index(index, vault)
     hook = repo / ".git" / "hooks" / "pre-push"
@@ -388,10 +432,15 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "scan":
             repo, vault = a.repo.resolve(), a.vault.resolve()
             index = load_index(a.index, vault)
-            upstream = git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False).strip()
-            files = (git(repo, "ls-tree", "-r", "--name-only", a.rev).splitlines() if a.all or not upstream
-                     else changed_files(repo, a.rev, git(repo, "rev-parse", upstream).strip()))
-            url = git(repo, "remote", "get-url", upstream.split("/")[0], check=False).strip() if upstream else None
+            upstream = git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{a.rev}@{{u}}", check=False).strip()
+            if a.all:
+                files = git(repo, "ls-tree", "-r", "--name-only", a.rev).splitlines()
+            elif upstream:
+                files = changed_files(repo, a.rev, git(repo, "rev-parse", upstream).strip())
+            else:
+                files = changed_files(repo, a.rev, ZERO)
+            remote_name = upstream.split("/")[0] if upstream else "origin"
+            url = git(repo, "remote", "get-url", remote_name, check=False).strip()
             res = scan(repo, vault, a.project_dir.resolve(), index, a.rev, [f for f in files if f], url or None)
             print(json.dumps(res, ensure_ascii=False))
             return 0 if res["ok"] else 3
