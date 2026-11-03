@@ -243,6 +243,133 @@ class TestNewBranches(Base):
         self.assertEqual(json.loads(buf.getvalue())["files"], 1)
 
 
+class TestScanRange(Base):
+    """scan --range: everything a push of those commits uploads, not only the tip."""
+
+    def setUp(self):
+        super().setUp()
+        self.commit({"ok.py": "x = 1\n"})
+        self.base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+    def head(self):
+        return git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+    def commit_msg(self, name, text, message):
+        (self.repo / name).write_text(text, encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", message)
+
+    def scan_range(self, rng=None, *extra):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = rg.main(["scan", "--repo", str(self.repo), "--vault", str(self.vault), "--project-dir", str(self.proj),
+                            "--index", str(self.index), f"--range={rng or f'{self.base}..{self.head()}'}", *extra])
+        return code, (json.loads(buf.getvalue()) if buf.getvalue().strip() else None)
+
+    def test_clean_range_passes(self):
+        self.commit({"pieza.py": "y = 2\n"})
+        code, res = self.scan_range()
+        self.assertEqual(code, 0)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["findings"], [])
+
+    def test_text_added_in_an_intermediate_commit_and_removed_at_the_tip_blocks(self):
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        self.commit({"docs/cita.md": "ya no hay nada\n"})
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        self.assertEqual([(f["kind"], f["path"]) for f in res["blocking"]], [("verbatim_overlap", "docs/cita.md")])
+
+    def test_a_file_added_and_deleted_inside_the_range_blocks(self):
+        self.commit({"borrador.md": f"{PAPER_TEXT}\n"})
+        git(self.repo, "rm", "-q", "borrador.md")
+        git(self.repo, "commit", "-qm", "quita el borrador")
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        self.assertEqual(res["blocking"][0]["path"], "borrador.md")
+
+    def test_a_secret_in_an_intermediate_blob_blocks_with_its_real_path(self):
+        self.commit({"config.py": 'API_TOKEN = "' + "a1B2c3D4" * 5 + '"\n'})
+        self.commit({"config.py": "API_TOKEN = None\n"})
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        self.assertIn("config.py", [f["path"] for f in res["blocking"]])
+
+    def test_a_commit_message_body_with_vault_text_blocks_and_cannot_be_allowed(self):
+        self.commit_msg("ok2.py", "z = 1\n", f"Asunto corto\n\n{PAPER_TEXT}\n")
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        f = res["blocking"][0]
+        self.assertEqual(f["kind"], "verbatim_overlap")
+        self.assertIs(f["overridable"], False)
+        self.assertEqual(f["commit"], self.head())
+        self.assertIsNone(f["path"])
+
+    def test_a_secret_in_a_commit_message_blocks(self):
+        self.commit_msg("ok2.py", "z = 1\n", 'Asunto\n\nAPI_TOKEN = "' + "a1B2c3D4" * 5 + '"\n')
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        f = res["blocking"][0]
+        self.assertIs(f["overridable"], False)
+        self.assertEqual(f["commit"], self.head())
+
+    def test_an_allowed_tip_passes_but_an_earlier_version_still_blocks(self):
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        rg.main(["allow", "--repo", str(self.repo), "--file", "docs/cita.md", "--reason", "cita legítima"])
+        code, res = self.scan_range()
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["findings"][0]["allowed"])
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\nUna línea más.\n"})
+        rg.main(["allow", "--repo", str(self.repo), "--file", "docs/cita.md", "--reason", "cita legítima"])
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        self.assertEqual(len(res["blocking"]), 1)
+
+    def test_the_same_blob_in_two_commits_is_reported_once(self):
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        self.commit({"docs/cita.md": "nada\n"})
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        _, res = self.scan_range()
+        self.assertEqual(len(res["blocking"]), 1)
+
+    def test_oversized_and_binary_blobs_skip_the_overlap_check(self):
+        self.commit({"grande.txt": f"{PAPER_TEXT}\n" + "relleno inventado\n" * ((rg.MAX_FILE_BYTES // 18) + 1)})
+        (self.repo / "dato.bin").write_bytes(b"\x00\x01" + PAPER_TEXT.encode())
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "binario")
+        _, res = self.scan_range()
+        self.assertEqual([f for f in res["findings"] if f["kind"] == "verbatim_overlap"], [])
+
+    def test_merge_and_root_commits_are_covered(self):
+        git(self.repo, "checkout", "-q", "-b", "lado")
+        self.commit({"lado.md": f"{PAPER_TEXT}\n"})
+        git(self.repo, "checkout", "-q", "main")
+        self.commit({"otro.py": "o = 1\n"})
+        git(self.repo, "merge", "-q", "--no-edit", "lado")
+        self.assertEqual(self.scan_range()[0], 3)
+        git(self.repo, "checkout", "-q", "--orphan", "suelta")
+        self.commit({"suelta.md": f"{PAPER_TEXT}\n"})
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        self.assertIn("suelta.md", [f["path"] for f in res["blocking"]])
+
+    def test_bad_range_or_flags_are_refused(self):
+        self.commit({"pieza.py": "y = 2\n"})
+        for bad in ("--upload-pack=x..y", "HEAD", "a b..c", "no-existe..tampoco"):
+            self.assertEqual(self.scan_range(bad)[0], 3, bad)
+        self.assertEqual(self.scan_range(None, "--all")[0], 3)
+        self.assertEqual(self.scan_range(None, "--rev", "main")[0], 3)
+
+    def test_the_pre_push_check_does_not_change(self):
+        """check does not read message bodies: the same as before --range existed."""
+        self.install()
+        self.assertEqual(self.push().returncode, 0)
+        self.commit_msg("ok2.py", "z = 1\n", f"Asunto\n\n{PAPER_TEXT}\n")
+        self.assertEqual(self.push().returncode, 0)
+
+
 class TestFingerprintScope(Base):
     def test_fingerprints_exclude_project_repositorio_folder(self):
         pr = self.vault / "Projects" / "demo" / "Repositorio" / "acme-solver" / "PRs"

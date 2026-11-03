@@ -16,6 +16,9 @@ repository's `pre-push` hook and blocks a push that would carry vault content.
         the hook itself (reads git's pre-push stdin). Exit 0 = push allowed.
     repo_guard.py scan    --repo R --vault V --project-dir D [--index F] [--rev HEAD]
         the same checks on a revision, without pushing (for the interface).
+    repo_guard.py scan    --repo R --vault V --project-dir D [--index F] --range A..B
+        everything a push of those commits uploads: every version of every file
+        any of them touched, and every commit message, whatever the tip looks like.
     repo_guard.py allow   --repo R --file PATH --reason "..." [--vault V --project-dir D]
         a researcher-only override for ONE file's CURRENT content, for a
         verbatim-overlap or vault-note finding (never a secret). Stored in
@@ -308,6 +311,119 @@ def scan(repo: Path, vault: Path, project_dir: Path, index: dict, rev: str, file
     return {"ok": not blocking, "findings": findings, "blocking": blocking, "notes": notes, "files": len(files)}
 
 
+def range_commits(repo: Path, rng: str) -> list[str]:
+    if not re.fullmatch(r"[^\s-][^\s]*\.\.[^\s.][^\s]*", rng):
+        raise Refused(f"--range must look like A..B: {rng}")
+    return git(repo, "rev-list", rng).split()
+
+
+def commit_blobs(repo: Path, commit: str) -> list[tuple[str, str]]:
+    """(path, blob) of every file a commit adds or changes, against each parent of a merge.
+    Gitlinks are not files, and a deletion carries no content."""
+    out = git(repo, "diff-tree", "-r", "-m", "--root", "--no-renames", "--no-commit-id", "-z", commit)
+    fields = out.split("\0")
+    pairs = []
+    for meta, path in zip(fields[0::2], fields[1::2]):
+        parts = meta.split()
+        if len(parts) >= 5 and parts[1] != "160000" and set(parts[3]) != {"0"}:
+            pairs.append((path, parts[3]))
+    return pairs
+
+
+def scan_range(repo: Path, vault: Path, project_dir: Path, index: dict, rng: str, remote_url: str | None) -> dict:
+    """Everything a push of A..B uploads: every version of every file any of those
+    commits touched, and every commit message, not only the tree at the tip. A version
+    is allowed only if `allow` covers that exact content, which it can do for the tip
+    alone. Nothing overrides a finding in a message."""
+    commits = range_commits(repo, rng)
+    findings: list[dict] = []
+    notes: list[str] = []
+    for p in location_problems(repo, vault):
+        findings.append({"kind": "location", "path": None, "detail": p, "overridable": False})
+    vp, note = visibility_problem(repo, project_dir, remote_url)
+    if vp:
+        findings.append({"kind": "visibility", "path": None, "detail": vp, "overridable": False})
+    if note:
+        notes.append(note)
+    allowed = allowlist(repo)
+    versions: dict[tuple[str, str], None] = {}
+    for c in commits:
+        versions.update(dict.fromkeys(commit_blobs(repo, c)))
+
+    with tempfile.TemporaryDirectory(prefix="kairo-range-") as scratch:
+        root = Path(scratch)
+        # One folder per version: a path can have many. The file names still count for the scanner.
+        where: dict[str, tuple[str, str, str]] = {}
+        shared: dict[str, list[tuple[str, int]]] = {}
+        for i, (path, blob) in enumerate(versions):
+            got = subprocess.run(["git", "cat-file", "blob", blob], cwd=repo, capture_output=True)
+            if got.returncode != 0:
+                findings.append({"kind": "scanner_error", "path": path, "overridable": False,
+                                 "detail": f"no se pudo leer {blob[:12]}"})
+                continue
+            data = got.stdout
+            sha = hashlib.sha256(data).hexdigest()
+            where[f"f{i}"] = (path, blob, sha)
+            base = (root / f"f{i}").resolve()
+            dest = (base / path).resolve()
+            try:
+                if base not in dest.parents:
+                    raise OSError("path outside the scratch folder")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+            except OSError as exc:
+                findings.append({"kind": "scanner_error", "path": path, "overridable": False, "detail": f"no se pudo copiar: {exc}"[:300]})
+            if len(data) > MAX_FILE_BYTES or b"\x00" in data[:4096]:
+                continue
+            if blob not in shared:
+                shared[blob] = overlap(data.decode("utf-8", errors="replace"), index)
+            for note_path, count in shared[blob]:
+                findings.append({"kind": "verbatim_overlap", "path": path, "overridable": True,
+                                 "allowed": allowed.get(path, {}).get("sha256") == sha,
+                                 "detail": f"{count} fragmentos de 12 palabras idénticos a {note_path}"})
+        msg_dir = root / "mensajes"
+        msg_dir.mkdir()
+        for c in commits:
+            text = git(repo, "log", "-1", "--format=%B", c)
+            (msg_dir / f"{c}.txt").write_text(text, encoding="utf-8")
+            for note_path, count in overlap(text, index):
+                findings.append({"kind": "verbatim_overlap", "path": None, "commit": c, "overridable": False, "allowed": False,
+                                 "detail": f"mensaje del commit {c[:10]}: {count} fragmentos de 12 palabras idénticos a {note_path}"})
+        cb = subprocess.run([sys.executable, str(HERE.parent / "security" / "check_bundle.py"), str(root)],
+                            capture_output=True, text=True, encoding="utf-8")
+        try:
+            report = json.loads(cb.stdout)
+        except json.JSONDecodeError:
+            report = {"status": "error", "findings": []}
+            findings.append({"kind": "scanner_error", "path": None, "overridable": False,
+                             "detail": (cb.stderr or cb.stdout)[:300]})
+        seen = set()
+        for fd in report.get("findings", []):
+            if fd.get("severity") != "block":
+                continue
+            kind = fd.get("kind", "?")
+            top, _, rest = str(fd.get("path") or "").partition("/")
+            if top == "mensajes":
+                c = rest.removesuffix(".txt")
+                findings.append({"kind": kind, "path": None, "commit": c, "overridable": False, "allowed": False,
+                                 "detail": f"check_bundle.py: {kind} en el mensaje del commit {c[:10]}"})
+                continue
+            path, _, sha = where.get(top, (rest or top, "", ""))
+            key = (kind, path, sha)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append({"kind": kind, "path": path, "overridable": kind in OVERRIDABLE,
+                             "allowed": kind in OVERRIDABLE and bool(sha) and allowed.get(path, {}).get("sha256") == sha,
+                             "detail": f"check_bundle.py: {kind}"})
+        if report.get("status") == "error" and not any(f["kind"] == "scanner_error" for f in findings):
+            findings.append({"kind": "scanner_error", "path": None, "overridable": False,
+                             "detail": (cb.stderr or json.dumps(report))[:300]})
+    blocking = [x for x in findings if not x.get("allowed")]
+    return {"ok": not blocking, "findings": findings, "blocking": blocking, "notes": notes,
+            "files": len(versions), "commits": len(commits)}
+
+
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
@@ -408,6 +524,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "scan":
             p.add_argument("--rev", default="HEAD")
             p.add_argument("--all", action="store_true", help="every tracked file, not only changes since the remote")
+            p.add_argument("--range", default=None, help="A..B: every version of every file those commits touched, and their messages")
     p = sub.add_parser("allow")
     p.add_argument("--repo", required=True, type=Path)
     p.add_argument("--file", required=True)
@@ -432,6 +549,13 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "scan":
             repo, vault = a.repo.resolve(), a.vault.resolve()
             index = load_index(a.index, vault)
+            if a.range is not None:
+                if a.all or a.rev != "HEAD":
+                    raise Refused("--range does not combine with --all or --rev")
+                url = git(repo, "remote", "get-url", "origin", check=False).strip()
+                res = scan_range(repo, vault, a.project_dir.resolve(), index, a.range, url or None)
+                print(json.dumps(res, ensure_ascii=False))
+                return 0 if res["ok"] else 3
             upstream = git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{a.rev}@{{u}}", check=False).strip()
             if a.all:
                 files = git(repo, "ls-tree", "-r", "--name-only", a.rev).splitlines()
