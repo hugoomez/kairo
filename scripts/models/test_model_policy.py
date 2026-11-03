@@ -35,7 +35,7 @@ class TestPolicy(unittest.TestCase):
 
     def test_agents_that_see_untrusted_paper_text_alone_are_isolated(self):
         raw = mp.load()["tasks"]
-        for k in ("fresh_verifier", "devils_advocate", "novelty_judge", "screener"):
+        for k in ("fresh_verifier", "devils_advocate", "novelty_judge", "screener", "pr_historian"):
             self.assertIs(raw[k].get("isolated"), True, k)
             tools = mp._frontmatter_tools((ROOT / raw[k]["file"]).read_text(encoding="utf-8"))
             self.assertEqual(tools, ["Read"], k)

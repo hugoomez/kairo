@@ -233,15 +233,16 @@ claude --plugin-dir /path/to/kairo
 | `corpus-reader` | `ask-corpus`'s reader: gets the question and the list of paper notes it may quote, reads them with Read / Grep / Smart Connections only — no shell, network or write tool, so text inside a paper can never make anything run or leave the machine — and returns a draft of verbatim quotes that `check_quotes.py` verifies. |
 | `explainer` | `explain`'s writer: gets the request and the explicit list of paper and project notes it may read, reads them with Read / Grep / Glob only (no shell, network or write tool) and returns a draft between `<<<BORRADOR` / `BORRADOR>>>` that `check_review.py` checks. |
 | `screener` | `literature-search`'s screener: sees the frozen plan and one page of candidates, and returns a decision + reason for each; one per page, in parallel, isolated like `novelty-judge`. |
+| `pr-historian` | Describes merged pull requests of the linked code repository: sees only a packet from `scripts/code_repo/pr_packet.py` (title, body, commit messages, files, clipped diff and the ids the PR's own text names) and returns, per PR, what changed, why, whether the reason is `explicito`, `inferido` or `no_consta`, and the ids it names. Isolated like `screener`. |
 | `novelty-judge` | `lit-watch`'s judge: sees one hypothesis's `## Claim` and one candidate's title + abstract, and answers whether the abstract takes the claim's novelty, with the exact sentence. |
 | `paper-carder` | Reads one paper once and returns its reading card: claims each with a verbatim quote and locator. `ficha.py write` keeps only the items whose quote is the paper's own text there (`Papers/_fichas/<P-id>.md`, `citable: false`); every later map and project starts from the card — an item is citable for exactly what its checked quote says; anything else is read in the note itself — and each summarizer declares per paper how deeply it read (`lectura: completo | ficha + §… | solo ficha`), copied into «Cobertura de lectura». A rebuilt note makes the card stale. |
 | `frontier-extractor` | `frontier-map`'s reader: gets the approved taxonomy and a batch of paper notes, returns per paper each axis's values with verbatim quotes and locators, results with their conditions, stated limitations and ideas — «no está en el texto» when the text does not say. No shell or network; `frontier.py save-extraction` keeps only what its quotes support. |
 | `paper-reader` | Reads paper notes for the main session (which may not): checks a locator against its sentence, finds where a claim is said, looks at a figure's image. No shell or network. |
 | `sota-synthesizer` | The Reduce pass of the state-of-the-art map: merges the facet contributions and drafts the cross-facet sections; it has no Agent tool, so a locator it doubts comes back as a `verificar:` request the session sends to `paper-reader` (in batches of ten); `check_sota.py` then checks every locator and figure it wrote. |
 
-**Isolation is enforced, not just asked for.** The four agents that must see
+**Isolation is enforced, not just asked for.** The five agents that must see
 only their packet (`fresh-verifier`, `devils-advocate`, `novelty-judge`,
-`screener`) have one tool, `Read`, and are marked `isolated = true` in
+`screener`, `pr-historian`) have one tool, `Read`, and are marked `isolated = true` in
 `config/models.toml`. Their packet is written by a script to a
 content-addressed store (`~/.kairo/packets/<sha256>.md`,
 `scripts/security/isolation.py`); the orchestrator hands over **the path**,
