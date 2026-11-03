@@ -125,6 +125,7 @@ accepts or rejects it.
 An experiment that runs this repository's code freezes it as
 `code_repo@commit` in its environment manifest: preregister-experiment records
 the repository path and the exact commit; run-experiment's pre-flight checks
-the repository is at that commit with no uncommitted changes, and a Kaggle
+the commit is on the remote (for a confirmatory experiment) and runs it from
+its own worktree, leaving the clone's branch and changes alone; a Kaggle
 bundle takes its files from that commit (`git archive`), never from the
 working tree.

@@ -209,7 +209,8 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/traces/trace_index.py end \
 
 Run the experiment command from the note's `## Diseño` / documented entrypoint
 via the Bash tool. If there is no unambiguous command, stop and ask — do not
-guess.
+guess. When `environment.code` is set, the command's working directory is the
+worktree path recorded in the pre-flight, never the clone itself.
 
 **Where the code lives.** The experiment code is a self-contained directory,
 `Scripts/experiments/E-XXXX/` — the scripts plus the frozen `E-XXXX.data.json`
