@@ -230,6 +230,25 @@ def test_worktree_remove_refuses_a_path_that_is_not_a_worktree(env):
     assert code == 3 and victim.exists()
 
 
+def test_worktree_remove_refuses_a_registered_worktree_outside_the_worktree_dir(env):
+    other = env["tmp"] / "mine" / "E-9005"
+    other.parent.mkdir()
+    git(env["repo"], "worktree", "add", "--detach", str(other), env["pushed"])
+    code = rs.main(["worktree", "remove", "--repo", str(env["repo"]), "--path", str(other)])
+    assert code == 3 and other.is_dir()
+    # the worktree root itself is never removable either
+    made = rs.worktree_add(env["repo"], env["pushed"], "E-9006")
+    root = Path(made["path"]).parent
+    assert rs.main(["worktree", "remove", "--repo", str(env["repo"]), "--path", str(root)]) == 3
+    assert root.is_dir()
+
+
+def test_worktree_remove_never_removes_the_repo_given_as_repo(env):
+    made = Path(rs.worktree_add(env["repo"], env["pushed"], "E-9007")["path"])
+    code = rs.main(["worktree", "remove", "--repo", str(made), "--path", str(made)])
+    assert code == 3 and made.is_dir()
+
+
 def test_gitignore_keeps_derived_state_out_of_vault_commits(env):
     do_sync(env)
     gi = (env["project"] / "Repositorio" / ".gitignore").read_text(encoding="utf-8").split()

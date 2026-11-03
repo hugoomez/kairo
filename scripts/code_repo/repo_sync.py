@@ -245,6 +245,11 @@ def worktree_remove(repo: Path, path: Path) -> dict:
     known = [os.path.normcase(str(p.resolve())) for p in registered_worktrees(repo)[1:]]  # [0] is the clone
     if os.path.normcase(str(path)) not in known:
         raise Refused(f"{path} is not a worktree of {repo}")
+    if os.path.normcase(str(path)) == os.path.normcase(str(repo)):
+        raise Refused("refusing to remove the repository given as --repo")
+    root = worktree_root().resolve() / repo.name
+    if path == root or not repo_guard.inside(path, root):
+        raise Refused(f"{path} is not under {root}: only worktrees made by this tool are removed")
     shutil.rmtree(path, onerror=_writable)
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
     return {"removed": str(path)}
