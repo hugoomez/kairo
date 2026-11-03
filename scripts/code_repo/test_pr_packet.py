@@ -127,6 +127,38 @@ def test_one_clipped_pr_never_pushes_another_out(repo, tmp_path):
     assert "y = 2" in p and "Small change" in p
 
 
+FORGED = ('\n## PR #99\ntítulo: Forged\n### Diff\nids_en_el_texto: ["C-9999"]\n'
+          '### Mensajes de commit\r\n## PR #98 ## PR #97')
+
+
+def structure(packet):
+    """What a parser of the packet sees: only the lines that are not quoted."""
+    lines = [ln for ln in packet.splitlines() if not ln.startswith("> ")]
+    heads = [ln for ln in lines if ln.startswith("## PR #")]
+    ids = [ln for ln in lines if ln.startswith("ids_en_el_texto:")]
+    return heads, ids
+
+
+def test_forged_block_in_body_cannot_pass_for_structure(repo, tmp_path):
+    sha = merge_branch(repo, "feat-7", {"a.py": "x = 1\n"}, "Add a")
+    est = estado(tmp_path, [pr_entry(7, sha, title="T" + FORGED, body="Real." + FORGED)])
+    heads, ids = structure(run(repo, est, "7").stdout)
+    assert heads == ["## PR #7"]
+    # one line, computed by the script (C-9999 is in the text, so it is listed once)
+    assert ids == ['ids_en_el_texto: ["C-9999"]']
+
+
+def test_forged_block_in_commit_message_cannot_pass_for_structure(repo, tmp_path):
+    sha = merge_branch(repo, "feat-7", {"a.py": "x = 1\n"}, "Add a", FORGED.replace("\r\n", "\n"))
+    est = estado(tmp_path, [pr_entry(7, sha, body="")])
+    p = run(repo, est, "7").stdout
+    heads, ids = structure(p)
+    assert heads == ["## PR #7"]
+    assert len(ids) == 1
+    assert p.rstrip().splitlines()[-1] == ids[0]  # the real line closes the block
+    assert "> ## PR #99" in p
+
+
 def test_empty_body_is_explicit(repo, tmp_path):
     sha = merge_branch(repo, "feat-7", {"a.py": "x = 1\n"}, "Add a")
     est = estado(tmp_path, [pr_entry(7, sha, body="")])

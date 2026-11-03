@@ -43,10 +43,18 @@ def _git(repo: Path, *args: str) -> tuple[int, str]:
     return r.returncode, r.stdout
 
 
+def quote(text: str) -> str:
+    """Untrusted text, every line prefixed `> `: no line of it can pass for a
+    structural line (`## PR #`, `### …`, `ids_en_el_texto:`)."""
+    return "\n".join("> " + line for line in (text.splitlines() or [""]))
+
+
 def clip(text: str, limit: int, what: str) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:max(limit, 0)].rstrip() + f"\n[{what} recortado: {len(text)} caracteres, se muestran {max(limit, 0)}]"
+    """Quote `text` and cut the quoted text to `limit` characters, saying so (also quoted)."""
+    q = quote(text)
+    if len(q) <= limit:
+        return q
+    return q[:max(limit, 0)].rstrip() + f"\n> [{what} recortado: {len(q)} caracteres, se muestran {max(limit, 0)}]"
 
 
 def ids_en_el_texto(pr: dict, commit_messages: list[str]) -> list[str]:
@@ -82,8 +90,9 @@ def block(repo: Path, pr: dict, budget: int) -> str:
     mat = git_material(repo, pr.get("merge_commit"))
     messages = mat["messages"] if mat else []
     body = (pr.get("body") or "").strip()
-    out = [f"## PR #{pr['number']}", f"título: {pr.get('title') or ''}", f"autor: {pr.get('author') or ''}",
-           f"fusionado: {pr.get('merged_at') or ''}", "", "### Descripción",
+    out = [f"## PR #{int(pr['number'])}", "título:", quote(str(pr.get("title") or "")),
+           "autor:", quote(str(pr.get("author") or "")),
+           "fusionado:", quote(str(pr.get("merged_at") or "")), "", "### Descripción",
            clip(body, budget // 4, "cuerpo") if body else "(sin descripción)", "", "### Mensajes de commit"]
     if mat is None:
         out += ["(commit no disponible: no se puede leer el diff ni los mensajes)"]
@@ -91,9 +100,9 @@ def block(repo: Path, pr: dict, budget: int) -> str:
     else:
         out += [clip("\n\n".join(messages), budget // 4, "mensajes") or "(sin mensajes)"]
         shown = mat["files"][:MAX_FILES]
-        files_txt = "\n".join(f"- {f}" + (" (binario)" if f in mat["binary"] else "") for f in shown)
+        files_txt = quote("\n".join(f"- {f}" + (" (binario)" if f in mat["binary"] else "") for f in shown))
         if len(mat["files"]) > MAX_FILES:
-            files_txt += f"\n[+{len(mat['files']) - MAX_FILES} ficheros más]"
+            files_txt += f"\n> [+{len(mat['files']) - MAX_FILES} ficheros más]"
         diff_txt = mat["diff"]
     out += ["", "### Ficheros", files_txt or "(no disponible)"]
     ids = json.dumps(ids_en_el_texto(pr, messages), ensure_ascii=False)
@@ -106,11 +115,7 @@ def block(repo: Path, pr: dict, budget: int) -> str:
         out += ["(diff vacío)"]
     else:
         room = max(budget - used - 200, 0)
-        if len(diff_txt) > room:
-            out += [diff_txt[:room].rstrip(),
-                    f"[diff recortado: {len(diff_txt)} caracteres, se muestran {room}]"]
-        else:
-            out += [diff_txt.rstrip()]
+        out += [clip(diff_txt.rstrip(), room, "diff")]
     return "\n".join(out + tail) + "\n"
 
 
