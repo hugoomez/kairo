@@ -118,11 +118,18 @@ Recompute, **the same way `preregister-experiment` did**:
 - **Applied projects — `environment.code: {repo: <code_repo path>, commit: <sha>}`.**
   When the experiment runs the project's own code repository, the frozen
   manifest (or the implementation `## Enmiendas` entry) names that repository
-  and commit. Check the repository is at exactly that commit with no
-  uncommitted changes (`git -C <repo> rev-parse HEAD`, `git -C <repo> status
-  --porcelain`), or check it out; anything else is a mismatch. A transfer
-  bundle takes the repository's files from that commit (`git -C <repo> archive
-  <sha>`), never from the working tree.
+  and commit. The clone's branch and changes are not touched:
+  - Check `python "${CLAUDE_PLUGIN_ROOT}/scripts/code_repo/repo_sync.py" commit-status --repo <repo> --commit <sha>`.
+    `on_remote: false` on a `role: confirmatory` experiment is a mismatch: stop.
+  - Run from a worktree of that commit: `... repo_sync.py worktree add --repo <repo> --commit <sha> --name <E-id>`
+    (returns `{"path": ...}`). Record the path in the run log, and remove it
+    with `... worktree remove --repo <repo> --path <path>` once the outputs
+    are archived.
+  - If `environment.code.repo` is not the hub's current `code_repo`, the
+    experiment predates the link: keep its own repository and its own check.
+  - A standalone script does not support a confirmatory verdict.
+  - A transfer bundle still takes the repository's files from that commit
+    (`git -C <repo> archive <sha>`), never from the working tree.
 
 **Any mismatch → stop. Do not run.** Report: which check failed, expected vs
 actual value, and that no code was executed. A hardware string that differs from
