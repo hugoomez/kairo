@@ -152,8 +152,17 @@ def overlap(text: str, index: dict) -> list[tuple[str, int]]:
 # Repository facts
 # --------------------------------------------------------------------------
 
+def git_env() -> dict[str, str]:
+    """`git replace` changes what git reads here but not what a push uploads: see the real objects."""
+    return {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
+
+
+def git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, env=git_env())
+
+
 def git(repo: Path, *args: str, check: bool = True) -> str:
-    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", env=git_env())
     if check and r.returncode != 0:
         raise Refused(f"git {' '.join(args[:2])}: {r.stderr.strip()[:300]}")
     return r.stdout
@@ -274,7 +283,7 @@ def scan(repo: Path, vault: Path, project_dir: Path, index: dict, rev: str, file
     with tempfile.TemporaryDirectory(prefix="kairo-push-") as scratch:
         root = Path(scratch)
         for f in files:
-            blob = subprocess.run(["git", "show", f"{rev}:{f}"], cwd=repo, capture_output=True)
+            blob = git_bytes(repo, "show", f"{rev}:{f}")
             if blob.returncode != 0:
                 continue
             data = blob.stdout
@@ -303,7 +312,7 @@ def scan(repo: Path, vault: Path, project_dir: Path, index: dict, rev: str, file
             path = fd.get("path")
             ok = False
             if kind in OVERRIDABLE and path and path in allowed:
-                blob = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=repo, capture_output=True)
+                blob = git_bytes(repo, "show", f"{rev}:{path}")
                 ok = blob.returncode == 0 and allowed[path].get("sha256") == hashlib.sha256(blob.stdout).hexdigest()
             findings.append({"kind": kind, "path": path, "overridable": kind in OVERRIDABLE, "allowed": ok,
                              "detail": f"check_bundle.py: {kind}"})
@@ -314,7 +323,10 @@ def scan(repo: Path, vault: Path, project_dir: Path, index: dict, rev: str, file
 def range_commits(repo: Path, rng: str) -> list[str]:
     if not re.fullmatch(r"[^\s-][^\s]*\.\.[^\s.][^\s]*", rng):
         raise Refused(f"--range must look like A..B: {rng}")
-    return git(repo, "rev-list", rng).split()
+    commits = git(repo, "rev-list", rng).split()
+    if not commits:
+        raise Refused(f"--range {rng} has no commits: nothing was scanned, so it cannot pass")
+    return commits
 
 
 def commit_blobs(repo: Path, commit: str) -> list[tuple[str, str]]:
@@ -356,7 +368,7 @@ def scan_range(repo: Path, vault: Path, project_dir: Path, index: dict, rng: str
         where: dict[str, tuple[str, str, str]] = {}
         shared: dict[str, list[tuple[str, int]]] = {}
         for i, (path, blob) in enumerate(versions):
-            got = subprocess.run(["git", "cat-file", "blob", blob], cwd=repo, capture_output=True)
+            got = git_bytes(repo, "cat-file", "blob", blob)
             if got.returncode != 0:
                 findings.append({"kind": "scanner_error", "path": path, "overridable": False,
                                  "detail": f"no se pudo leer {blob[:12]}"})
@@ -492,7 +504,7 @@ def cmd_allow(a) -> dict:
         raise Refused("say why this file may leave the machine (at least a sentence)")
     # Bind the override to the committed content — what a push carries (the
     # working copy may differ, e.g. in line endings).
-    blob = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=repo, capture_output=True)
+    blob = git_bytes(repo, "show", f"HEAD:{rel}")
     if blob.returncode != 0:
         raise Refused(f"{rel} is not committed in HEAD — commit it first, then allow that exact content")
     allowed = allowlist(repo)

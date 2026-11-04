@@ -362,6 +362,50 @@ class TestScanRange(Base):
         self.assertEqual(self.scan_range(None, "--all")[0], 3)
         self.assertEqual(self.scan_range(None, "--rev", "main")[0], 3)
 
+    def test_an_empty_range_is_refused_not_passed(self):
+        """Zero commits scanned says nothing about what a push would upload."""
+        code, res = self.scan_range(f"{self.base}..{self.base}")
+        self.assertEqual(code, 3)
+        self.assertIsNone(res)
+
+    def test_a_commit_hidden_by_a_replace_graft_is_still_scanned(self):
+        self.commit({"pieza.py": "y = 2\n"})
+        first = self.head()
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        self.commit({"docs/cita.md": "ya no hay nada\n"})
+        tip = self.head()
+        self.assertEqual(git(self.repo, "replace", "--graft", tip, first).returncode, 0)
+        code, res = self.scan_range(f"{self.base}..{tip}")
+        self.assertEqual(code, 3)
+        self.assertEqual(res["commits"], 3)
+        self.assertIn(("verbatim_overlap", "docs/cita.md"), [(f["kind"], f["path"]) for f in res["blocking"]])
+
+    def test_a_blob_hidden_by_replace_is_still_scanned(self):
+        self.commit({"limpio.md": "nada que ver\n"})
+        clean = git(self.repo, "rev-parse", "HEAD:limpio.md").stdout.strip()
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        dirty = git(self.repo, "rev-parse", "HEAD:docs/cita.md").stdout.strip()
+        self.assertEqual(git(self.repo, "replace", dirty, clean).returncode, 0)
+        code, res = self.scan_range()
+        self.assertEqual(code, 3)
+        self.assertIn(("verbatim_overlap", "docs/cita.md"), [(f["kind"], f["path"]) for f in res["blocking"]])
+
+    def test_a_blob_hidden_by_replace_is_still_seen_at_the_tip(self):
+        """The same for the plain scan, the one the pre-push check shares."""
+        import io
+        from contextlib import redirect_stdout
+        self.commit({"limpio.md": "nada que ver\n"})
+        clean = git(self.repo, "rev-parse", "HEAD:limpio.md").stdout.strip()
+        self.commit({"docs/cita.md": f"{PAPER_TEXT}\n"})
+        dirty = git(self.repo, "rev-parse", "HEAD:docs/cita.md").stdout.strip()
+        self.assertEqual(git(self.repo, "replace", dirty, clean).returncode, 0)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = rg.main(["scan", "--repo", str(self.repo), "--vault", str(self.vault), "--project-dir", str(self.proj),
+                            "--index", str(self.index), "--all"])
+        self.assertEqual(code, 3)
+        self.assertIn("docs/cita.md", [f["path"] for f in json.loads(buf.getvalue())["blocking"]])
+
     def test_the_pre_push_check_does_not_change(self):
         """check does not read message bodies: the same as before --range existed."""
         self.install()
