@@ -43,6 +43,7 @@ import repo_guard  # noqa: E402
 SCHEMA = 1
 GITIGNORE = "estado.json\ncambios.json\n"
 PR_FIELDS = "number,title,author,createdAt,mergedAt,closedAt,state,headRefName,baseRefName,body,mergeCommit,url"
+PR_LIMIT = 1000
 
 
 class Refused(Exception):
@@ -156,7 +157,7 @@ def sync(repo: Path, project_dir: Path, timeout: float = 15) -> dict:
     state = {"schema": SCHEMA, "repo": repo.as_posix(), "remote": (prev or {}).get("remote"),
              "synced_at": (prev or {}).get("synced_at"), "ok": False, "errors": [], "stale_since": None,
              "main": (prev or {}).get("main"), "prs": (prev or {}).get("prs") or [],
-             "local": (prev or {}).get("local")}
+             "local": (prev or {}).get("local"), "notes": []}
     errors: list[str] = state["errors"]
     budget = Budget(timeout)
     try:
@@ -179,9 +180,11 @@ def sync(repo: Path, project_dir: Path, timeout: float = 15) -> dict:
                     gh = repo_guard.gh_argv()
                     out = budget.run([*gh, "repo", "view", "--json", "nameWithOwner"], repo, "gh repo view")
                     state["remote"] = json.loads(out)["nameWithOwner"]
-                    out = budget.run([*gh, "pr", "list", "--state", "all", "--limit", "1000",
+                    out = budget.run([*gh, "pr", "list", "--state", "all", "--limit", str(PR_LIMIT),
                                       "--json", PR_FIELDS], repo, "gh pr list")
                     state["prs"] = [map_pr(p) for p in json.loads(out)]
+                    if len(state["prs"]) >= PR_LIMIT:
+                        state["notes"].append(f"gh devolvió {PR_LIMIT} PRs, su límite aquí: los más antiguos pueden no estar")
                 except (StepError, ValueError, KeyError, TypeError) as exc:
                     errors.append(str(exc) if isinstance(exc, StepError) else f"gh: unreadable answer ({exc})")
     except Exception as exc:  # noqa: BLE001 - a sync must never end in a traceback
@@ -192,6 +195,10 @@ def sync(repo: Path, project_dir: Path, timeout: float = 15) -> dict:
         state["stale_since"] = None
     else:
         state["stale_since"] = (prev or {}).get("synced_at")
+    # A good sync saw a repository with no merged PR: from then on a merged PR is new, not a backlog.
+    # A failed sync's empty list says nothing, and estado.json goes away when the repository changes.
+    state["nothing_to_backfill"] = bool((prev or {}).get("nothing_to_backfill")) or (
+        state["ok"] and not any(p.get("merged_at") for p in state["prs"]))
     write_state(project_dir, state)
     return state
 

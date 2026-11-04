@@ -249,6 +249,51 @@ def test_worktree_remove_never_removes_the_repo_given_as_repo(env):
     assert code == 3 and made.is_dir()
 
 
+def test_hitting_the_pr_limit_is_said_in_notes_and_is_not_a_failure(env, monkeypatch):
+    monkeypatch.setattr(rs, "PR_LIMIT", 2)
+    out = do_sync(env)
+    assert out["ok"] is True
+    assert out["errors"] == []
+    assert len(out["notes"]) == 1 and "2" in out["notes"][0]
+    assert estado(env)["notes"] == out["notes"]
+
+
+def test_below_the_pr_limit_there_are_no_notes(env):
+    assert do_sync(env)["notes"] == []
+
+
+NO_MERGED = '''\
+import json, os, sys
+args = sys.argv[1:]
+if args[:2] == ["repo", "view"]:
+    print(json.dumps({"nameWithOwner": "acme/solver"}))
+elif args[:2] == ["pr", "list"]:
+    print(os.environ.get("FAKE_GH_PRS", "[]"))
+else:
+    sys.exit(2)
+'''
+
+
+def test_nothing_to_backfill_is_recorded_by_a_good_sync_with_no_merged_pr_and_stays(env, monkeypatch):
+    env["fake"].write_text(NO_MERGED, encoding="utf-8")
+    assert do_sync(env)["nothing_to_backfill"] is True
+    # The first merged PR arrives: what was recorded before it stays true.
+    merged = [{"number": 1, "title": "t", "author": None, "state": "MERGED", "mergedAt": "2026-01-03T00:00:00Z"}]
+    monkeypatch.setenv("FAKE_GH_PRS", json.dumps(merged))
+    out = do_sync(env)
+    assert len(out["prs"]) == 1
+    assert out["nothing_to_backfill"] is True
+
+
+def test_a_failed_first_sync_or_a_repo_with_merged_prs_has_a_backfill_to_do(env, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_MODE", "fail")
+    out = do_sync(env)
+    assert out["ok"] is False and out["prs"] == []
+    assert out["nothing_to_backfill"] is False
+    monkeypatch.delenv("FAKE_GH_MODE")
+    assert do_sync(env)["nothing_to_backfill"] is False
+
+
 def test_gitignore_keeps_derived_state_out_of_vault_commits(env):
     do_sync(env)
     gi = (env["project"] / "Repositorio" / ".gitignore").read_text(encoding="utf-8").split()

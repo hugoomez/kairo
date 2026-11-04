@@ -19,6 +19,10 @@ repository's `pre-push` hook and blocks a push that would carry vault content.
     repo_guard.py scan    --repo R --vault V --project-dir D [--index F] --range A..B
         everything a push of those commits uploads: every version of every file
         any of them touched, and every commit message, whatever the tip looks like.
+    repo_guard.py scan-text --file F --vault V [--index F]
+        the same fingerprint pass on a text that leaves the machine without being
+        a commit (a PR's title and body). Same JSON and exit codes; nothing
+        overrides a finding: the text has to change.
     repo_guard.py allow   --repo R --file PATH --reason "..." [--vault V --project-dir D]
         a researcher-only override for ONE file's CURRENT content, for a
         verbatim-overlap or vault-note finding (never a secret). Stored in
@@ -436,6 +440,14 @@ def scan_range(repo: Path, vault: Path, project_dir: Path, index: dict, rng: str
             "files": len(versions), "commits": len(commits)}
 
 
+def scan_text(text: str, index: dict) -> dict:
+    """A text that a push does not carry but GitHub receives all the same. No allowlist: it binds to a file's content."""
+    findings = [{"kind": "verbatim_overlap", "path": None, "overridable": False, "allowed": False,
+                 "detail": f"{count} fragmentos de 12 palabras idénticos a {note_path}"}
+                for note_path, count in overlap(text, index)]
+    return {"ok": not findings, "findings": findings, "blocking": findings, "notes": [], "files": 1}
+
+
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
@@ -537,6 +549,10 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--rev", default="HEAD")
             p.add_argument("--all", action="store_true", help="every tracked file, not only changes since the remote")
             p.add_argument("--range", default=None, help="A..B: every version of every file those commits touched, and their messages")
+    p = sub.add_parser("scan-text")
+    p.add_argument("--file", required=True, type=Path)
+    p.add_argument("--vault", required=True, type=Path)
+    p.add_argument("--index", type=Path, default=None, help="default: one index per vault in ~/.kairo/")
     p = sub.add_parser("allow")
     p.add_argument("--repo", required=True, type=Path)
     p.add_argument("--file", required=True)
@@ -558,6 +574,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "check":
             return cmd_check(a)
+        if a.cmd == "scan-text":
+            text = a.file.read_text(encoding="utf-8", errors="replace")
+            res = scan_text(text, load_index(a.index, a.vault.resolve()))
+            print(json.dumps(res, ensure_ascii=False))
+            return 0 if res["ok"] else 3
         if a.cmd == "scan":
             repo, vault = a.repo.resolve(), a.vault.resolve()
             index = load_index(a.index, vault)

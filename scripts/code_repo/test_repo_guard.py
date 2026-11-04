@@ -5,6 +5,8 @@ pushing to a local bare remote."""
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -455,6 +457,47 @@ class TestHooksEffective(Base):
         self.assertEqual(self.install(), 0)
         self.assertIsNone(rg.hooks_problem(self.repo))
         self.assertEqual(self.install(), 0)
+
+
+class TestScanText(Base):
+    """The PR's title and body reach GitHub without being a blob or a commit message."""
+
+    def scan_text(self, path):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = rg.main(["scan-text", "--file", str(path), "--vault", str(self.vault), "--index", str(self.index)])
+        return code, out.getvalue()
+
+    def test_text_from_a_vault_note_is_blocked_and_not_overridable(self):
+        f = self.tmp / "pr.txt"
+        f.write_text(f"Añade la pieza\n\nMotivo: {PAPER_TEXT}\n", encoding="utf-8")
+        code, out = self.scan_text(f)
+        self.assertEqual(code, 3)
+        res = json.loads(out)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["blocking"], res["findings"])
+        self.assertEqual(res["notes"], [])
+        self.assertEqual(res["files"], 1)
+        hit = res["blocking"][0]
+        self.assertEqual(hit["kind"], "verbatim_overlap")
+        self.assertIs(hit["overridable"], False)
+        self.assertIsNone(hit["path"])
+        self.assertIn("P-9001", hit["detail"])
+
+    def test_clean_text_passes_with_the_same_shape(self):
+        f = self.tmp / "pr.txt"
+        f.write_text("Añade la pieza nueva\n\nDescripción inventada del cambio, sin nada del vault.\n", encoding="utf-8")
+        code, out = self.scan_text(f)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"ok": True, "findings": [], "blocking": [], "notes": [], "files": 1})
+
+    def test_a_file_it_cannot_read_is_an_error_not_a_pass(self):
+        code, out = self.scan_text(self.tmp / "no-existe.txt")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        code, out = self.scan_text(self.tmp)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
 
 
 class TestGhArgv(unittest.TestCase):
