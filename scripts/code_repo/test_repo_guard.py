@@ -78,6 +78,15 @@ class TestPrePush(Base):
         r = self.push()
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_install_creates_the_hooks_folder_when_the_clone_has_none(self):
+        hooks = self.repo / ".git" / "hooks"
+        for f in hooks.iterdir() if hooks.exists() else []:
+            f.unlink()
+        if hooks.exists():
+            hooks.rmdir()
+        self.assertEqual(self.install(), 0)
+        self.assertTrue((hooks / "pre-push").is_file())
+
     def test_paper_text_is_blocked_naming_the_note(self):
         self.install()
         self.commit({"docs/notes.md": f"Resumen: {PAPER_TEXT}\n"})

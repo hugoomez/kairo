@@ -488,6 +488,7 @@ def cmd_install(a) -> dict:
     index = a.index or default_index(vault)
     load_index(index, vault)
     hook = repo / ".git" / "hooks" / "pre-push"
+    hook.parent.mkdir(exist_ok=True)  # a clone made without git's template has no hooks folder
     py = sys.executable.replace("\\", "/")
     script = str(Path(__file__).resolve()).replace("\\", "/")
     hook.write_text(
