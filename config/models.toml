@@ -95,6 +95,16 @@ kind = "job"
 tier = "sonnet"
 label = "Buscar en la literatura (desde una casilla de la frontera o un tema)"
 
+[tasks.repo_change]
+kind = "job"
+tier = "opus"
+label = "Cambio en el código del repositorio vinculado (propuesta y revisión)"
+
+[tasks.pr_history]
+kind = "job"
+tier = "sonnet"
+label = "Historia de los PR fusionados (qué cambió y por qué)"
+
 [tasks.create_project]
 kind = "job"
 tier = "sonnet"
@@ -221,6 +231,13 @@ file = "agents/screener.md"
 isolated = true          # reads only its page packet (hook-enforced): no shell or network tool
 tier = "sonnet"
 label = "Cribado de una página de candidatos (literature-search)"
+
+[tasks.pr_historian]
+kind = "agent"
+file = "agents/pr-historian.md"
+isolated = true          # reads only its PR packet (hook-enforced): no shell or network tool
+tier = "sonnet"
+label = "Historiador de PR: qué cambió y por qué, desde un paquete de PR fusionados"
 
 [tasks.explainer]
 kind = "agent"
