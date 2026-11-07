@@ -4,7 +4,7 @@ for the main thread, which must never read a paper's text.
 
 1. Packets travel by file, never retyped.
    An isolated agent (fresh-verifier, devils-advocate, novelty-judge,
-   screener) gets one tool, `Read`, and the vault's PreToolUse hook lets it
+   screener, pr-historian) gets one tool, `Read`, and the vault's PreToolUse hook lets it
    read exactly one kind of file: a packet in the packet store whose name is
    the sha256 of its content (`<store>/<sha256>.md`). Everything else it
    tries is refused. Each read leaves a receipt (agent type, agent id,
@@ -78,7 +78,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from send_guard import _RECURSIVE, SHELL_READER, SKIP_DIRS  # noqa: E402  (one reader list for both guards)
 
-ISOLATED_AGENTS = frozenset({"fresh-verifier", "devils-advocate", "novelty-judge", "screener"})
+ISOLATED_AGENTS = frozenset({"fresh-verifier", "devils-advocate", "novelty-judge", "screener", "pr-historian"})
 PACKET_NAME = re.compile(r"^[0-9a-f]{64}\.md$")
 RECEIPTS = "packet-reads.jsonl"
 PAPER_NAME = re.compile(r"^P-\d{4,5}\b.*\.md$", re.I)

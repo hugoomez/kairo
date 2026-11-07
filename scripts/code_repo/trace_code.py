@@ -44,10 +44,34 @@ def history(repo: Path, limit: int) -> list[dict]:
     return commits
 
 
-def build(repo: Path, limit: int = 500) -> dict:
+def hub_archived(project_dir: Path) -> list[Path]:
+    """`code_repo_archivo: ["C:/old/path", ...]` (a JSON array on one line) from the hub."""
+    hub = project_dir / "_hub.md"
+    if not hub.is_file():
+        return []
+    m = re.search(r"^code_repo_archivo:\s*(\[.*?\])\s*(?:#.*)?$", hub.read_text(encoding="utf-8"), re.M)
+    if not m:
+        return []
+    try:
+        return [Path(str(p)) for p in json.loads(m.group(1))]
+    except ValueError:
+        return []
+
+
+def build(repo: Path, limit: int = 500, archived: list[Path] | None = None) -> dict:
+    """`commits`, `traced` and `untraced` describe the current repository only;
+    archived repositories add their traced commits to `by_ref` (each tagged with
+    its `repo`), and an unreachable one is listed in `archived_missing`."""
     commits = history(repo, limit)
+    old: list[dict] = []
+    missing: list[str] = []
+    for path in archived or []:
+        try:
+            old += [{**c, "repo": str(path)} for c in history(path, limit)]
+        except (OSError, subprocess.CalledProcessError):
+            missing.append(str(path))
     by_ref: dict[str, dict] = {}
-    for c in commits:
+    for c in commits + old:
         for r in c["refs"]:
             e = by_ref.setdefault(r, {"commits": [], "files": set()})
             e["commits"].append(c)
@@ -55,7 +79,7 @@ def build(repo: Path, limit: int = 500) -> dict:
     untraced = [c for c in commits if not c["refs"]]
     return {"commits": len(commits), "traced": len(commits) - len(untraced),
             "by_ref": {k: {"commits": v["commits"], "files": sorted(v["files"])} for k, v in sorted(by_ref.items())},
-            "untraced": untraced}
+            "untraced": untraced, "archived_missing": missing}
 
 
 def render(t: dict, repo: Path) -> str:
@@ -65,7 +89,8 @@ def render(t: dict, repo: Path) -> str:
              f"{t['traced']} de {t['commits']} commits nombran la hipótesis, experimento o decisión que los motiva.", ""]
     for ref, e in t["by_ref"].items():
         lines += [f"## {ref}", "", f"- archivos: {', '.join(f'`{f}`' for f in e['files'][:30]) or '—'}"]
-        lines += [f"- `{c['sha']}` {c['date']} — {c['subject']}" for c in e["commits"][:30]]
+        lines += [f"- `{c['sha']}` {c['date']} — {c['subject']}" + (f" (repo archivado: {c['repo']})" if c.get("repo") else "")
+                  for c in e["commits"][:30]]
         lines.append("")
     if t["untraced"]:
         lines += ["## Sin motivación declarada", ""]
@@ -85,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     try:
-        t = build(a.repo, a.limit)
+        t = build(a.repo, a.limit, hub_archived(a.project_dir))
         if a.write:
             (a.project_dir / "_codigo-ciencia.md").write_text(render(t, a.repo), encoding="utf-8", newline="\n")
         print(json.dumps(t, ensure_ascii=False))

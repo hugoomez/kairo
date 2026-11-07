@@ -16,6 +16,13 @@ repository's `pre-push` hook and blocks a push that would carry vault content.
         the hook itself (reads git's pre-push stdin). Exit 0 = push allowed.
     repo_guard.py scan    --repo R --vault V --project-dir D [--index F] [--rev HEAD]
         the same checks on a revision, without pushing (for the interface).
+    repo_guard.py scan    --repo R --vault V --project-dir D [--index F] --range A..B
+        everything a push of those commits uploads: every version of every file
+        any of them touched, and every commit message, whatever the tip looks like.
+    repo_guard.py scan-text --file F --vault V [--index F]
+        the same fingerprint pass on a text that leaves the machine without being
+        a commit (a PR's title and body). Same JSON and exit codes; nothing
+        overrides a finding: the text has to change.
     repo_guard.py allow   --repo R --file PATH --reason "..." [--vault V --project-dir D]
         a researcher-only override for ONE file's CURRENT content, for a
         verbatim-overlap or vault-note finding (never a secret). Stored in
@@ -52,7 +59,7 @@ from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 SHINGLE = 12
 MIN_SHARED = 3
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -91,7 +98,13 @@ def shingles(text: str) -> set[str]:
 
 
 def vault_notes(vault: Path) -> list[Path]:
-    return [p for area in VAULT_AREAS if (vault / area).is_dir() for p in sorted((vault / area).rglob("*.md"))]
+    """Notes fingerprinted. Projects/<slug>/Repositorio/ holds notes derived
+    from the code repository itself (PRs, issues): not vault content."""
+    def derived(p: Path) -> bool:
+        parts = p.relative_to(vault).parts
+        return len(parts) > 3 and parts[0] == "Projects" and parts[2] == "Repositorio"
+    return [p for area in VAULT_AREAS if (vault / area).is_dir()
+            for p in sorted((vault / area).rglob("*.md")) if not derived(p)]
 
 
 def build_index(vault: Path) -> dict:
@@ -119,6 +132,7 @@ def load_index(path: Path | None, vault: Path) -> dict:
         idx = json.loads(path.read_text(encoding="utf-8"))
         built = path.stat().st_mtime
         fresh = (idx.get("vault") == str(vault.resolve())
+                 and idx.get("tool") == f"kairo/repo_guard@{__version__}"
                  and all(p.stat().st_mtime <= built for p in vault_notes(vault)))
         if fresh:
             return idx
@@ -142,8 +156,17 @@ def overlap(text: str, index: dict) -> list[tuple[str, int]]:
 # Repository facts
 # --------------------------------------------------------------------------
 
+def git_env() -> dict[str, str]:
+    """`git replace` changes what git reads here but not what a push uploads: see the real objects."""
+    return {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
+
+
+def git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, env=git_env())
+
+
 def git(repo: Path, *args: str, check: bool = True) -> str:
-    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", env=git_env())
     if check and r.returncode != 0:
         raise Refused(f"git {' '.join(args[:2])}: {r.stderr.strip()[:300]}")
     return r.stdout
@@ -181,14 +204,20 @@ def hub_value(project_dir: Path, key: str) -> str | None:
     return m.group(1).strip().strip("'\"") if m else None
 
 
+def gh_argv() -> list[str]:
+    """The command that stands for `gh`: KAIRO_GH_CMD (a JSON list, for tests) or ["gh"]."""
+    raw = os.environ.get("KAIRO_GH_CMD")
+    return [str(x) for x in json.loads(raw)] if raw else ["gh"]
+
+
 def visibility_problem(repo: Path, project_dir: Path, remote_url: str | None) -> tuple[str | None, str | None]:
     """(problem, note). No `gh` → no problem, but a note that it was not checked."""
     expected = (hub_value(project_dir, "code_visibility") or "private").lower()
     if not remote_url or "github.com" not in remote_url.lower():
         return None, None  # only GitHub remotes have a visibility to check
-    if not shutil.which("gh"):
+    if "KAIRO_GH_CMD" not in os.environ and not shutil.which("gh"):
         return None, "visibilidad del remoto no comprobada: gh no está instalado"
-    r = subprocess.run(["gh", "repo", "view", remote_url, "--json", "visibility", "-q", ".visibility"],
+    r = subprocess.run([*gh_argv(), "repo", "view", remote_url, "--json", "visibility", "-q", ".visibility"],
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         return None, f"visibilidad del remoto no comprobada: {r.stderr.strip()[:200]}"
@@ -202,9 +231,37 @@ def visibility_problem(repo: Path, project_dir: Path, remote_url: str | None) ->
 # Scanning pushed content
 # --------------------------------------------------------------------------
 
+def main_ref(repo: Path) -> str | None:
+    """The remote's main branch as a local ref name: origin/HEAD's target,
+    else origin/main, else origin/master, else None."""
+    head = git(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD", check=False).strip()
+    if head:
+        return head
+    for cand in ("origin/main", "origin/master"):
+        if git(repo, "rev-parse", "-q", "--verify", f"refs/remotes/{cand}", check=False).strip():
+            return cand
+    return None
+
+
+def hooks_problem(repo: Path) -> str | None:
+    """Why the pre-push guard could not be relied on in this repository, or None."""
+    hp = git(repo, "config", "--get", "core.hooksPath", check=False).strip()
+    if hp:
+        return (f"core.hooksPath is set ({hp}): git would not run .git/hooks/pre-push, "
+                "so the guard would never fire. Unset it or move the guard there by hand")
+    hook = repo / ".git" / "hooks" / "pre-push"
+    if hook.is_file() and "repo_guard" not in hook.read_text(encoding="utf-8", errors="replace"):
+        return f"{hook} already exists and is not Kairo's guard; refusing to overwrite it"
+    return None
+
+
 def changed_files(repo: Path, local: str, remote: str) -> list[str]:
     if remote == ZERO:
-        out = git(repo, "ls-tree", "-r", "--name-only", local)
+        base = main_ref(repo)
+        if base:
+            out = git(repo, "diff", "--name-only", "--diff-filter=ACMR", f"{base}...{local}")
+        else:
+            out = git(repo, "ls-tree", "-r", "--name-only", local)
     else:
         out = git(repo, "diff", "--name-only", "--diff-filter=ACMR", f"{remote}..{local}")
     return [f for f in out.splitlines() if f]
@@ -230,7 +287,7 @@ def scan(repo: Path, vault: Path, project_dir: Path, index: dict, rev: str, file
     with tempfile.TemporaryDirectory(prefix="kairo-push-") as scratch:
         root = Path(scratch)
         for f in files:
-            blob = subprocess.run(["git", "show", f"{rev}:{f}"], cwd=repo, capture_output=True)
+            blob = git_bytes(repo, "show", f"{rev}:{f}")
             if blob.returncode != 0:
                 continue
             data = blob.stdout
@@ -259,12 +316,136 @@ def scan(repo: Path, vault: Path, project_dir: Path, index: dict, rev: str, file
             path = fd.get("path")
             ok = False
             if kind in OVERRIDABLE and path and path in allowed:
-                blob = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=repo, capture_output=True)
+                blob = git_bytes(repo, "show", f"{rev}:{path}")
                 ok = blob.returncode == 0 and allowed[path].get("sha256") == hashlib.sha256(blob.stdout).hexdigest()
             findings.append({"kind": kind, "path": path, "overridable": kind in OVERRIDABLE, "allowed": ok,
                              "detail": f"check_bundle.py: {kind}"})
     blocking = [x for x in findings if not x.get("allowed")]
     return {"ok": not blocking, "findings": findings, "blocking": blocking, "notes": notes, "files": len(files)}
+
+
+def range_commits(repo: Path, rng: str) -> list[str]:
+    if not re.fullmatch(r"[^\s-][^\s]*\.\.[^\s.][^\s]*", rng):
+        raise Refused(f"--range must look like A..B: {rng}")
+    commits = git(repo, "rev-list", rng).split()
+    if not commits:
+        raise Refused(f"--range {rng} has no commits: nothing was scanned, so it cannot pass")
+    return commits
+
+
+def commit_blobs(repo: Path, commit: str) -> list[tuple[str, str]]:
+    """(path, blob) of every file a commit adds or changes, against each parent of a merge.
+    Gitlinks are not files, and a deletion carries no content."""
+    out = git(repo, "diff-tree", "-r", "-m", "--root", "--no-renames", "--no-commit-id", "-z", commit)
+    fields = out.split("\0")
+    pairs = []
+    for meta, path in zip(fields[0::2], fields[1::2]):
+        parts = meta.split()
+        if len(parts) >= 5 and parts[1] != "160000" and set(parts[3]) != {"0"}:
+            pairs.append((path, parts[3]))
+    return pairs
+
+
+def scan_range(repo: Path, vault: Path, project_dir: Path, index: dict, rng: str, remote_url: str | None) -> dict:
+    """Everything a push of A..B uploads: every version of every file any of those
+    commits touched, and every commit message, not only the tree at the tip. A version
+    is allowed only if `allow` covers that exact content, which it can do for the tip
+    alone. Nothing overrides a finding in a message."""
+    commits = range_commits(repo, rng)
+    findings: list[dict] = []
+    notes: list[str] = []
+    for p in location_problems(repo, vault):
+        findings.append({"kind": "location", "path": None, "detail": p, "overridable": False})
+    vp, note = visibility_problem(repo, project_dir, remote_url)
+    if vp:
+        findings.append({"kind": "visibility", "path": None, "detail": vp, "overridable": False})
+    if note:
+        notes.append(note)
+    allowed = allowlist(repo)
+    versions: dict[tuple[str, str], None] = {}
+    for c in commits:
+        versions.update(dict.fromkeys(commit_blobs(repo, c)))
+
+    with tempfile.TemporaryDirectory(prefix="kairo-range-") as scratch:
+        root = Path(scratch)
+        # One folder per version: a path can have many. The file names still count for the scanner.
+        where: dict[str, tuple[str, str, str]] = {}
+        shared: dict[str, list[tuple[str, int]]] = {}
+        for i, (path, blob) in enumerate(versions):
+            got = git_bytes(repo, "cat-file", "blob", blob)
+            if got.returncode != 0:
+                findings.append({"kind": "scanner_error", "path": path, "overridable": False,
+                                 "detail": f"no se pudo leer {blob[:12]}"})
+                continue
+            data = got.stdout
+            sha = hashlib.sha256(data).hexdigest()
+            where[f"f{i}"] = (path, blob, sha)
+            base = (root / f"f{i}").resolve()
+            dest = (base / path).resolve()
+            try:
+                if base not in dest.parents:
+                    raise OSError("path outside the scratch folder")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+            except OSError as exc:
+                findings.append({"kind": "scanner_error", "path": path, "overridable": False, "detail": f"no se pudo copiar: {exc}"[:300]})
+            if len(data) > MAX_FILE_BYTES or b"\x00" in data[:4096]:
+                continue
+            if blob not in shared:
+                shared[blob] = overlap(data.decode("utf-8", errors="replace"), index)
+            for note_path, count in shared[blob]:
+                findings.append({"kind": "verbatim_overlap", "path": path, "overridable": True,
+                                 "allowed": allowed.get(path, {}).get("sha256") == sha,
+                                 "detail": f"{count} fragmentos de 12 palabras idénticos a {note_path}"})
+        msg_dir = root / "mensajes"
+        msg_dir.mkdir()
+        for c in commits:
+            text = git(repo, "log", "-1", "--format=%B", c)
+            (msg_dir / f"{c}.txt").write_text(text, encoding="utf-8")
+            for note_path, count in overlap(text, index):
+                findings.append({"kind": "verbatim_overlap", "path": None, "commit": c, "overridable": False, "allowed": False,
+                                 "detail": f"mensaje del commit {c[:10]}: {count} fragmentos de 12 palabras idénticos a {note_path}"})
+        cb = subprocess.run([sys.executable, str(HERE.parent / "security" / "check_bundle.py"), str(root)],
+                            capture_output=True, text=True, encoding="utf-8")
+        try:
+            report = json.loads(cb.stdout)
+        except json.JSONDecodeError:
+            report = {"status": "error", "findings": []}
+            findings.append({"kind": "scanner_error", "path": None, "overridable": False,
+                             "detail": (cb.stderr or cb.stdout)[:300]})
+        seen = set()
+        for fd in report.get("findings", []):
+            if fd.get("severity") != "block":
+                continue
+            kind = fd.get("kind", "?")
+            top, _, rest = str(fd.get("path") or "").partition("/")
+            if top == "mensajes":
+                c = rest.removesuffix(".txt")
+                findings.append({"kind": kind, "path": None, "commit": c, "overridable": False, "allowed": False,
+                                 "detail": f"check_bundle.py: {kind} en el mensaje del commit {c[:10]}"})
+                continue
+            path, _, sha = where.get(top, (rest or top, "", ""))
+            key = (kind, path, sha)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append({"kind": kind, "path": path, "overridable": kind in OVERRIDABLE,
+                             "allowed": kind in OVERRIDABLE and bool(sha) and allowed.get(path, {}).get("sha256") == sha,
+                             "detail": f"check_bundle.py: {kind}"})
+        if report.get("status") == "error" and not any(f["kind"] == "scanner_error" for f in findings):
+            findings.append({"kind": "scanner_error", "path": None, "overridable": False,
+                             "detail": (cb.stderr or json.dumps(report))[:300]})
+    blocking = [x for x in findings if not x.get("allowed")]
+    return {"ok": not blocking, "findings": findings, "blocking": blocking, "notes": notes,
+            "files": len(versions), "commits": len(commits)}
+
+
+def scan_text(text: str, index: dict) -> dict:
+    """A text that a push does not carry but GitHub receives all the same. No allowlist: it binds to a file's content."""
+    findings = [{"kind": "verbatim_overlap", "path": None, "overridable": False, "allowed": False,
+                 "detail": f"{count} fragmentos de 12 palabras idénticos a {note_path}"}
+                for note_path, count in overlap(text, index)]
+    return {"ok": not findings, "findings": findings, "blocking": findings, "notes": [], "files": 1}
 
 
 # --------------------------------------------------------------------------
@@ -301,9 +482,13 @@ def cmd_install(a) -> dict:
         raise Refused("; ".join(probs))
     if not (repo / ".git").is_dir():
         raise Refused(f"{repo} is not a git repository")
+    problem = hooks_problem(repo)
+    if problem:
+        raise Refused(problem)
     index = a.index or default_index(vault)
     load_index(index, vault)
     hook = repo / ".git" / "hooks" / "pre-push"
+    hook.parent.mkdir(exist_ok=True)  # a clone made without git's template has no hooks folder
     py = sys.executable.replace("\\", "/")
     script = str(Path(__file__).resolve()).replace("\\", "/")
     hook.write_text(
@@ -332,7 +517,7 @@ def cmd_allow(a) -> dict:
         raise Refused("say why this file may leave the machine (at least a sentence)")
     # Bind the override to the committed content — what a push carries (the
     # working copy may differ, e.g. in line endings).
-    blob = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=repo, capture_output=True)
+    blob = git_bytes(repo, "show", f"HEAD:{rel}")
     if blob.returncode != 0:
         raise Refused(f"{rel} is not committed in HEAD — commit it first, then allow that exact content")
     allowed = allowlist(repo)
@@ -364,6 +549,11 @@ def main(argv: list[str] | None = None) -> int:
         if name == "scan":
             p.add_argument("--rev", default="HEAD")
             p.add_argument("--all", action="store_true", help="every tracked file, not only changes since the remote")
+            p.add_argument("--range", default=None, help="A..B: every version of every file those commits touched, and their messages")
+    p = sub.add_parser("scan-text")
+    p.add_argument("--file", required=True, type=Path)
+    p.add_argument("--vault", required=True, type=Path)
+    p.add_argument("--index", type=Path, default=None, help="default: one index per vault in ~/.kairo/")
     p = sub.add_parser("allow")
     p.add_argument("--repo", required=True, type=Path)
     p.add_argument("--file", required=True)
@@ -385,13 +575,30 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "check":
             return cmd_check(a)
+        if a.cmd == "scan-text":
+            text = a.file.read_text(encoding="utf-8", errors="replace")
+            res = scan_text(text, load_index(a.index, a.vault.resolve()))
+            print(json.dumps(res, ensure_ascii=False))
+            return 0 if res["ok"] else 3
         if a.cmd == "scan":
             repo, vault = a.repo.resolve(), a.vault.resolve()
             index = load_index(a.index, vault)
-            upstream = git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False).strip()
-            files = (git(repo, "ls-tree", "-r", "--name-only", a.rev).splitlines() if a.all or not upstream
-                     else changed_files(repo, a.rev, git(repo, "rev-parse", upstream).strip()))
-            url = git(repo, "remote", "get-url", upstream.split("/")[0], check=False).strip() if upstream else None
+            if a.range is not None:
+                if a.all or a.rev != "HEAD":
+                    raise Refused("--range does not combine with --all or --rev")
+                url = git(repo, "remote", "get-url", "origin", check=False).strip()
+                res = scan_range(repo, vault, a.project_dir.resolve(), index, a.range, url or None)
+                print(json.dumps(res, ensure_ascii=False))
+                return 0 if res["ok"] else 3
+            upstream = git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{a.rev}@{{u}}", check=False).strip()
+            if a.all:
+                files = git(repo, "ls-tree", "-r", "--name-only", a.rev).splitlines()
+            elif upstream:
+                files = changed_files(repo, a.rev, git(repo, "rev-parse", upstream).strip())
+            else:
+                files = changed_files(repo, a.rev, ZERO)
+            remote_name = upstream.split("/")[0] if upstream else "origin"
+            url = git(repo, "remote", "get-url", remote_name, check=False).strip()
             res = scan(repo, vault, a.project_dir.resolve(), index, a.rev, [f for f in files if f], url or None)
             print(json.dumps(res, ensure_ascii=False))
             return 0 if res["ok"] else 3
