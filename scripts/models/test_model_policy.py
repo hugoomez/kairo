@@ -58,11 +58,12 @@ class TestPolicy(unittest.TestCase):
         tier = {k: v["tier"] for k, v in self.r["tasks"].items()}
         for k in ("hypothesis_generation", "critique", "preregister", "theorem_work", "manuscript_draft", "repo_review",
                   "adjudicate", "fresh_verifier", "devils_advocate", "sota_synthesizer", "novelty_judge",
-                  "explain", "explainer"):
+                  "explain", "explainer", "pitfall_audit", "serendipity_scan", "spawn_hypothesis", "adr_propose",
+                  "paper_to_tool"):
             self.assertEqual(tier[k], "opus", k)
         for k in ("create_project", "lit_watch", "project_chat", "ask_corpus", "digest", "run_local", "kaggle_prepare",
                   "slurm_prepare", "run_analysis", "repo_health", "facet_summarizer", "second_critic",
-                  "evolve_program"):
+                  "evolve_program", "adr_check", "evolve_program_job"):
             self.assertEqual(tier[k], "sonnet", k)
 
     def test_evolve_default_comes_from_the_policy_and_opus_is_selectable(self):

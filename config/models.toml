@@ -155,6 +155,42 @@ kind = "job"
 tier = "sonnet"
 label = "Salud del repositorio de código"
 
+# On-request skills the interface launches from a form (its src/skillJobs.ts).
+[tasks.pitfall_audit]
+kind = "job"
+tier = "opus"
+label = "Auditar las trampas de los experimentos (pitfall-audit, simulacro)"
+
+[tasks.serendipity_scan]
+kind = "job"
+tier = "opus"
+label = "Búsqueda de serendipia (serendipity-scan)"
+
+[tasks.spawn_hypothesis]
+kind = "job"
+tier = "opus"
+label = "Abrir una hipótesis desde una duda técnica (spawn-hypothesis)"
+
+[tasks.adr_check]
+kind = "job"
+tier = "sonnet"
+label = "Revisar los ADR contra sus hipótesis (adr-check)"
+
+[tasks.adr_propose]
+kind = "job"
+tier = "opus"
+label = "¿Debería esto ser un ADR? (repo-steward)"
+
+[tasks.evolve_program_job]
+kind = "job"
+tier = "sonnet"
+label = "Orquestar evolve-program (las llamadas de evolución usan el modelo de evolve_program)"
+
+[tasks.paper_to_tool]
+kind = "job"
+tier = "opus"
+label = "Extraer y validar un método del código de un paper (paper-to-tool)"
+
 # --- subagents ----------------------------------------------------------------
 [tasks.fresh_verifier]
 kind = "agent"
