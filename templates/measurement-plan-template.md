@@ -22,35 +22,31 @@ frozen_commit: <git-sha>
 
 ## Estimandos
 
-<Cada estimando es una entrada del bloque. `type`: proporcion | conteo | mediana. `filter`: columna: valor. `cluster`: columna de agrupación para el intervalo (vacío si no hay).>
+<Cada estimando es una entrada del bloque JSON, que lee estimate.py. `type`: proporcion | conteo | mediana. `id` único. `filter`: {columna: valor}, o {} si no hay filtro. `cluster`: columna de agrupación para el intervalo, o null si no hay. Ejemplo inventado.>
 
-```yaml
-estimands:
-  - id: est-1
-    type: proporcion
-    column: tiene_x
-    filter: {grupo: a}
-    cluster: sitio
+```json
+{"estimands": [
+  {"id": "est-1", "type": "proporcion", "column": "tiene_x", "filter": {"grupo": "a"}, "cluster": "sitio"},
+  {"id": "est-2", "type": "conteo", "column": "id_unidad", "filter": {}, "cluster": null}
+]}
 ```
 
 ## Clasificadores
 
-<Clasificadores que etiquetan unidades. `sample`: muestra de validación; las cotas son el límite inferior mínimo aceptable del intervalo.>
+<Clasificadores que etiquetan unidades. `sample`: muestra de validación; las cotas, entre 0 y 1, son el límite inferior mínimo aceptable del intervalo de precisión y de exhaustividad. Lista vacía si no hay clasificadores.>
 
-```yaml
-classifiers:
-  - name: clasif-1
-    sample: validacion-1
-    min_precision_lo: 0.90
-    min_recall_lo: 0.80
+```json
+{"classifiers": [
+  {"name": "clasif-1", "sample": "validacion-1", "min_precision_lo": 0.90, "min_recall_lo": 0.80}
+]}
 ```
 
 ## Intervalos
 
-```yaml
-ci: 0.95
-bootstrap: 2000
-seed: 12345
+<Nivel del intervalo, remuestreos del bootstrap y semilla fija.>
+
+```json
+{"ci": 0.95, "bootstrap": 2000, "seed": 12345}
 ```
 
 ## Ética
