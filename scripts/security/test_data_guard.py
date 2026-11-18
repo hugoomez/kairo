@@ -202,7 +202,7 @@ def test_unreadable_registry_fails_closed(env):
                           ("mcp__smart-connections__get_note", {"notePath": "Papers/P-9001 Inventado.md"})):
             assert decide({"tool_name": tool, "tool_input": tin, "cwd": str(v)}, v), (bad, tool)
     # a tool the guard does not cover is not its business
-    assert decide({"tool_name": "Write", "tool_input": {"file_path": "x"}, "cwd": str(v)}, v) is None
+    assert decide({"tool_name": "WebFetch", "tool_input": {"url": "x"}, "cwd": str(v)}, v) is None
 
 
 def test_sensitive_roots_and_cache(env, monkeypatch):
@@ -317,3 +317,28 @@ def test_cli_roots(env):
     out = json.loads(r.stdout)
     assert out["error"] == "registro de datos ilegible" and out["file"].endswith("Projects/demo/Datos/registro.json")
     assert SECRET not in r.stdout
+
+
+def test_editing_tools_blocked(env):
+    v = env["vault"]
+    f = str(env["ds"] / "sub" / "f.txt")
+    free = str(env["outside"] / "otro" / "libre.txt")
+    for tool in ("Edit", "Write", "MultiEdit"):
+        r = decide(ev(tool, v, file_path=f), v)
+        assert r and "encuesta-inventada" in r, tool
+        assert decide(ev(tool, v, file_path=free), v) is None, tool
+    assert decide(ev("NotebookEdit", v, notebook_path=f), v)
+    assert decide(ev("NotebookEdit", v, notebook_path=free), v) is None
+    # Avisos/ too, even when the file does not exist yet
+    assert decide(ev("Write", v, file_path=str(v / "Projects" / "demo" / "Avisos" / "N-9001.md")), v)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="UNC admin shares are a Windows form")
+def test_admin_share_in_inline_code(env):
+    f = env["ds"] / "sub" / "f.txt"
+    drive, rest = str(f)[0], str(f)[2:]
+    for raw in (BS * 2 + "localhost" + BS + drive + "$" + rest, BS * 2 + "127.0.0.1" + BS + drive + "$" + rest,
+                BS * 2 + "?" + BS + "UNC" + BS + "localhost" + BS + drive + "$" + rest):
+        cmd = f"python -c \"open(r'{raw}')\""
+        r = decide(ev("Bash", env["vault"], command=cmd), env["vault"])
+        assert r and "encuesta-inventada" in r, cmd

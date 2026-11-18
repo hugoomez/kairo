@@ -214,6 +214,13 @@ class TestKairoHook(unittest.TestCase):
                      "mcp__smart-connections__search_similar"):
             self.assertIn(tool, matcher)
 
+    def test_hooks_json_matcher_covers_editing_tools(self):
+        import re
+        hooks = json.loads((HOOK.parents[2] / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        matcher = hooks["PreToolUse"][0]["matcher"]
+        for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Glob"):
+            self.assertTrue(re.fullmatch(matcher, tool), tool)
+
 
 LAUNCHER = HOOK.with_name("kairo_hook.sh")
 SH = shutil.which("sh")

@@ -17,6 +17,8 @@ file, a `dir` dataset everything under it) or a project's `Avisos/` folder. A
 tool call is refused when it would reach one:
 
   Read                    `file_path` is a root or lies under one.
+  Edit / Write / MultiEdit / NotebookEdit
+                          `file_path` / `notebook_path` is a root or lies under one.
   Grep / Glob             the search scope is a root, lies under one, or lies
                           ABOVE one (any output_mode: file names are data too).
                           Above a root, the call passes only when its filter
@@ -90,7 +92,8 @@ __version__ = "1.1.0"
 
 REGISTRY = ("Datos", "registro.json")
 AVISOS = "avisos"
-GUARDED = ("Read", "Grep", "Glob", "Bash", "PowerShell")
+GUARDED = ("Read", "Grep", "Glob", "Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit")
+EDITING = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
 MAX_SCAN = 20000           # files enumerated under a root before an ancestor filter just refuses
 
 
@@ -121,12 +124,19 @@ _EXT = re.compile(r"^//[?.]/(?=[a-z]:)", re.IGNORECASE)
 _ADMIN_SHARE = re.compile(r"^//(?:localhost|127\.0\.0\.1|\[?::1\]?)/([a-z])\$(?=/|$)", re.IGNORECASE)
 
 
-def _plain(s: str) -> str:
-    """One spelling for the forms above, backslashes as `/`: `C:/x`."""
+# The same forms found anywhere in a command text (not only at its start).
+_EXT_UNC_ANY = re.compile(r"(?<![\w:/])//[?.]/unc/", re.IGNORECASE)
+_EXT_ANY = re.compile(r"(?<![\w:/])//[?.]/(?=[a-z]:)", re.IGNORECASE)
+_ADMIN_SHARE_ANY = re.compile(r"(?<![\w:/])//(?:localhost|127\.0\.0\.1|\[?::1\]?)/([a-z])\$(?=/|$|[^\w$])", re.IGNORECASE)
+
+
+def _plain(s: str, anywhere: bool = False) -> str:
+    """One spelling for the forms above, backslashes as `/`: `C:/x`. `anywhere`
+    folds them wherever they occur in the text, for scanning a command line."""
     s = s.replace("\\", "/")
-    s = _EXT_UNC.sub("//", s)
-    s = _EXT.sub("", s)
-    return _ADMIN_SHARE.sub(lambda m: m.group(1) + ":", s)
+    s = (_EXT_UNC_ANY if anywhere else _EXT_UNC).sub("//", s)
+    s = (_EXT_ANY if anywhere else _EXT).sub("", s)
+    return (_ADMIN_SHARE_ANY if anywhere else _ADMIN_SHARE).sub(lambda m: m.group(1) + ":", s)
 
 
 def _key(p: Path | str) -> str:
@@ -528,7 +538,7 @@ def _shell_reason(cmd: str, cwd: Path, roots: list[Root], vault: Path) -> str | 
     for r in roots:
         if _inside(cwd, r.path):
             return f"El comando se ejecuta dentro de {r.label}; no se ejecuta."
-    texts = {cmd.replace("\\", "/").casefold()}
+    texts = {_plain(cmd, anywhere=True).casefold()}
     texts.add(re.sub(r"[\"'`]", "", next(iter(texts))))
     for r in roots:
         spellings = {_key(r.path)}
@@ -603,6 +613,11 @@ def decide(event: dict, vault: Path) -> str | None:
         fp = _clean(tin.get("file_path") or "")
         r = _hit_path(_resolve(fp, cwd), roots, vault) if fp else None
         return f"{fp} pertenece a {r.label}; no se lee." if r else None
+
+    if tool in EDITING:
+        fp = _clean(tin.get(EDITING[tool]) or "")
+        r = _hit_path(_resolve(fp, cwd), roots, vault) if fp else None
+        return f"{fp} pertenece a {r.label}; {tool} no lo toca." if r else None
 
     if tool == "Grep":
         scopes = tin.get("paths") or [tin.get("path") or "."]

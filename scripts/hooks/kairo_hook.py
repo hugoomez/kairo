@@ -177,7 +177,7 @@ def pre_tool(payload: dict) -> int:
     import isolation
     import send_guard
     tin = payload.get("tool_input") or {}
-    vault = find_vault(payload, tin.get("file_path") or tin.get("path") or tin.get("notePath"))
+    vault = find_vault(payload, tin.get("file_path") or tin.get("notebook_path") or tin.get("path") or tin.get("notePath"))
     tool = str(payload.get("tool_name") or "")
     # isolated agents (fresh-verifier, screener, …) read their packet and nothing else — fail closed
     try:
