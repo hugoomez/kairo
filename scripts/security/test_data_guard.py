@@ -221,3 +221,99 @@ def test_sensitive_roots_and_cache(env, monkeypatch):
     os.utime(env["reg"], ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
     roots = sensitive_roots(v)
     assert len(reads) == 1 and env["single"].resolve() in roots and env["ds"].resolve() not in roots
+
+
+# --------------------------------------------------------------------------- #
+# Fix round 1: other spellings of the same path, fail-closed listing, the CLI
+# --------------------------------------------------------------------------- #
+
+BS = chr(92)   # a backslash, spelled so no shell edit can eat it
+
+
+def _all_tools_block(env, raw: str):
+    v = env["vault"]
+    assert decide(ev("Read", v, file_path=raw), v), ("Read", raw)
+    assert decide(ev("Grep", v, pattern="x", path=raw), v), ("Grep", raw)
+    assert decide(ev("Glob", v, pattern="*", path=raw), v), ("Glob", raw)
+    assert decide({"tool_name": "mcp__smart-connections__get_note", "tool_input": {"notePath": raw}}, v), ("mcp", raw)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="extended-length paths are a Windows form")
+def test_extended_and_device_path_forms(env):
+    f = env["ds"] / "sub" / "f.txt"
+    win = str(f)
+    for raw in (BS * 2 + "?" + BS + win, "//?/" + f.as_posix(), BS * 2 + "." + BS + win, "//./" + f.as_posix(),
+                BS * 2 + "?" + BS + win.upper()):
+        _all_tools_block(env, raw)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="UNC admin shares are a Windows form")
+def test_unc_forms(env):
+    f = env["ds"] / "sub" / "f.txt"
+    drive, rest = str(f)[0], str(f)[2:]
+    for raw in (BS * 2 + "localhost" + BS + drive + "$" + rest, BS * 2 + "127.0.0.1" + BS + drive + "$" + rest,
+                BS * 2 + "?" + BS + "UNC" + BS + "localhost" + BS + drive + "$" + rest,
+                "//localhost/" + drive.lower() + "$" + rest.replace(BS, "/")):
+        _all_tools_block(env, raw)
+
+
+def test_same_file_by_another_name(env):
+    import os
+    env["register"](dataset("unidades-inventadas", env["single"], kind="file"))
+    alias = env["outside"] / "otro" / "alias.csv"
+    try:
+        os.link(env["single"], alias)
+    except (OSError, NotImplementedError):
+        pytest.skip("no hard links here")
+    r = decide(ev("Read", env["vault"], file_path=str(alias)), env["vault"])
+    assert r and "unidades-inventadas" in r
+
+
+def test_unlistable_projects_fails_closed(env, monkeypatch):
+    real = Path.iterdir
+
+    def iterdir(self):
+        if self.name == "Projects":
+            raise PermissionError("denied")
+        return real(self)
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    r = decide(ev("Read", env["vault"], file_path="Papers/P-9001 Inventado.md"), env["vault"])
+    assert r and "registro de datos ilegible" in r
+
+
+def test_quote_splicing(env):
+    here = env["outside"] / "otro"
+    for cmd in ('cat ../D""S/sub/f.txt', "cat ../D''S/sub/f.txt", 'cat ../D"S"/sub/f.txt',
+                "Get-Content ..\\D`S\\sub\\f.txt"):
+        r = decide(ev("Bash", here, command=cmd), env["vault"])
+        assert r and "encuesta-inventada" in r, cmd
+
+
+def test_registered_spelling_in_inline_code(env):
+    registered = str(env["outside"] / "otro" / ".." / "DS")
+    env["register"](dataset("encuesta-inventada", registered))
+    cmd = f"python -c \"print(open(r'{registered}' + '/sub/f.txt').read())\""
+    r = decide(ev("Bash", env["vault"], command=cmd), env["vault"])
+    assert r and "encuesta-inventada" in r
+
+
+def test_cli_roots(env):
+    import subprocess
+    (env["vault"] / "Projects" / "x" / "Avisos").mkdir(parents=True)
+    script = Path(data_guard.__file__)
+    r = subprocess.run([sys.executable, str(script), "roots", "--vault", str(env["vault"])],
+                       capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0, r.stderr
+    roots = json.loads(r.stdout)["roots"]
+    ds = next(x for x in roots if x["kind"] == "dir")
+    assert ds == {"path": str(env["ds"].resolve()), "registered": str(env["ds"]), "dataset": "encuesta-inventada",
+                  "project": "demo", "kind": "dir"}
+    av = next(x for x in roots if x["kind"] == "avisos")
+    assert av["project"] == "x" and av["path"] == str((env["vault"] / "Projects" / "x" / "Avisos").resolve())
+    env["reg"].write_text("{roto", encoding="utf-8")
+    r = subprocess.run([sys.executable, str(script), "roots", "--vault", str(env["vault"])],
+                       capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 3
+    out = json.loads(r.stdout)
+    assert out["error"] == "registro de datos ilegible" and out["file"].endswith("Projects/demo/Datos/registro.json")
+    assert SECRET not in r.stdout

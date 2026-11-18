@@ -43,14 +43,32 @@ Paths are cleaned as the tools clean them, `~` and environment variables are
 expanded, backslashes count as separators, everything is `resolve()`d (so `..`
 and symlinks are followed), and the comparison ignores case on every OS
 (Windows paths do; elsewhere refusing a differently-cased twin costs nothing).
+Windows spellings of one path are folded first: extended and device paths
+(`//?/C:/x`, `//./C:/x`), `//?/UNC/host/share/x`, and this machine's admin
+share (`//localhost/C$/x`, `//127.0.0.1/C$/x`), each also with backslashes.
+For paths that exist, file identity (st_dev, st_ino) is the backstop: a hard
+link, an 8.3 short name or another share of the same disk still counts.
+Quotes and backticks inside a shell word are dropped too (`D""S`, `D"S"` and
+PowerShell's escaped D`S all mean DS), and the command text is scanned for
+each root's resolved path and for its path as registered.
 `Avisos` is also matched by name (`Projects/<any>/Avisos/…`), so a notice folder
 that does not exist yet is covered too.
 
-Fail closed: a registry that exists but cannot be read or parsed, is not an
-array, or has a sensitive entry without an absolute `path` refuses every
+Fail closed: a Projects/ (or project) folder that cannot be listed, or a
+registry that exists but cannot be read or parsed, is not an array, or has a
+sensitive entry without an absolute `path` refuses every
 guarded tool call in that vault with «registro de datos ilegible» and the
 file's path. Block reasons name the dataset (`name`, project slug) or the
 Avisos folder, never file contents.
+
+CLI, for the app (it guards the agent sessions it runs in code worktrees,
+where this hook is not loaded):
+
+    python data_guard.py roots --vault <vault>
+      exit 0  {"roots": [{"path", "registered", "dataset", "project",
+                          "kind": "file"|"dir"|"avisos"}]}
+      exit 3  {"error": "registro de datos ilegible", "file", "detail"}
+      exit 1  the vault folder does not exist
 
 Limits (stated, not hidden): like send_guard's shell check this is best
 effort; a program can open a path no command line shows (a script that builds
@@ -68,7 +86,7 @@ from pathlib import Path
 
 from send_guard import SHELL_READER, _clean, shell_is_recursive, shell_tokens
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 REGISTRY = ("Datos", "registro.json")
 AVISOS = "avisos"
@@ -86,30 +104,73 @@ class RegistryError(Exception):
 class Root:
     path: Path
     label: str             # what a block reason names
+    registered: str = ""   # the path as the registry wrote it (Avisos: Projects/<slug>/Avisos)
+    dataset: str | None = None
+    project: str = ""
+    kind: str = "dir"      # "file" | "dir" | "avisos"
 
 
 # --------------------------------------------------------------------------- #
 # Paths
 # --------------------------------------------------------------------------- #
 
+# Windows spellings of one path: \\?\C:\x and \\.\C:\x (extended / device),
+# \\?\UNC\host\share\x, and the admin share of this machine \\localhost\C$\x.
+_EXT_UNC = re.compile(r"^//[?.]/unc/", re.IGNORECASE)
+_EXT = re.compile(r"^//[?.]/(?=[a-z]:)", re.IGNORECASE)
+_ADMIN_SHARE = re.compile(r"^//(?:localhost|127\.0\.0\.1|\[?::1\]?)/([a-z])\$(?=/|$)", re.IGNORECASE)
+
+
+def _plain(s: str) -> str:
+    """One spelling for the forms above, backslashes as `/`: `C:/x`."""
+    s = s.replace("\\", "/")
+    s = _EXT_UNC.sub("//", s)
+    s = _EXT.sub("", s)
+    return _ADMIN_SHARE.sub(lambda m: m.group(1) + ":", s)
+
+
 def _key(p: Path | str) -> str:
-    return str(p).replace("\\", "/").rstrip("/").casefold()
+    return _plain(str(p)).rstrip("/").casefold()
 
 
 def _resolve(raw: str, base: Path) -> Path:
-    s = os.path.expandvars(os.path.expanduser(_clean(raw))).replace("\\", "/")
+    s = _plain(os.path.expandvars(os.path.expanduser(_clean(raw))))
     q = Path(s)
     q = q if q.is_absolute() else base / q
     try:
-        return q.resolve()
+        return Path(_plain(str(q.resolve())))
     except (OSError, RuntimeError, ValueError):
-        return Path(os.path.abspath(str(q)))
+        return Path(_plain(os.path.abspath(str(q))))
+
+
+_IDS: dict[str, tuple[int, int] | None] = {}
+
+
+def _file_id(p: Path) -> tuple[int, int] | None:
+    """(st_dev, st_ino) of an existing path, None when unknown -- memoised per process."""
+    k = str(p)
+    if k not in _IDS:
+        try:
+            st = os.stat(p)
+            _IDS[k] = (st.st_dev, st.st_ino) if st.st_ino else None
+        except (OSError, ValueError):
+            _IDS[k] = None
+    return _IDS[k]
 
 
 def _inside(p: Path, r: Path) -> bool:
-    """p is r or lies under r (case-insensitive)."""
+    """p is r or lies under r: by spelling (case-insensitive), and as a backstop by
+    file identity (a hard link, a short 8.3 name, a share of this disk)."""
     kp, kr = _key(p), _key(r)
-    return kp == kr or kp.startswith(kr + "/")
+    if kp == kr or kp.startswith(kr + "/"):
+        return True
+    rid = _file_id(r)
+    if rid is None:
+        return False
+    for a in (p, *p.parents):
+        if _file_id(a) == rid:
+            return True
+    return False
 
 
 def _above(p: Path, r: Path) -> bool:
@@ -121,12 +182,12 @@ def _above(p: Path, r: Path) -> bool:
 # Registry and roots
 # --------------------------------------------------------------------------- #
 
-# (registry path, mtime_ns, size) -> [(dataset path, name)]
-_MEMO: dict[tuple[str, int, int], list[tuple[str, str]]] = {}
+# (registry path, mtime_ns, size) -> [(dataset path as registered, name, kind)]
+_MEMO: dict[tuple[str, int, int], list[tuple[str, str, str]]] = {}
 
 
-def _load_registry(path: Path) -> list[tuple[str, str]]:
-    """The (path, name) of every sensitive dataset in one registry; RegistryError when unreadable."""
+def _load_registry(path: Path) -> list[tuple[str, str, str]]:
+    """The (path, name, kind) of every sensitive dataset in one registry; RegistryError when unreadable."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError) as exc:
@@ -142,7 +203,8 @@ def _load_registry(path: Path) -> list[tuple[str, str]]:
         p = d.get("path")
         if not isinstance(p, str) or not p.strip() or not Path(p.strip()).is_absolute():
             raise RegistryError(path, f"la entrada sensible {i} no tiene una ruta absoluta")
-        out.append((p.strip(), str(d.get("name") or f"#{i}")))
+        kind = d.get("kind") if d.get("kind") in ("file", "dir") else "dir"
+        out.append((p.strip(), str(d.get("name") or f"#{i}"), kind))
     return out
 
 
@@ -150,8 +212,10 @@ def _projects(vault: Path) -> list[Path]:
     proj = vault / "Projects"
     try:
         return sorted(p for p in proj.iterdir() if p.is_dir())
+    except FileNotFoundError:
+        return []                            # no Projects/: not a vault, nothing registered
     except OSError:
-        return []
+        raise RegistryError(proj, "no se puede listar") from None
 
 
 def _roots(vault: Path) -> list[Root]:
@@ -169,14 +233,17 @@ def _roots(vault: Path) -> list[Root]:
             if k not in _MEMO:
                 _MEMO[k] = _load_registry(reg)
             reg_entries = _MEMO[k]
-        for p, name in reg_entries:
-            roots.append(Root(_resolve(p, vault), f"el dataset sensible «{name}» del proyecto {proj.name}"))
+        for p, name, kind in reg_entries:
+            roots.append(Root(_resolve(p, vault), f"el dataset sensible «{name}» del proyecto {proj.name}",
+                              p, name, proj.name, kind))
         try:
-            for child in proj.iterdir():
-                if child.name.casefold() == AVISOS and child.is_dir():
-                    roots.append(Root(child.resolve(), f"Projects/{proj.name}/{child.name}/ (avisos del proyecto)"))
+            children = list(proj.iterdir())
         except OSError:
-            pass
+            raise RegistryError(proj, "no se puede listar") from None
+        for child in children:
+            if child.name.casefold() == AVISOS and child.is_dir():
+                roots.append(Root(_resolve(str(child), vault), f"Projects/{proj.name}/{child.name}/ (avisos del proyecto)",
+                                  f"Projects/{proj.name}/{child.name}", None, proj.name, "avisos"))
     return roots
 
 
@@ -193,7 +260,8 @@ def _avisos_by_name(p: Path, vault: Path) -> Root | None:
         return None
     parts = kp[len(kv) + 1:].split("/")
     if len(parts) >= 3 and parts[0] == "projects" and parts[2] == AVISOS:
-        return Root(p, f"Projects/{parts[1]}/Avisos/ (avisos del proyecto)")
+        return Root(p, f"Projects/{parts[1]}/Avisos/ (avisos del proyecto)", f"Projects/{parts[1]}/Avisos",
+                    None, parts[1], "avisos")
     return None
 
 
@@ -417,6 +485,9 @@ def _names_a_scope(seg: str, cwd: Path) -> bool:
 def _candidates(tok: str) -> list[str]:
     """A word and the path-like pieces inside it (`--in=x`, `-Path:x`, `x;`, `<x`, `a,b`)."""
     out = {tok}
+    spliced = re.sub(r"[\"'`]", "", tok)          # D""S, D"S", D`S: the shell joins them into DS
+    if spliced != tok:
+        out |= set(_candidates(spliced))
     t = tok.strip(_PUNCT)
     out.add(t)
     if "=" in t:
@@ -457,13 +528,18 @@ def _shell_reason(cmd: str, cwd: Path, roots: list[Root], vault: Path) -> str | 
     for r in roots:
         if _inside(cwd, r.path):
             return f"El comando se ejecuta dentro de {r.label}; no se ejecuta."
-    norm = cmd.replace("\\", "/").casefold()
+    texts = {cmd.replace("\\", "/").casefold()}
+    texts.add(re.sub(r"[\"'`]", "", next(iter(texts))))
     for r in roots:
-        k = _key(r.path)
-        for m in re.finditer(re.escape(k), norm):
-            nxt = norm[m.end():m.end() + 1]
-            if not nxt or not re.match(r"[\w.-]", nxt):
-                return f"El comando nombra {r.label}; no se ejecuta."
+        spellings = {_key(r.path)}
+        if r.registered and Path(_plain(r.registered)).is_absolute():
+            spellings.add(_key(r.registered))
+        for norm in texts:
+            for k in spellings:
+                for m in re.finditer(re.escape(k), norm):
+                    nxt = norm[m.end():m.end() + 1]
+                    if not nxt or not re.match(r"[\w.-]", nxt):
+                        return f"El comando nombra {r.label}; no se ejecuta."
     segments = [s for s in _SEGMENT.split(cmd) if s.strip()]
     recursive = any(_segment_recursive(s) for s in segments)
     walking = [s for s in segments if _segment_walks(s)]
@@ -519,10 +595,7 @@ def decide(event: dict, vault: Path) -> str | None:
     try:
         roots = _roots(vault)
     except RegistryError as exc:
-        try:
-            where = exc.path.resolve().relative_to(vault.resolve()).as_posix()
-        except ValueError:
-            where = exc.path.as_posix()
+        where = _registry_where(exc, vault)
         return (f"registro de datos ilegible ({where}: {exc.why}); hasta que se arregle no se lee nada del "
                 "vault por precaución. Corrígelo desde la interfaz o a mano.")
 
@@ -563,3 +636,44 @@ def decide(event: dict, vault: Path) -> str | None:
             if r:
                 return f"{_clean(v)} pertenece a {r.label}; {tool.rsplit('__', 1)[-1]} bloqueado."
     return None
+
+
+def _registry_where(exc: RegistryError, vault: Path) -> str:
+    try:
+        return exc.path.resolve().relative_to(vault.resolve()).as_posix()
+    except ValueError:
+        return exc.path.as_posix()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`roots --vault <vault>`: every protected root as JSON, for the app to guard the
+    agent sessions it runs where this plugin's hook is not loaded. Paths only, never contents."""
+    import argparse
+    import sys
+    ap = argparse.ArgumentParser(prog="data_guard.py", description="Protected roots of a Kairo vault.")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = ap.add_subparsers(dest="mode", required=True)
+    r = sub.add_parser("roots", help="print the protected roots as JSON")
+    r.add_argument("--vault", required=True)
+    args = ap.parse_args(argv)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+    vault = Path(args.vault)
+    if not vault.is_dir():
+        print(json.dumps({"error": "no existe el vault", "vault": str(vault)}, ensure_ascii=False))
+        return 1
+    try:
+        roots = _roots(vault)
+    except RegistryError as exc:
+        print(json.dumps({"error": "registro de datos ilegible", "file": _registry_where(exc, vault),
+                          "detail": exc.why}, ensure_ascii=False))
+        return 3
+    print(json.dumps({"roots": [{"path": str(x.path), "registered": x.registered, "dataset": x.dataset,
+                                 "project": x.project, "kind": x.kind} for x in roots]}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
