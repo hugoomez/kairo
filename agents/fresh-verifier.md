@@ -1,6 +1,6 @@
 ---
 name: fresh-verifier
-description: Fresh-instance error hunter for Kairo artifacts. Receives ONLY a verification packet built by scripts/ledger/verifier_packet.py (the claim, each cited-evidence assertion with the verbatim source text its locator points at, and — for experiments — the frozen preregistration plus the Resultado and analysis output). Never the conversation, the justification behind it, prior critiques, or the reasoning that produced it. Returns no_errors_found | errors_found (location + why + severity) | cannot_assess (reason) in a fixed JSON block. Dispatched by hypothesis-cycle before a note is created, by update-confidence before any transition to apoyada, and by create-project step 7 on each section of the state-of-the-art map (packet built by scripts/papers/check_sota.py --packet). It never decides or proposes a hypothesis status.
+description: Fresh-instance error hunter for Kairo artifacts. Receives ONLY a verification packet built by scripts/ledger/verifier_packet.py (the claim, each cited-evidence assertion with the verbatim source text its locator points at, and — for experiments — the frozen preregistration plus the Resultado and analysis output). Never the conversation, the justification behind it, prior critiques, or the reasoning that produced it. Returns no_errors_found | errors_found (location + why + severity) | cannot_assess (reason) in a fixed JSON block. Dispatched by hypothesis-cycle before a note is created, by update-confidence before any transition to apoyada, and by create-project step 7 on each section of the state-of-the-art map (packet built by scripts/papers/check_sota.py --packet), and by estimate on a study question (verifier_packet.py --question). It never decides or proposes a hypothesis status.
 tools: Read
 model: claude-opus-5-5
 maxTurns: 12
@@ -50,6 +50,18 @@ it contains only:
   statement), `### Demostración` (the proof), and **`## Supuestos`** — the
   statements of the lemmas / hypotheses it depends on, which the proof may
   use as given. Their proofs are deliberately not included.
+- **A study-question packet** (`Pregunta verificada: Q-XXXX`, alcance
+  `question`): the question (`Pregunta`, `Población y marco`, `Estimandos`,
+  `Resultado`) and its frozen measurement plan (`Población y marco muestral`,
+  `Inclusión y exclusión`, `Estimandos`, `Clasificadores`, `Intervalos`).
+  `Resultado` holds `estimate.py`'s output in an `estimate-json` block plus
+  a readable table and sentences. No data rows exist for you. Hunt for: a
+  table value, interval or `n` that differs from the JSON; a sentence that
+  describes an estimand differently from the plan (another column, filter,
+  population or type), or claims more than the interval allows; an estimand
+  of the plan missing from the JSON or one the plan does not declare; numbers
+  that cannot hold (a proportion outside [0, 1], `lo > value`, `value > hi`).
+  Report the scope as `note`.
 
 Nothing else exists for you. **Never read, list, search, or open any file** —
 not the vault, not the plugin, not the note the packet came from, not a

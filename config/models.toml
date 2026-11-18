@@ -191,6 +191,20 @@ kind = "job"
 tier = "opus"
 label = "Extraer y validar un método del código de un paper (paper-to-tool)"
 
+# Study questions (designs in config/designs.toml). opus: writing the plan with
+# the researcher is judgement (population, frame, estimands, classifier floors).
+# sonnet: estimating is mechanical — estimate.py computes, the fresh verifier
+# checks, study_status.py decides through the design's gate.
+[tasks.plan_study]
+kind = "job"
+tier = "opus"
+label = "Plan de medición de una pregunta: redactarlo, criticarlo y congelarlo (plan-study)"
+
+[tasks.estimate_study]
+kind = "job"
+tier = "sonnet"
+label = "Estimar una pregunta: estimate.py, verificador y puerta (estimate)"
+
 # --- subagents ----------------------------------------------------------------
 [tasks.fresh_verifier]
 kind = "agent"

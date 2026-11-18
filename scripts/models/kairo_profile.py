@@ -34,7 +34,7 @@ LITERATURE_TEMPLATES = frozenset({"ligero", "corpus", "revision"})
 PROGRAMME_SKILLS = frozenset({
     "hypothesis-cycle", "spawn-hypothesis", "preregister-experiment", "run-experiment", "update-confidence",
     "pitfall-audit", "evolve-program", "paper-to-tool", "theorem", "assemble-manuscript", "repo-steward",
-    "adr-check", "critique", "serendipity-scan"})
+    "adr-check", "critique", "serendipity-scan", "plan-study", "estimate"})
 
 
 def active() -> str:
