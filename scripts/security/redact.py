@@ -13,13 +13,16 @@ Replacement format: `[REDACTADO <type> sha256:<12 hex>]`, the hash being the SHA
 of the original material in UTF-8. For key blocks and age keys the material is the
 whole match; for `name = value` assignments and credential URLs it is the secret
 value only, so the surrounding text stays readable. Findings never carry the material.
-Standard library only; patterns come from check_bundle.
+redact_file(path) redacts a text file in place (used by the post-write hook and
+vault_precommit.py). Standard library only; patterns come from check_bundle.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -100,6 +103,46 @@ def redact_text(text: str) -> tuple[str, list[dict]]:
 
 def has_secret(text: str) -> bool:
     return bool(_spans(text))
+
+
+MAX_FILE_BYTES = 5 * 1024 * 1024
+
+
+def decode_text(raw: bytes) -> str | None:
+    """The bytes as text, or None for what is not redacted: a binary (a NUL byte or
+    not UTF-8) or more than MAX_FILE_BYTES."""
+    if len(raw) > MAX_FILE_BYTES or b"\x00" in raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def redact_file(path: Path | str) -> int:
+    """Redact a text file in place; returns how many findings were replaced (0: the
+    file was not touched). Bytes are decoded without newline translation, so the
+    newline style and a BOM survive; the new content goes to a temp file next to it
+    and replaces it atomically."""
+    p = Path(path)
+    if p.stat().st_size > MAX_FILE_BYTES:
+        return 0
+    text = decode_text(p.read_bytes())
+    if text is None or not has_secret(text):
+        return 0
+    new, findings = redact_text(text)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.kairo-redact.tmp")
+    try:
+        tmp.write_bytes(new.encode("utf-8"))
+        try:
+            shutil.copymode(p, tmp)
+        except OSError:
+            pass
+        os.replace(tmp, p)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return len(findings)
 
 
 def redact_json_value(v):

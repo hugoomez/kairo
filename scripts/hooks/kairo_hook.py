@@ -3,7 +3,7 @@
 
     kairo_hook.py pre-tool      PreToolUse  Read | Grep | Glob | Bash | PowerShell | Smart Connections
                                             get_note, search_by_text, search_similar
-    kairo_hook.py post-write    PostToolUse Write | Edit
+    kairo_hook.py post-write    PostToolUse Write | Edit | MultiEdit | NotebookEdit
     kairo_hook.py post-shell    PostToolUse Bash | PowerShell
     kairo_hook.py session-end   SessionEnd
     kairo_hook.py subagent-stop SubagentStop
@@ -18,7 +18,10 @@ Reads the hook's JSON on stdin and routes it:
                their packet and keep paper text (notes, cards, kept bytes,
                transcripts, search material with abstracts) out of the main
                thread (exit 2 blocks the tool).
-  post-write   by the written path, each step inside its own time budget
+  post-write   first, private material (key blocks, API keys, tokens, credential
+               URLs) in the written file is replaced in place by its fingerprint
+               (redact.py), except under Papers/; then, by the written path,
+               each step inside its own time budget
                (all of them inside hooks.json's 90 s; a step that runs out of
                time is logged as `timeout` and said in a systemMessage) —
                  Papers/**              Smart Connections re-index + SOTA staleness check
@@ -253,8 +256,30 @@ POST_WRITE_BUDGET_S = 80
 STEP_BUDGET_S = {"sota_staleness": 20, "digest": 25, "ledger": 30, "reindex": 25}
 
 
+def redact_written(path: Path, vault: Path) -> None:
+    """Private material an agent wrote into a vault file is replaced in place by its
+    fingerprint (redact.py). Papers/ is third-party text checked verbatim elsewhere and
+    is left alone; binaries and files over 5 MB too. Never raises; the event names the
+    file and the count, never the material."""
+    try:
+        try:
+            r = path.resolve().relative_to(vault.resolve()).as_posix()
+        except ValueError:
+            return                      # not inside the vault
+        if os.path.normcase(r.split("/")[0]) == os.path.normcase("Papers") or not path.is_file():
+            return
+        import redact
+        n = redact.redact_file(path)
+        if n:
+            record("PostToolUse", "redact", vault, "redacted", f"{r} {n} hallazgos")
+            print(f"Kairo: material privado redactado en {r} ({n} hallazgos).", file=sys.stderr)
+    except Exception as exc:
+        record("PostToolUse", "redact", vault, "error", f"{type(exc).__name__}")
+
+
 def post_write(payload: dict) -> int:
-    fp = (payload.get("tool_input") or {}).get("file_path")
+    tin = payload.get("tool_input") or {}
+    fp = tin.get("file_path") or tin.get("notebook_path")
     if not fp:
         return 0
     vault = find_vault(payload, fp)
@@ -262,6 +287,8 @@ def post_write(payload: dict) -> int:
         return 0
     start = time.monotonic()
     path = Path(fp) if Path(fp).is_absolute() else Path(payload.get("cwd") or os.getcwd()) / fp
+    # first, so the derived views below (digest, ledger, index) never copy the material
+    redact_written(path, vault)
     r = rel(path, vault)
     parts = r.split("/")
     actions: list[tuple[str, str, list[str]]] = []
@@ -271,7 +298,7 @@ def post_write(payload: dict) -> int:
         actions.append(("digest", "hooks/regen_digest.py", []))
     if len(parts) >= 4 and parts[0] == "Projects" and parts[2] in ("Hipotesis", "Claims"):
         actions.append(("ledger", "ledger/build_graph.py", ["--hook"]))
-    forwarded = {**payload, "tool_input": {**(payload.get("tool_input") or {}), "file_path": str(path)}}
+    forwarded = {**payload, "tool_input": {**tin, "file_path": str(path)}}
     answer: dict = {}            # one JSON answer on stdout (additionalContext, systemMessage)
     late: list[str] = []         # steps that ran out of time
 
