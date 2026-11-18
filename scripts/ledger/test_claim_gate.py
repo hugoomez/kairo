@@ -119,6 +119,17 @@ class Gate(unittest.TestCase):
         code, _, err = run(claim_status.main, ["set", "--note", str(t), "--status", "probado", "--by", "t", "--evidence", "3 capas"])
         self.assertEqual(code, 0, err)
 
+    def test_a_later_unbound_clean_verdict_does_not_open_the_gate(self):
+        """errors_found on the current packet, then a later no_errors_found with no
+        packet record: verdict and packet must come from the same entry."""
+        t = self.new("n(n+1) es par.", how="Uno de n, n+1 es par.")
+        self.all_layers(t)
+        self.verify(t, "errors_found")
+        verifications.append(str(t), "kairo/fresh-verifier@1.1.0", "test-model", "no_errors_found", "note", None)
+        g = self.gate(t)
+        self.assertFalse(g["layers"]["verifier"]["ok"])
+        self.assertFalse(g["ok"])
+
     def test_editing_the_proof_voids_the_verification_and_its_sign_off(self):
         t = self.new("n(n+1) es par.", how="Uno de n, n+1 es par.")
         self.all_layers(t)

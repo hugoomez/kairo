@@ -20,6 +20,7 @@ import build_graph  # noqa: E402
 import estimate  # noqa: E402
 import study_gates  # noqa: E402
 import study_status as ss  # noqa: E402
+import verifications as vf  # noqa: E402
 import verifier_packet  # noqa: E402
 
 CLEAN = ("verifications:\n  - date: 2031-02-01\n    verifier: kairo/fresh-verifier@1.1.0\n"
@@ -160,17 +161,27 @@ class Vault:
             PLAN.format(frozen_at=frozen_at, frozen_commit=frozen_commit, min_p=min_p, question=question),
             encoding="utf-8")
 
-    def annotate(self, fp=0, fn=0):
+    def annotate(self, fp=0, fn=0, same_file=False, gold_dir=None):
         """100 invented gold labels (60 positive) and predictions with fp false
-        positives and fn false negatives; the validation file from agreement.py."""
+        positives and fn false negatives; the validation file from agreement.py.
+        Predictions carry a `fuente` field, so the two files differ even when the
+        labels agree. same_file: pred is a byte copy of gold. gold_dir: where the
+        gold file goes (default: the sample's folder)."""
         d = self.proj / SAMPLE
         d.mkdir(parents=True, exist_ok=True)
+        gd = gold_dir or d
+        gd.mkdir(parents=True, exist_ok=True)
         gold = [i < 60 for i in range(100)]
         pred = [(g and i >= fn) or (not g and i - 60 < fp) for i, g in enumerate(gold)]
-        for name, labs in (("gold", gold), ("pred", pred)):
-            (d / f"{name}.jsonl").write_text(
-                "\n".join(json.dumps({"id": f"u{i}", "x": v}) for i, v in enumerate(labs)), encoding="utf-8")
-        r = subprocess.run([sys.executable, str(AGREEMENT), "validate", "--gold", str(d / "gold.jsonl"),
+        (gd / "gold.jsonl").write_text(
+            "\n".join(json.dumps({"id": f"u{i}", "x": v}) for i, v in enumerate(gold)), encoding="utf-8")
+        if same_file:
+            (d / "pred.jsonl").write_bytes((gd / "gold.jsonl").read_bytes())
+        else:
+            (d / "pred.jsonl").write_text(
+                "\n".join(json.dumps({"id": f"u{i}", "x": v, "fuente": "clasif-demo"}) for i, v in enumerate(pred)),
+                encoding="utf-8")
+        r = subprocess.run([sys.executable, str(AGREEMENT), "validate", "--gold", str(gd / "gold.jsonl"),
                             "--pred", str(d / "pred.jsonl"), "--label", "x", "--positive", "true",
                             "--vault", str(self.root)], capture_output=True, text=True, check=True)
         (d / "validacion-clasif-demo.json").write_text(r.stdout, encoding="utf-8")
@@ -442,6 +453,31 @@ def test_gold_changed_after_validation_fails(vault):
     assert any("clasif-demo" in m and "cambió" in m for m in missing(vault))
 
 
+def test_gold_equal_to_pred_fails(vault):
+    vault.question()
+    vault.annotate(same_file=True)
+    assert any("clasif-demo" in m and "mismo fichero" in m for m in missing(vault))
+
+
+def test_gold_outside_sample_folder_fails(vault):
+    vault.question()
+    vault.annotate(gold_dir=vault.proj / "Datos" / "anotacion" / "otra-muestra")
+    assert any("clasif-demo" in m and "muestra-demo" in m and "gold" in m for m in missing(vault))
+
+
+def test_unreadable_input_is_reported(vault, monkeypatch):
+    vault.question()
+    real = Path.read_bytes
+
+    def broken(self):
+        if self.name == "gold.jsonl":
+            raise PermissionError("bloqueado")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", broken)
+    assert any("clasif-demo" in m and "no se pudo leer" in m for m in missing(vault))
+
+
 def test_validation_without_inputs_fails(vault):
     vault.question()
     f = vault.validation_file()
@@ -484,6 +520,23 @@ def test_verifier_must_match_current_packet(vault):
     p.write_text(p.read_text(encoding="utf-8").replace("unidades inventadas tiene", "unidades tiene"),
                  encoding="utf-8")
     assert any("verific" in m and "paquete" in m for m in missing(vault))
+
+
+def test_later_unbound_clean_verdict_does_not_pass(vault, tmp_path):
+    """errors_found on the current packet, then a later no_errors_found with no
+    packet sha: the latest entry is not bound to any packet, so the gate fails."""
+    p = vault.question(verified=False)
+    packet, _ = verifier_packet.build_question(str(vault.root), "Q-9001")
+    sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+    rep = tmp_path / "rep.md"
+    rep.write_text('```json\n{"verdict": "errors_found", "scope": "note", "findings": '
+                   '[{"severity": "crítico", "location": "Resultado", "why": "inventado"}]}\n```\n', encoding="utf-8")
+    vf.append(str(p), "kairo/fresh-verifier@1.1.0", "t", "errors_found", "note", "2031-02-01",
+              report=str(rep), packet_sha=sha)
+    vf.append(str(p), "kairo/fresh-verifier@1.1.0", "t", "no_errors_found", "note", "2031-02-02")
+    miss = [m for m in missing(vault) if "verific" in m]
+    assert miss, missing(vault)
+    assert vf.latest_bound(str(p), "note")["packet_sha256"] is None
 
 
 def test_estimate_timeout_counts_as_failed(vault, monkeypatch):

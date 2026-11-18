@@ -51,15 +51,10 @@ def frontmatter(path: Path) -> dict:
 
 
 def recorded_packet_sha(path: Path) -> str | None:
-    """sha256 of the packet behind the LATEST `(note)` entry of
-    `## Verificación independiente`."""
-    text = path.read_text(encoding="utf-8")
-    m = re.search(r"^## Verificación independiente\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
-    if not m:
-        return None
-    shas = re.findall(r"^### [^\n]*\(note\)[ \t]*\n(?:(?!^### )[^\n]*\n)*?^- paquete sha256:[ \t]*([0-9a-f]{64})",
-                      m.group(1), re.M)
-    return shas[-1] if shas else None
+    """sha256 of the packet behind the governing `scope: note` verification, from
+    that same entry (verifications.latest_bound); None if it records none."""
+    last = vf.latest_bound(str(path), "note")
+    return last.get("packet_sha256") if last else None
 
 
 def check_script(path: Path) -> Path:
@@ -90,14 +85,16 @@ def gate(vault: str, path: Path) -> dict:
     except ValueError as exc:
         current = None
         v["detail"] = str(exc)
-    entries = vf.load(str(path))[5]
-    last = vf.latest(entries, "note")
-    recorded = recorded_packet_sha(path)
+    last = vf.latest_bound(str(path), "note")  # verdict and packet from the SAME entry
+    recorded = last.get("packet_sha256") if last else None
     v.update({"verdict": last.get("verdict") if last else None, "packet_now": current, "packet_verified": recorded})
     if current is None:
         miss.append(f"verificador: no se puede construir el paquete ({v.get('detail')})")
     elif not last:
         miss.append("verificador: la demostración no se ha verificado")
+    elif recorded is None:
+        miss.append("verificador: la última verificación no registra el paquete que vio — vuelve a verificar "
+                    "con verifications.py append --report … --packet-sha256 …")
     elif recorded != current:
         miss.append("verificador: la última verificación fue sobre otro texto (demostración, enunciado o dependencias cambiaron)")
     elif last.get("verdict") != "no_errors_found":

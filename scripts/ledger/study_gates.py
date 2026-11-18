@@ -23,14 +23,16 @@ puede comprobar (sin git, git o un script fallan o tardan más de TIMEOUT s), fa
   (`units_dataset`), porque la salida de estimate.py no lo lleva.
 - `classifiers_validated`: cada clasificador del plan tiene
   `Datos/anotacion/<sample>/validacion-<name>.json` (de `agreement.py validate`) con sus
-  `inputs`; los ficheros gold y pred conservan su sha256; volver a correr `agreement.py
+  `inputs`; los ficheros gold y pred están en `Datos/anotacion/<sample>/`, son distintos
+  (sha256 diferentes) y conservan su sha256; volver a correr `agreement.py
   validate` con esas entradas da exactamente las mismas cifras; y `precision_lo >=
   min_precision_lo`, `recall_lo >= min_recall_lo`.
 - `verifier_no_errors`: la verificación independiente más reciente (scope note) es
   `no_errors_found` y se hizo sobre el paquete que `verifier_packet.py --question` construye
   ahora: su sha256 es el `- paquete sha256:` de la última entrada `(note)` de
-  `## Verificación independiente`, que escribe `verifications.py append --report …
-  --packet-sha256 …` (el mismo registro que usan los lemas, `claim_gate.recorded_packet_sha`).
+  `## Verificación independiente` de ESA MISMA entrada (`verifications.latest_bound`, que
+  también usa la puerta de los lemas); la escribe `verifications.py append --report …
+  --packet-sha256 …`. Una entrada posterior sin paquete registrado no pasa.
 - `avisos_cerrados`: cada aviso de `Avisos/registro.json` está `respondido`, `resuelto` o
   `sin_respuesta`, o `enviado` con `embargo_hasta` (fecha ISO) anterior a hoy. Sin registro,
   falla con «sin registro de avisos»; `[]` pasa. Solo se informa de cuántos avisos y por qué,
@@ -281,21 +283,36 @@ def _input_file(vault: Path, proj: Path, raw: str) -> Path | None:
     return next((c for c in cands if c.is_file()), None)
 
 
-def _recompute(vault: Path, proj: Path, name: str, rel: str, v: dict) -> list[str]:
+def _recompute(vault: Path, proj: Path, name: str, sample: str, rel: str, v: dict) -> list[str]:
     """[] when the inputs are unchanged and agreement.py gives the same numbers."""
     inp = v.get("inputs")
     if not isinstance(inp, dict):
         return [f"clasificador {name}: validación sin entradas registradas: vuelve a generarla con agreement.py"]
     files = {}
+    sample_dir = (proj / "Datos" / "anotacion" / sample).resolve()
     for role in ("gold", "pred"):
         meta = inp.get(role) if isinstance(inp.get(role), dict) else {}
         f = _input_file(vault, proj, str(meta.get("path") or ""))
         if f is None:
             return [f"clasificador {name}: no se encuentra el fichero {role} de {rel}; vuelve a validar con agreement.py"]
-        if hashlib.sha256(f.read_bytes()).hexdigest() != meta.get("sha256"):
+        try:
+            f.resolve().relative_to(sample_dir)
+        except ValueError:
+            return [f"clasificador {name}: el fichero {role} no está en Datos/anotacion/{sample}/; "
+                    "las dos anotaciones de la validación van en la carpeta de su muestra"]
+        try:
+            sha = hashlib.sha256(f.read_bytes()).hexdigest()
+        except OSError as e:
+            return [f"clasificador {name}: no se pudo leer el fichero {role} ({e.strerror or type(e).__name__}); "
+                    "comprueba que existe y es legible"]
+        if sha != meta.get("sha256"):
             return [f"clasificador {name}: el fichero {role} ({meta.get('path')}) cambió después de validar; "
                     "vuelve a validar con agreement.py"]
-        files[role] = f
+        files[role] = (f, sha)
+    if files["gold"][1] == files["pred"][1]:
+        return [f"clasificador {name}: referencia y predicción son el mismo fichero (misma sha256); "
+                "valida las predicciones del clasificador contra una anotación de referencia distinta"]
+    files = {k: f for k, (f, _) in files.items()}
     cmd = [sys.executable, str(AGREEMENT), "validate", "--gold", str(files["gold"]), "--pred", str(files["pred"]),
            "--label", str(inp.get("label", "")), "--positive", str(inp.get("positive", "")),
            "--ci", str(inp.get("ci", 0.95)), "--vault", str(vault)]
@@ -338,7 +355,7 @@ def classifiers_validated(vault: Path, node_path: Path, fm: dict) -> list[str]:
             out.append(f"clasificador {name}: {rel} ilegible; vuelve a generarlo con agreement.py validate")
             continue
         v = v if isinstance(v, dict) else {}
-        problems = _recompute(vault, proj, name, rel, v)
+        problems = _recompute(vault, proj, name, sample, rel, v)
         if problems:
             out += problems
             continue
@@ -354,11 +371,10 @@ def classifiers_validated(vault: Path, node_path: Path, fm: dict) -> list[str]:
 # ---- verifier_no_errors ----------------------------------------------------
 
 def verifier_no_errors(vault: Path, node_path: Path, fm: dict) -> list[str]:
-    from claim_gate import recorded_packet_sha  # noqa: PLC0415
     from verifier_packet import build_question  # noqa: PLC0415
 
     try:
-        last = vf.latest(vf.load(str(node_path))[5], "note")
+        last = vf.latest_bound(str(node_path), "note")  # verdict and packet from the SAME entry
     except vf.InputError as e:
         return [f"verificación ilegible: {e}"]
     if not last or last.get("verdict") != "no_errors_found":
@@ -369,7 +385,7 @@ def verifier_no_errors(vault: Path, node_path: Path, fm: dict) -> list[str]:
     except ValueError as e:
         return [f"verificación: no se puede construir el paquete --question ({e})"]
     now = hashlib.sha256(packet.encode("utf-8")).hexdigest()
-    recorded = recorded_packet_sha(Path(node_path))
+    recorded = last.get("packet_sha256")
     if recorded is None:
         return ["verificación sin sha256 de paquete registrado: vuelve a verificar y regístrala con "
                 "verifications.py append --report … --packet-sha256 …"]

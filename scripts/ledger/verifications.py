@@ -228,6 +228,60 @@ def latest(entries: list[dict], scope: str) -> dict | None:
     return None
 
 
+_BODY_HEAD = re.compile(r"^### (\S+) — (\S+) \((.+)\)[ \t]*$")
+_BODY_FIELD = re.compile(r"^- (modelo|veredicto|paquete sha256):[ \t]*(.*?)[ \t]*$")
+_SHA = re.compile(r"^[0-9a-f]{64}\b")
+
+
+def body_entries(text: str) -> list[dict]:
+    """The entries of `## Verificación independiente`, in order: date, verifier,
+    scope, model, verdict and packet_sha256 (None when not recorded)."""
+    out: list[dict] = []
+    inside = False
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        if raw.startswith("## "):
+            inside = raw[3:].strip() == SECTION_TITLE
+            continue
+        if not inside:
+            continue
+        m = _BODY_HEAD.match(raw)
+        if m:
+            out.append({"date": m.group(1), "verifier": m.group(2), "scope": m.group(3),
+                        "model": None, "verdict": None, "packet_sha256": None})
+            continue
+        f = _BODY_FIELD.match(raw)
+        if f and out:
+            if f.group(1) == "modelo":
+                out[-1]["model"] = f.group(2)
+            elif f.group(1) == "veredicto":
+                out[-1]["verdict"] = f.group(2)
+            else:
+                sm = _SHA.match(f.group(2))
+                out[-1]["packet_sha256"] = sm.group(0) if sm else None
+    return out
+
+
+def latest_bound(path: str, scope: str = "note") -> dict | None:
+    """The governing (latest) `scope` entry of `verifications:`, as ONE record with
+    its own packet sha256: {verifier, model, date, verdict, scope, packet_sha256}, or
+    None when there is no such entry.
+
+    The packet sha lives in the body entry `append --report` writes for that same run.
+    Body entries are matched to frontmatter entries by (date, verifier, model, verdict,
+    scope); `packet_sha256` is set only when every frontmatter entry with that key has
+    its body entry, so a later entry with no report never borrows the packet of an
+    earlier run. Anything ambiguous gives `packet_sha256: None` (fail closed)."""
+    text, _, _, _, _, entries = load(path)
+    last = latest(entries, scope)
+    if last is None:
+        return None
+    key = lambda d: (d.get("date"), d.get("verifier"), d.get("model"), d.get("verdict"), d.get("scope"))  # noqa: E731
+    n = sum(1 for e in entries if key(e) == key(last))
+    bodies = [b for b in body_entries(text) if key(b) == key(last)]
+    sha = bodies[-1]["packet_sha256"] if bodies and len(bodies) == n else None
+    return {**last, "packet_sha256": sha}
+
+
 def fm_value(lines: list[str], lo: int, hi: int, key: str) -> str | None:
     i = find_key(lines, lo, hi, key)
     if i is None:
