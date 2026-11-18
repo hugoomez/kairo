@@ -181,6 +181,39 @@ class TestKairoHook(unittest.TestCase):
         r = self.hook("pre-tool", {"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": str(self.vault)})
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_pre_tool_calls_data_guard(self):
+        ds = self.outside / "DS-9001"
+        ds.mkdir()
+        (ds / "f.txt").write_text("CONTENIDO-SENSIBLE-INVENTADO", encoding="utf-8")
+        (self.proj / "Datos").mkdir()
+        (self.proj / "Datos" / "registro.json").write_text(json.dumps([
+            {"name": "muestra-inventada", "path": str(ds), "kind": "dir", "files": 1, "bytes": 28,
+             "sha256": "0" * 64, "registered_at": "2031-01-01T00:00:00Z", "by": "tester", "sensitive": True}]),
+            encoding="utf-8")
+        for tool, tin in (("Read", {"file_path": str(ds / "f.txt")}),
+                          ("Glob", {"pattern": "**/*", "path": str(self.outside)}),
+                          ("Bash", {"command": f"cat {ds / 'f.txt'}"})):
+            r = self.hook("pre-tool", {"tool_name": tool, "tool_input": tin, "cwd": str(self.vault)},
+                          project_dir=self.vault)
+            err = r.stderr.decode("utf-8")
+            self.assertEqual(r.returncode, 2, (tool, err))
+            self.assertIn("muestra-inventada", err)
+            self.assertNotIn("CONTENIDO-SENSIBLE-INVENTADO", err)
+            last = self.events()[-1]
+            self.assertEqual((last["action"], last["outcome"]), ("data_guard", "blocked"), tool)
+        (self.proj / "Datos" / "registro.json").write_text("{roto", encoding="utf-8")
+        r = self.hook("pre-tool", {"tool_name": "Read", "tool_input": {"file_path": str(self.vault / "x.md")},
+                                   "cwd": str(self.vault)}, project_dir=self.vault)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("registro de datos ilegible", r.stderr.decode("utf-8"))
+
+    def test_hooks_json_routes_glob_through_the_guards(self):
+        hooks = json.loads((HOOK.parents[2] / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        matcher = hooks["PreToolUse"][0]["matcher"].split("|")
+        for tool in ("Read", "Grep", "Glob", "Bash", "PowerShell", "mcp__smart-connections__get_note",
+                     "mcp__smart-connections__search_similar"):
+            self.assertIn(tool, matcher)
+
 
 LAUNCHER = HOOK.with_name("kairo_hook.sh")
 SH = shutil.which("sh")

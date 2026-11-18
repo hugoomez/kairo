@@ -286,6 +286,18 @@ SHELL_READER = re.compile(
     r"import-csv|convertfrom-json|readall(?:text|lines|bytes)|iex|invoke-expression)(?:\.exe)?\b",
     re.IGNORECASE)
 _RECURSIVE = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|-recurse|/s)(?=\s|$)", re.IGNORECASE)
+_SHELL_TOKEN = re.compile(r'"([^"]*)"|\'([^\']*)\'|(\S+)')
+
+
+def shell_tokens(cmd: str) -> list[str]:
+    """The words of a shell command, quotes removed (a quoted string is one word).
+    The one tokenizer of the shell checks here and in data_guard.py."""
+    return [a or b or c for a, b, c in _SHELL_TOKEN.findall(cmd)]
+
+
+def shell_is_recursive(cmd: str) -> bool:
+    """A recursive flag (`-r`, `-R`, `--recursive`, `-Recurse`, `/s`) or rg, which recurses by default."""
+    return bool(_RECURSIVE.search(cmd)) or bool(re.search(r"(?:^|[\s;|&(])rg(?:\.exe)?\b", cmd))
 
 
 def _shell_reach(cmd: str, root: Path, cwd: Path) -> str | None:
@@ -297,8 +309,8 @@ def _shell_reach(cmd: str, root: Path, cwd: Path) -> str | None:
     flagged = list(flagged_under(root))
     if not flagged:
         return None
-    toks = [a or b or c for a, b, c in re.findall(r'"([^"]*)"|\'([^\']*)\'|(\S+)', cmd)]
-    recursive = bool(_RECURSIVE.search(cmd)) or bool(re.search(r"(?:^|[\s;|&(])rg(?:\.exe)?\b", cmd))
+    toks = shell_tokens(cmd)
+    recursive = shell_is_recursive(cmd)
     for tok in toks:
         t = tok.replace("\\", "/")
         if any(c in t for c in "*?["):

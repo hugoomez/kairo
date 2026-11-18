@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The single entry point of every Kairo hook (declared in the plugin's hooks/hooks.json).
 
-    kairo_hook.py pre-tool      PreToolUse  Read | Grep | Bash | PowerShell | Smart Connections
+    kairo_hook.py pre-tool      PreToolUse  Read | Grep | Glob | Bash | PowerShell | Smart Connections
                                             get_note, search_by_text, search_similar
     kairo_hook.py post-write    PostToolUse Write | Edit
     kairo_hook.py post-shell    PostToolUse Bash | PowerShell
@@ -11,7 +11,10 @@
 Reads the hook's JSON on stdin and routes it:
 
   pre-tool     send_guard: refuse to read or name `send: never` notes and the
-               model-written reading notes; isolation: hold isolated agents to
+               model-written reading notes; data_guard: no agent reaches a
+               `sensitive: true` dataset (Projects/*/Datos/registro.json) or
+               Projects/*/Avisos/ (an unreadable registry refuses every call);
+               isolation: hold isolated agents to
                their packet and keep paper text (notes, cards, kept bytes,
                transcripts, search material with abstracts) out of the main
                thread (exit 2 blocks the tool).
@@ -69,7 +72,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS / "security"))
 
-TOOL = "kairo/kairo_hook@1.5.0"
+TOOL = "kairo/kairo_hook@1.6.0"
 
 
 # --------------------------------------------------------------------------
@@ -212,6 +215,20 @@ def pre_tool(payload: dict) -> int:
         record("PreToolUse", "send_guard", vault, "blocked", tool)
         print(f"send_guard (Kairo): {reason}", file=sys.stderr)
         return 2
+    # sensitive datasets (Projects/*/Datos/registro.json) and Projects/*/Avisos/: no agent reads them
+    if vault is not None:
+        try:
+            import data_guard
+            reason = data_guard.decide(payload, vault)
+        except Exception as exc:  # inside a vault a guard that cannot decide refuses
+            record("PreToolUse", "data_guard", vault, "error", repr(exc))
+            print(f"Kairo: data_guard falló ({type(exc).__name__}); bloqueado por precaución — "
+                  f"detalle en {state_dir() / 'hook-events.jsonl'}", file=sys.stderr)
+            return 2
+        if reason:
+            record("PreToolUse", "data_guard", vault, "blocked", tool)
+            print(f"data_guard (Kairo): {reason}", file=sys.stderr)
+            return 2
     try:
         reason = isolation.main_paper_read(payload, vault)
     except Exception as exc:  # inside a vault: fail closed, as send_guard
