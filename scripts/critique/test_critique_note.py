@@ -134,6 +134,105 @@ class TestPacket(Base):
             cn.build_packet(self.vault, "../outside.md", None, None)
 
 
+QUESTION = """---
+id: Q-9001
+project: PROJ-900
+design: medicion
+status: abierta
+linked_plan:
+units_dataset:
+history: []
+---
+
+# Q-9001 — widgets
+
+## Pregunta
+
+¿Qué proporción de los widgets inventados gira al revés?
+
+## Población y marco
+
+Widgets del almacén inventado.
+
+## Resultado
+
+QRESULTTEXT
+
+## Historia
+
+QHISTORYTEXT
+"""
+
+PLAN = """---
+id: M-9002
+project: PROJ-900
+question: Q-9001
+status: borrador
+frozen_at: 2026-01-01T00:00:00Z
+frozen_commit: abcdef1234567
+---
+
+# M-9002 — Plan de medición de Q-9001
+
+## Población y marco muestral
+
+Todos los widgets del almacén, muestreo aleatorio simple.
+
+## Estimandos
+
+```json
+{"estimands": [{"id": "est-1", "type": "proporcion", "column": "al_reves", "filter": {}, "cluster": null}]}
+```
+
+## Ética
+
+Ningún widget sufre.
+
+## Críticas
+
+PRIORCRITIQUE otra crítica.
+"""
+
+
+class TestMeasurementPlan(Base):
+    def setUp(self):
+        super().setUp()
+        proj = self.vault / "Projects" / "demo"
+        (proj / "Preguntas").mkdir()
+        (proj / "Mediciones").mkdir()
+        (proj / "Preguntas" / "Q-9001.md").write_text(QUESTION, encoding="utf-8")
+        (proj / "Mediciones" / "M-9002.md").write_text(PLAN, encoding="utf-8")
+
+    def test_plan_packet_has_the_plan_and_its_question_only(self):
+        text = cn.build_packet(self.vault, "M-9002", None, None)
+        self.assertTrue(text.startswith("# Paquete de crítica"))
+        for s in ("muestreo aleatorio simple", '"al_reves"', "Ningún widget sufre.",
+                  "gira al revés", "Widgets del almacén inventado."):
+            self.assertIn(s, text)
+        for s in ("PRIORCRITIQUE", "abcdef1234567", "borrador", "QRESULTTEXT", "QHISTORYTEXT", "abierta"):
+            self.assertNotIn(s, text)
+
+    def test_plan_without_a_resolvable_question_is_still_critiqued(self):
+        plan = self.vault / "Projects/demo/Mediciones/M-9002.md"
+        plan.write_text(PLAN.replace("question: Q-9001", "question:"), encoding="utf-8")
+        text = cn.build_packet(self.vault, "M-9002", None, None)
+        self.assertIn("muestreo aleatorio simple", text)
+        self.assertNotIn("gira al revés", text)
+
+    def test_send_never_question_is_left_out(self):
+        q = self.vault / "Projects/demo/Preguntas/Q-9001.md"
+        q.write_text(QUESTION.replace("---\n", "---\nsend: never\n", 1), encoding="utf-8")
+        text = cn.build_packet(self.vault, "M-9002", None, None)
+        self.assertNotIn("gira al revés", text)
+
+    def test_writes_the_critique_in_the_plans_project(self):
+        p = self.tmp / "packet.md"
+        p.write_text(cn.build_packet(self.vault, "M-9002", None, None), encoding="utf-8")
+        out = cn.write_note(self.vault, "M-9002", p, RESULT, None)
+        self.assertEqual(out.relative_to(self.vault).as_posix(), "Projects/demo/Criticas/CR-0001.md")
+        self.assertIn("target: M-9002", out.read_text(encoding="utf-8"))
+
+
 class TestWrite(Base):
     def packet(self):
         p = self.tmp / "packet.md"

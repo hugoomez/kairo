@@ -14,6 +14,10 @@
 * any other note (``ADR-…``, ``E-…``, ``C-…``, ``F-…``, or a path to a note
   under ``Projects/``, e.g. a manuscript) → its body minus the sections that
   carry reasoning, critiques or verdicts, and none of its frontmatter;
+* a measurement plan (``M-XXXX``) → its body as above, plus the ``## Pregunta``
+  and ``## Población y marco`` of the question it names (``question:``, same
+  project) so the critic can judge whether the plan answers it — never the
+  question's result, history or frontmatter, and never a units file;
 * a recorded decision (``--text-file``) → that text alone.
 
 A ``send: never`` note and the model-written ``Papers/_notas/`` are refused.
@@ -48,17 +52,19 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "ledger"))
 sys.path.insert(0, str(HERE.parent / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402
-from verifier_packet import body_sections, split_frontmatter  # noqa: E402
+from verifier_packet import body_sections, fm_scalar, split_frontmatter  # noqa: E402
 
 sys.path.insert(0, str(HERE.parent / "security"))
 import isolation  # noqa: E402
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"  # 1.2.0: measurement plans (M-XXXX) with their question
 CRITIC = "kairo/devils-advocate@1.0.0"
 SEVERITIES = ("crítico", "importante", "menor")
 # Older critics answered alta / media / baja: accepted and written on the current scale.
 LEGACY = {"alta": "crítico", "media": "importante", "baja": "menor", "critico": "crítico"}
-_ID = re.compile(r"^(H|E|C|ADR|F|EVO)-\d{3,4}$")
+_ID = re.compile(r"^(H|E|C|M|ADR|F|EVO)-\d{3,4}$")
+# What the critic sees of the question a measurement plan answers.
+QUESTION_PARTS = ("Pregunta", "Población y marco")
 # Sections that carry reasoning, critiques, verdicts or lessons: the critic
 # judges the artifact, not what was said about it.
 EXCLUDED = ("Génesis", "Revisión del ciclo", "Verificación independiente", "Revisión de vigencia",
@@ -128,7 +134,30 @@ def build_packet(vault: Path, target: str, section: str | None, text_file: Path 
         if res.returncode != 0:
             raise Refused(f"verifier_packet refused: {res.stderr.strip() or res.stdout.strip()}")
         return res.stdout.replace("# Paquete de verificación", "# Paquete de crítica", 1)
-    return generic_packet(note, target, section)
+    text = generic_packet(note, target, section)
+    if target.startswith("M-") and section is None:
+        text += question_part(vault, note)
+    return text
+
+
+def question_part(vault: Path, plan: Path) -> str:
+    """The question a plan names, by allow-list; "" when it cannot be resolved or is flagged."""
+    fm, _ = split_frontmatter(plan.read_text(encoding="utf-8"))
+    qid = (fm_scalar(fm, "question") or "").strip()
+    if not re.match(r"^Q-\d{4}$", qid):
+        return ""
+    proj = (vault / "Projects" / project_slug(vault, plan))
+    hits = [p for p in proj.glob(f"*/{qid}*.md") if p.name == f"{qid}.md" or p.name.startswith(f"{qid} ")]
+    if len(hits) != 1 or is_flagged(hits[0]) or is_model_notes(hits[0].resolve()):
+        return ""
+    _qfm, body = split_frontmatter(hits[0].read_text(encoding="utf-8"))
+    out = ["", f"# Pregunta que el plan debe responder ({qid})", ""]
+    kept = 0
+    for heading, text in body_sections(body):
+        if heading in QUESTION_PARTS and text.strip():
+            out += [f"## {heading}", "", text.strip(), ""]
+            kept += 1
+    return "\n".join(out) if kept else ""
 
 
 def validate_result(r: dict) -> None:

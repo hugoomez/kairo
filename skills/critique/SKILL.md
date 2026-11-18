@@ -1,6 +1,6 @@
 ---
 name: critique
-description: Use when the researcher asks for a devil's-advocate critique of one artifact in a Kairo vault — a hypothesis (H-XXXX), an ADR, an experiment design, a manuscript section, or a decision recorded in the lab notebook ("critica H-0003", "abogado del diablo sobre ADR-004", "¿qué fallaría en esta decisión?"). Builds an allow-list packet, has the isolated devils-advocate agent attack it, and files the objections as a non-citable Criticas/CR-XXXX note. Never changes any status, verification or flag.
+description: Use when the researcher asks for a devil's-advocate critique of one artifact in a Kairo vault — a hypothesis (H-XXXX), an ADR, an experiment design, a measurement plan (M-XXXX), a manuscript section, or a decision recorded in the lab notebook ("critica H-0003", "abogado del diablo sobre ADR-004", "critica el plan M-0002", "¿qué fallaría en esta decisión?"). Builds an allow-list packet, has the isolated devils-advocate agent attack it, and files the objections as a non-citable Criticas/CR-XXXX note. Never changes any status, verification or flag.
 ---
 
 # critique — devil's advocate on demand
@@ -34,10 +34,16 @@ one of those — the researcher decides.
 
 ### 1. Resolve the target
 
-One of: a note id (`H-XXXX`, `E-XXXX`, `C-XXXX`, `ADR-XXX`, `F-XXX`), a
+One of: a note id (`H-XXXX`, `E-XXXX`, `C-XXXX`, `M-XXXX`, `ADR-XXX`, `F-XXX`), a
 vault-relative path to a note under `Projects/` (e.g. a manuscript), optionally
 with one `## ` section, or a decision — the text of a notebook entry the
 researcher points at — plus the project it belongs to.
+
+A measurement plan (`M-XXXX`, offered by `kairo:plan-study` before the
+freeze) is critiqued with the `## Pregunta` and `## Población y marco` of the
+question it names (`question:`), so the critic can say whether the plan
+answers it. The packet never carries the plan's frontmatter, the question's
+result or history, or any data.
 
 ### 2. Build the packet (mechanical)
 
