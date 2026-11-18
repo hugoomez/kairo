@@ -29,13 +29,29 @@ def kappa(a: list, b: list) -> dict:
     obs = sum(x == y for x, y in zip(a, b)) / n
     ca, cb = Counter(a), Counter(b)
     exp = sum(ca[k] * cb[k] for k in ca) / (n * n)
-    k = (1.0 if obs == 1 else 0.0) if exp == 1 else (obs - exp) / (1 - exp)
-    return {"kappa": k, "n": n, "observed": obs, "expected": exp}
+    if exp == 1:
+        return {"kappa": None, "n": n, "observed": obs, "expected": exp,
+                "note": "kappa indefinido: un solo valor en ambos anotadores"}
+    return {"kappa": (obs - exp) / (1 - exp), "n": n, "observed": obs, "expected": exp}
+
+
+def norm(v) -> str:
+    """One label normalisation for every subcommand."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
 
 
 def validate(gold: list, pred: list, positive, conf: float = 0.95) -> dict:
     if len(gold) != len(pred) or not gold:
         raise Refused("referencia y predicción deben tener la misma longitud y no estar vacías")
+    if positive not in gold and positive not in pred:
+        raise Refused("el valor --positive no aparece ni en la referencia ni en la predicción; "
+                      "revisa cómo está escrito (las etiquetas booleanas son true/false)")
     tp = sum(g == positive and p == positive for g, p in zip(gold, pred))
     fp = sum(g != positive and p == positive for g, p in zip(gold, pred))
     fn = sum(g == positive and p != positive for g, p in zip(gold, pred))
@@ -62,17 +78,24 @@ def _load(path: str, label: str) -> tuple[list | None, list]:
             raise
         raise Refused(f"no se pudo leer {Path(path).name}: JSON inválido o fichero ausente") from None
     ids = [r.get("id") for r in recs]
-    return (ids if all(i is not None for i in ids) else None), [r[label] for r in recs]
+    some = sum(i is not None for i in ids)
+    if 0 < some < len(ids):
+        raise Refused(f"{Path(path).name}: {len(ids) - some} de {len(ids)} registros no tienen id; "
+                      "todos o ninguno")
+    return (ids if some else None), [norm(r[label]) for r in recs]
 
 
 def _pair(p1: str, p2: str, label: str) -> tuple[list, list]:
     i1, l1 = _load(p1, label)
     i2, l2 = _load(p2, label)
-    if i1 is not None and i2 is not None:
+    if (i1 is None) != (i2 is None):
+        raise Refused("solo uno de los dos ficheros tiene ids; añade ids a ambos o a ninguno")
+    if i1 is not None:
         if len(set(i1)) != len(i1) or len(set(i2)) != len(i2):
             raise Refused("hay ids repetidos")
         if set(i1) != set(i2):
-            raise Refused("los dos ficheros no tienen los mismos ids")
+            raise Refused(f"los ids no coinciden: {len(set(i1) - set(i2))} solo en el primer fichero, "
+                          f"{len(set(i2) - set(i1))} solo en el segundo")
         m2 = dict(zip(i2, l2))
         return l1, [m2[i] for i in i1]
     return l1, l2
@@ -97,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             out = kappa(*_pair(a.a, a.b, a.label))
         else:
             g, p = _pair(a.gold, a.pred, a.label)
-            out = validate([str(x) for x in g], [str(x) for x in p], a.positive, a.ci)
+            out = validate(g, p, norm(a.positive), a.ci)
     except Refused as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 3

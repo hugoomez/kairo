@@ -123,3 +123,38 @@ def test_missing_column_names_estimand_and_column(tmp_path):
     setup_vault(tmp_path, plan_col="nope")
     code, out = run(tmp_path)
     assert code == 3 and "est-1" in out and "nope" in out
+
+
+def test_non_utf8_refused_without_traceback(tmp_path):
+    setup_vault(tmp_path)
+    f = tmp_path / "Projects" / "demo" / "Datos" / "u.csv"
+    f.write_bytes("tipo,tiene_x\norg,\xe9\n".encode("latin-1"))
+    reg = tmp_path / "Projects" / "demo" / "Datos" / "registro.json"
+    d = json.loads(reg.read_text(encoding="utf-8"))
+    d[0]["sha256"] = hashlib.sha256(f.read_bytes()).hexdigest()
+    reg.write_text(json.dumps(d), encoding="utf-8")
+    p = subprocess.run([sys.executable, str(SCRIPT), "--vault", str(tmp_path), "--plan", "M-9002",
+                        "--units", "u"], capture_output=True, text=True)
+    assert p.returncode == 3 and "UTF-8" in p.stdout and "Traceback" not in p.stderr
+
+
+def test_missing_cluster_refused(tmp_path):
+    setup_vault(tmp_path)
+    plan = tmp_path / "Projects" / "demo" / "Mediciones" / "M-9002.md"
+    plan.write_text(plan.read_text(encoding="utf-8").replace('"cluster": null', '"cluster": "g"'),
+                    encoding="utf-8")
+    f = tmp_path / "Projects" / "demo" / "Datos" / "u.csv"
+    f.write_text("tipo,tiene_x,g\norg,1,a\norg,0,\norg,1,\n", encoding="utf-8")
+    reg = tmp_path / "Projects" / "demo" / "Datos" / "registro.json"
+    d = json.loads(reg.read_text(encoding="utf-8"))
+    d[0]["sha256"] = hashlib.sha256(f.read_bytes()).hexdigest()
+    reg.write_text(json.dumps(d), encoding="utf-8")
+    p = subprocess.run([sys.executable, str(SCRIPT), "--vault", str(tmp_path), "--plan", "M-9002",
+                        "--units", "u"], capture_output=True, text=True)
+    assert p.returncode == 3 and "est-1" in p.stdout and "2 filas" in p.stdout
+
+
+def test_percentile_symmetric_indices():
+    vals = list(range(11))  # B=11
+    assert estimate._percentile(vals, 0.8) == (1, 9)  # a=0.1 -> floor(1.0)=1, ceil(9.0)=9
+    assert estimate._percentile(list(range(5)), 0.5) == (1, 3)

@@ -104,6 +104,8 @@ def _intervals(data) -> dict:
     for k in ("bootstrap", "seed"):
         if not isinstance(data.get(k), int) or isinstance(data.get(k), bool):
             raise PlanError(f"{h}: {k} debe ser un entero")
+    if data["bootstrap"] < 1:
+        raise PlanError(f"{h}: bootstrap debe ser al menos 1")
     return data
 
 

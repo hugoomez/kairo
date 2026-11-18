@@ -85,3 +85,9 @@ def test_cli(tmp_path):
     bad = subprocess.run([sys.executable, str(HERE / "plan_blocks.py"), "show", str(tmp_path / "no.md")],
                          capture_output=True, text=True)
     assert bad.returncode == 3 and "error" in json.loads(bad.stdout)
+
+
+def test_bootstrap_must_be_positive(tmp_path):
+    p = plan(tmp_path, ivl={"ci": 0.95, "bootstrap": 0, "seed": 7})
+    with pytest.raises(PlanError, match="bootstrap"):
+        read_plan(p)

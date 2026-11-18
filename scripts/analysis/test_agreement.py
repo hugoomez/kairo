@@ -46,3 +46,42 @@ def test_cli(tmp_path):
     p = subprocess.run([sys.executable, str(SCRIPT), "validate", "--gold", a, "--pred", b,
                         "--label", "lab", "--positive", "x"], capture_output=True, text=True)
     assert p.returncode == 0 and json.loads(p.stdout)["precision"] == 1
+
+
+def _w(tmp_path, name, recs):
+    p = tmp_path / name
+    p.write_text("\n".join(json.dumps(r) for r in recs), encoding="utf-8")
+    return str(p)
+
+
+def _cli(*args):
+    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
+
+
+def test_ids_all_or_none(tmp_path):
+    a = _w(tmp_path, "a.jsonl", [{"id": 1, "l": "x"}, {"id": 2, "l": "y"}])
+    b = _w(tmp_path, "b.jsonl", [{"l": "x"}, {"l": "y"}])
+    c = _w(tmp_path, "c.jsonl", [{"id": 1, "l": "x"}, {"l": "y"}])
+    d = _w(tmp_path, "d.jsonl", [{"id": 1, "l": "x"}, {"id": 3, "l": "y"}])
+    assert _cli("kappa", "--a", a, "--b", b, "--label", "l").returncode == 3
+    assert _cli("kappa", "--a", a, "--b", c, "--label", "l").returncode == 3
+    p = _cli("kappa", "--a", a, "--b", d, "--label", "l")
+    assert p.returncode == 3 and "1 solo en el primer" in p.stdout
+    assert _cli("kappa", "--a", b, "--b", b, "--label", "l").returncode == 0
+
+
+def test_positive_normalisation_and_refusal(tmp_path):
+    g = _w(tmp_path, "g.jsonl", [{"l": True}, {"l": False}, {"l": True}])
+    p = _w(tmp_path, "p.jsonl", [{"l": True}, {"l": True}, {"l": False}])
+    r = _cli("validate", "--gold", g, "--pred", p, "--label", "l", "--positive", "true")
+    assert r.returncode == 0 and json.loads(r.stdout)["precision"] == 0.5
+    assert _cli("validate", "--gold", g, "--pred", p, "--label", "l", "--positive", "zzz").returncode == 3
+    assert agreement.norm(1.0) == "1" and agreement.norm(True) == "true" and agreement.norm(" a ") == "a"
+    # True and 1 are no longer merged in kappa
+    a = _w(tmp_path, "a.jsonl", [{"l": True}, {"l": 1}])
+    assert json.loads(_cli("kappa", "--a", a, "--b", a, "--label", "l").stdout)["expected"] == 0.5
+
+
+def test_kappa_undefined_single_value():
+    r = agreement.kappa(["x", "x"], ["x", "x"])
+    assert r["kappa"] is None and "indefinido" in r["note"]

@@ -6,6 +6,8 @@ Prints {"plan", "units_sha256", "estimates": [{"id","type","value","lo","hi","n"
 Exit 0 ok, 3 refused (JSON {"error": ...}), 1 usage/unexpected error.
 
 The units file may be sensitive: only aggregates are ever printed, never rows or cell values.
+In JSONL a row lacking the column counts as falsy (proporcion/conteo) or skipped (mediana); the
+missing-column check needs at least the header (CSV) or one row carrying the key (JSONL).
 Standard library only.
 """
 from __future__ import annotations
@@ -14,6 +16,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import random
 import statistics
 import sys
@@ -74,7 +77,7 @@ def _percentile(vals: list[float], conf: float) -> tuple[float, float]:
     vals = sorted(vals)
     b = len(vals)
     a = (1 - conf) / 2
-    return vals[int(a * b)], vals[min(b - 1, int((1 - a) * b))]
+    return vals[math.floor(a * (b - 1) + 1e-9)], vals[math.ceil((1 - a) * (b - 1) - 1e-9)]
 
 
 def _out(e, value, lo, hi, n, method, **extra):
@@ -127,9 +130,12 @@ def compute(e: dict, rows: list[dict], ivl: dict) -> dict:
     return _out(e, statistics.median(vals), lo, hi, m, "bootstrap", skipped=skipped)
 
 
-def load_rows(path: Path) -> list[dict]:
-    ext = path.suffix.lower()
-    text = path.read_text(encoding="utf-8-sig")
+def load_rows(data: bytes, ext: str) -> list[dict]:
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise Refused("el fichero de unidades no es UTF-8; guarda el fichero en UTF-8") from None
+    ext = ext.lower()
     if ext == ".csv":
         return list(csv.DictReader(text.splitlines()))
     if ext in (".jsonl", ".ndjson"):
@@ -176,13 +182,14 @@ def run(vault: Path, plan_id: str, units: str) -> dict:
     path = next((c for c in cands if c.is_file()), None)
     if path is None:
         raise Refused(f"no se encuentra el fichero del dataset {units!r}")
-    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    data = path.read_bytes()
+    actual = hashlib.sha256(data).hexdigest()
     expected = ds.get("sha256", "")
     if actual != expected:
         raise Refused("la huella del fichero de unidades no coincide con el registro; "
                       "vuelve a registrar el dataset o restaura el fichero",
                       esperada=expected, actual=actual)
-    rows = load_rows(path)
+    rows = load_rows(data, path.suffix)
     header = set(rows[0]) if rows else set()
     if path.suffix.lower() == ".jsonl":
         header = set().union(*(r.keys() for r in rows)) if rows else set()
@@ -191,6 +198,15 @@ def run(vault: Path, plan_id: str, units: str) -> dict:
             for c in [e["column"], e.get("cluster"), *(e.get("filter") or {})]:
                 if c and c not in header:
                     raise Refused(f"el estimando {e['id']} usa la columna {c!r}, que no está en el fichero")
+    for e in plan["estimands"]:
+        cl = e.get("cluster")
+        if cl:
+            flt = e.get("filter") or {}
+            miss = sum(1 for r in rows
+                       if all(str(r.get(k, "")) == str(v) for k, v in flt.items())
+                       and str(r.get(cl, "")).strip() == "")
+            if miss:
+                raise Refused(f"el estimando {e['id']} usa el cluster {cl!r}, pero {miss} filas no lo tienen")
     estimates = [compute(e, rows, plan["intervals"]) for e in plan["estimands"]]
     return {"plan": plan_id, "units_sha256": actual, "estimates": estimates}
 
