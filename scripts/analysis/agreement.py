@@ -2,13 +2,20 @@
 
     agreement.py kappa --a A.jsonl --b B.jsonl --label L
     agreement.py validate --gold ref.jsonl --pred clf.jsonl --label L --positive V [--ci 0.95]
+                          [--vault V]
 
 Records are aligned by their "id" field when every record has one, else by line order.
 Only aggregates are printed. Exit 0 ok, 3 refused. Standard library only.
+
+`validate` also prints `inputs`: {"gold": {"path", "sha256"}, "pred": {"path", "sha256"},
+"label", "positive", "ci"}, so the validation can be recomputed and its files checked
+(study_gates.classifiers_validated). A path inside --vault is recorded relative to it
+(forward slashes); otherwise as given.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import Counter
@@ -101,6 +108,21 @@ def _pair(p1: str, p2: str, label: str) -> tuple[list, list]:
     return l1, l2
 
 
+def _input(path: str, vault: str | None) -> dict:
+    p = Path(path)
+    shown = path
+    if vault:
+        try:
+            shown = p.resolve().relative_to(Path(vault).resolve()).as_posix()
+        except ValueError:
+            pass
+    try:
+        sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        raise Refused(f"no se pudo leer {p.name}") from None
+    return {"path": shown, "sha256": sha}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -114,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--label", required=True)
     v.add_argument("--positive", required=True)
     v.add_argument("--ci", type=float, default=0.95)
+    v.add_argument("--vault", default=None, help="record input paths relative to this vault")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "kappa":
@@ -121,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             g, p = _pair(a.gold, a.pred, a.label)
             out = validate(g, p, norm(a.positive), a.ci)
+            out["inputs"] = {"gold": _input(a.gold, a.vault), "pred": _input(a.pred, a.vault),
+                             "label": a.label, "positive": norm(a.positive), "ci": a.ci}
     except Refused as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 3

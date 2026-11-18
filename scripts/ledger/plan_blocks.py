@@ -110,12 +110,16 @@ def _intervals(data) -> dict:
 
 
 def read_plan(path: Path) -> dict:
-    parts = None
     try:
         text = Path(path).read_text(encoding="utf-8-sig")
-        parts = notes.split_note(text)
     except (OSError, UnicodeDecodeError) as e:
         raise PlanError(f"no se pudo leer {path}: {e}") from e
+    return read_plan_text(text)
+
+
+def read_plan_text(text: str) -> dict:
+    """read_plan on the note's text (e.g. a version from `git show`)."""
+    parts = notes.split_note(text)
     if parts is None:
         raise PlanError("el plan no tiene frontmatter")
     fm_lines, body = parts

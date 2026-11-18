@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -61,7 +63,7 @@ Nada.
 PLAN = """---
 id: M-9002
 project: PROJ-901
-question: Q-9001
+question: {question}
 status: congelado
 frozen_at: {frozen_at}
 frozen_commit: {frozen_commit}
@@ -82,7 +84,7 @@ Unidades inventadas.
 ## Clasificadores
 
 ```json
-{{"classifiers": [{{"name": "clasif-demo", "sample": "muestra-demo", "min_precision_lo": 0.80, "min_recall_lo": 0.70}}]}}
+{{"classifiers": [{{"name": "clasif-demo", "sample": "muestra-demo", "min_precision_lo": {min_p}, "min_recall_lo": 0.70}}]}}
 ```
 
 ## Intervalos
@@ -99,48 +101,106 @@ Nada sensible: datos inventados.
 UNITS = "uid,marca\nu1,1\nu2,0\nu3,1\nu4,1\nu5,0\nu6,1\n"
 
 
+AGREEMENT = HERE.parent / "analysis" / "agreement.py"
+SAMPLE = Path("Datos") / "anotacion" / "muestra-demo"
+VERIF_BODY = ("\n## Verificación independiente\n\n### 2031-02-01 — kairo/fresh-verifier@1.1.0 (note)\n\n"
+              "- modelo: t\n- veredicto: no_errors_found\n- alcance: note\n- paquete sha256: {sha}\n"
+              "- hallazgos: ninguno\n")
+
+
 class Vault:
-    def __init__(self, root: Path):
+    """An invented vault in a real git repo: the plan is committed, then frozen
+    (frozen_commit = that commit), then the units dataset is registered."""
+
+    def __init__(self, root: Path, git: bool = True, data_first: bool = False):
         self.root = root
         self.proj = root / "Projects" / "demo"
+        self.has_git = git
         for d in ("Preguntas", "Mediciones", "Datos", "Avisos"):
             (self.proj / d).mkdir(parents=True, exist_ok=True)
-        (self.proj / "Datos" / "u.csv").write_text(UNITS, encoding="utf-8", newline="")
-        sha = hashlib.sha256(UNITS.encode("utf-8")).hexdigest()
-        (self.proj / "Datos" / "registro.json").write_text(json.dumps(
-            [{"name": "unidades-demo", "kind": "file", "path": "Datos/u.csv", "sha256": sha}]), encoding="utf-8")
+        if git:
+            self.git("init", "-q")
+        self.registry([])
+        if data_first:
+            self.register_units()
+            self.commit("datos")
+        self.plan(frozen_at="", frozen_commit="")
+        self.frozen = self.commit("plan") if git else "abc1234"
         self.plan()
-        self.validation(0.91, 0.85)
+        self.commit("congela")
+        if not data_first:
+            self.register_units()
+            self.commit("datos")
+        self.annotate()
         self.notices("resuelto")
 
-    def plan(self, frozen_at="2031-01-02T10:00:00Z", frozen_commit="abc1234"):
+    def git(self, *args) -> str:
+        r = subprocess.run(["git", "-c", "user.name=tester", "-c", "user.email=t@example.invalid", *args],
+                           cwd=self.root, capture_output=True, text=True, check=True)
+        return r.stdout.strip()
+
+    def commit(self, msg: str) -> str | None:
+        if not self.has_git:
+            return None
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg)
+        return self.git("rev-parse", "HEAD")
+
+    def registry(self, entries):
+        (self.proj / "Datos" / "registro.json").write_text(json.dumps(entries), encoding="utf-8")
+
+    def register_units(self):
+        (self.proj / "Datos" / "u.csv").write_text(UNITS, encoding="utf-8", newline="")
+        sha = hashlib.sha256(UNITS.encode("utf-8")).hexdigest()
+        self.registry([{"name": "unidades-demo", "kind": "file", "path": "Datos/u.csv", "sha256": sha}])
+
+    def plan(self, frozen_at="2031-01-02T10:00:00Z", frozen_commit=None, min_p="0.80", question="Q-9001"):
+        frozen_commit = self.frozen if frozen_commit is None else frozen_commit
         (self.proj / "Mediciones" / "M-9002.md").write_text(
-            PLAN.format(frozen_at=frozen_at, frozen_commit=frozen_commit), encoding="utf-8")
-
-    def validation(self, p_lo, r_lo):
-        d = self.proj / "Datos" / "anotacion" / "muestra-demo"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "validacion-clasif-demo.json").write_text(json.dumps(
-            {"precision": 0.95, "precision_lo": p_lo, "precision_hi": 0.99,
-             "recall": 0.9, "recall_lo": r_lo, "recall_hi": 0.97, "n": 120}), encoding="utf-8")
-
-    def notices(self, *estados):
-        (self.proj / "Avisos" / "registro.json").write_text(json.dumps(
-            [{"id": f"AV-{i}", "destinatario": "nadie", "canal": "correo", "enviado": "",
-              "embargo_hasta": "", "respuesta": "", "estado": e} for i, e in enumerate(estados, 1)]),
+            PLAN.format(frozen_at=frozen_at, frozen_commit=frozen_commit, min_p=min_p, question=question),
             encoding="utf-8")
+
+    def annotate(self, fp=0, fn=0):
+        """100 invented gold labels (60 positive) and predictions with fp false
+        positives and fn false negatives; the validation file from agreement.py."""
+        d = self.proj / SAMPLE
+        d.mkdir(parents=True, exist_ok=True)
+        gold = [i < 60 for i in range(100)]
+        pred = [(g and i >= fn) or (not g and i - 60 < fp) for i, g in enumerate(gold)]
+        for name, labs in (("gold", gold), ("pred", pred)):
+            (d / f"{name}.jsonl").write_text(
+                "\n".join(json.dumps({"id": f"u{i}", "x": v}) for i, v in enumerate(labs)), encoding="utf-8")
+        r = subprocess.run([sys.executable, str(AGREEMENT), "validate", "--gold", str(d / "gold.jsonl"),
+                            "--pred", str(d / "pred.jsonl"), "--label", "x", "--positive", "true",
+                            "--vault", str(self.root)], capture_output=True, text=True, check=True)
+        (d / "validacion-clasif-demo.json").write_text(r.stdout, encoding="utf-8")
+
+    def validation_file(self) -> Path:
+        return self.proj / SAMPLE / "validacion-clasif-demo.json"
+
+    def notices(self, *items):
+        rows = []
+        for i, it in enumerate(items, 1):
+            it = {"estado": it} if isinstance(it, str) else it
+            rows.append({"id": f"AV-{i}", "destinatario": "nadie", "canal": "correo", "enviado": "",
+                         "embargo_hasta": "", "respuesta": "", **it})
+        (self.proj / "Avisos" / "registro.json").write_text(json.dumps(rows), encoding="utf-8")
 
     def estimate_json(self) -> str:
         return json.dumps(estimate.run(self.root, "M-9002", "unidades-demo"), ensure_ascii=False, indent=2)
 
     def question(self, status="en_recoleccion", verified=True, resultado=None):
+        """verified: a no_errors_found verification bound to the packet built now."""
         if resultado is None:
             resultado = f"```estimate-json\n{self.estimate_json()}\n```"
         p = self.proj / "Preguntas" / "Q-9001.md"
-        p.write_text(QUESTION.format(status=status, verif=CLEAN if verified else "", resultado=resultado),
-                     encoding="utf-8")
+        p.write_text(QUESTION.format(status=status, verif="", resultado=resultado), encoding="utf-8")
+        if verified:
+            packet, _ = verifier_packet.build_question(str(self.root), "Q-9001")
+            sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+            p.write_text(QUESTION.format(status=status, verif=CLEAN, resultado=resultado)
+                         + VERIF_BODY.format(sha=sha), encoding="utf-8")
         return p
-
 
 @pytest.fixture
 def vault(tmp_path, monkeypatch):
@@ -184,7 +244,7 @@ def test_apply_refuses_unknown_edge(vault, capsys):
 
 def test_estimada_requires_gate(vault, capsys):
     vault.question(status="en_recoleccion")
-    vault.validation(0.62, 0.85)
+    vault.annotate(fp=30)
     code, _, err = cli(capsys, "apply", "--vault", str(vault.root), "--question", "Q-9001",
                        "--to", "estimada", "--by", "tester", "--evidence", "estimado")
     assert code == 3
@@ -284,7 +344,7 @@ def test_gate_plan_not_frozen(vault):
 
 def test_gate_plan_missing(vault):
     (vault.proj / "Mediciones" / "M-9002.md").unlink()
-    vault.question(resultado="")
+    vault.question(resultado="", verified=False)
     assert any("M-9002" in m and "Mediciones" in m for m in missing(vault))
 
 
@@ -296,7 +356,7 @@ def test_gate_classifier_validation_missing(vault):
 
 def test_gate_recall_below(vault):
     vault.question()
-    vault.validation(0.95, 0.5)
+    vault.annotate(fn=30)
     assert any("clasif-demo" in m and "recall_lo" in m for m in missing(vault))
 
 
@@ -309,6 +369,140 @@ def test_gate_no_notice_registry(vault):
     vault.question()
     (vault.proj / "Avisos" / "registro.json").unlink()
     assert "sin registro de avisos" in missing(vault)
+
+
+def test_plan_frozen_commit_must_exist(vault):
+    vault.plan(frozen_commit="0" * 40)
+    vault.question()
+    assert any("frozen_commit" in m and "no existe" in m for m in missing(vault))
+
+
+def test_plan_changed_after_freeze_fails(vault):
+    vault.plan(min_p="0.50")
+    vault.commit("baja la cota")
+    vault.question()
+    assert "el plan cambió después de congelarlo: Clasificadores" in missing(vault)
+
+
+def test_data_registered_before_freeze_fails(tmp_path, monkeypatch):
+    for m in ss.AGENT_MARKERS:
+        monkeypatch.delenv(m, raising=False)
+    v = Vault(tmp_path / "vault", data_first=True)
+    v.question()
+    assert "los datos se registraron antes de congelar el plan" in missing(v)
+
+
+def test_data_never_committed_fails(vault):
+    p = vault.question(verified=False)
+    reg_path = vault.proj / "Datos" / "registro.json"
+    reg = json.loads(reg_path.read_text(encoding="utf-8"))
+    reg_path.write_text(json.dumps(reg + [{**reg[0], "name": "otro-demo"}]), encoding="utf-8")  # not committed
+    p.write_text(p.read_text(encoding="utf-8").replace("units_dataset: unidades-demo", "units_dataset: otro-demo"),
+                 encoding="utf-8")
+    assert any("otro-demo" in m and "commit" in m for m in missing(vault))
+
+
+def test_plan_frozen_needs_units_dataset(vault):
+    p = vault.question()
+    p.write_text(p.read_text(encoding="utf-8").replace("units_dataset: unidades-demo", "units_dataset:"),
+                 encoding="utf-8")
+    assert "sin units_dataset" in missing(vault)
+
+
+def test_plan_blank_question_refused(vault):
+    vault.plan(question="")
+    vault.commit("sin pregunta")
+    vault.question(verified=False)
+    assert any("question" in m and "M-9002" in m for m in missing(vault))
+
+
+def test_no_git_fails_closed(tmp_path, monkeypatch):
+    for m in ss.AGENT_MARKERS:
+        monkeypatch.delenv(m, raising=False)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))  # no enclosing repo either
+    v = Vault(tmp_path / "vault", git=False)
+    v.question()
+    g = ss.gate(v.root, "Q-9001")
+    assert g["ok"] is False and any("git" in m for m in g["missing"])
+
+
+def test_hand_edited_validation_fails(vault):
+    vault.question()
+    f = vault.validation_file()
+    data = json.loads(f.read_text(encoding="utf-8"))
+    data["precision_lo"] = 0.99
+    f.write_text(json.dumps(data), encoding="utf-8")
+    assert any("clasif-demo" in m and "no coincide" in m for m in missing(vault))
+
+
+def test_gold_changed_after_validation_fails(vault):
+    vault.question()
+    gold = vault.proj / SAMPLE / "gold.jsonl"
+    gold.write_text(gold.read_text(encoding="utf-8").replace('"x": false', '"x": true', 1), encoding="utf-8")
+    assert any("clasif-demo" in m and "cambió" in m for m in missing(vault))
+
+
+def test_validation_without_inputs_fails(vault):
+    vault.question()
+    f = vault.validation_file()
+    data = json.loads(f.read_text(encoding="utf-8"))
+    del data["inputs"]
+    f.write_text(json.dumps(data), encoding="utf-8")
+    assert any("validación sin entradas registradas: vuelve a generarla con agreement.py" in m
+               for m in missing(vault))
+
+
+def _avisos(vault):
+    return [m for m in missing(vault) if "aviso" in m.lower()]
+
+
+def test_avisos_closed_states_pass(vault):
+    past = (date.today() - timedelta(days=1)).isoformat()
+    vault.question()
+    vault.notices("respondido", "resuelto", "sin_respuesta", {"estado": "enviado", "embargo_hasta": past})
+    assert _avisos(vault) == []
+    vault.notices()
+    assert _avisos(vault) == []  # an empty registry passes
+
+
+def test_avisos_open_states_fail(vault):
+    today = date.today().isoformat()
+    future = (date.today() + timedelta(days=30)).isoformat()
+    vault.question()
+    vault.notices("pendiente", "pendiente", {"estado": "enviado"}, {"estado": "enviado", "embargo_hasta": today},
+                  {"estado": "enviado", "embargo_hasta": future}, "raro", {"estado": None})
+    msgs = " | ".join(_avisos(vault))
+    assert "2 pendiente" in msgs
+    assert "1 enviado(s) sin fecha de embargo" in msgs
+    assert "2 enviado(s) con el embargo sin vencer" in msgs
+    assert "2 con estado desconocido" in msgs
+    assert "nadie" not in msgs and "AV-" not in msgs
+
+
+def test_verifier_must_match_current_packet(vault):
+    p = vault.question()
+    p.write_text(p.read_text(encoding="utf-8").replace("unidades inventadas tiene", "unidades tiene"),
+                 encoding="utf-8")
+    assert any("verific" in m and "paquete" in m for m in missing(vault))
+
+
+def test_estimate_timeout_counts_as_failed(vault, monkeypatch):
+    vault.question()
+    real = study_gates.subprocess.run
+
+    def slow(cmd, *a, **kw):
+        if any(str(c).endswith("estimate.py") for c in cmd):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(study_gates.subprocess, "run", slow)
+    assert any("estimate.py" in m and "tiempo" in m for m in missing(vault))
+
+
+def test_apply_refuses_non_study_id(vault, capsys):
+    code, _, err = cli(capsys, "apply", "--vault", str(vault.root), "--question", "H-0001",
+                       "--to", "estimada", "--by", "tester", "--evidence", "x")
+    assert code == 3
 
 
 def test_gate_not_applicable_to_hypothesis(vault):
@@ -353,7 +547,7 @@ def test_question_packet(vault, capsys):
     assert code == 0
     assert "¿Qué proporción" in packet
     assert "```estimate-json" in packet and '"est-1"' in packet
-    assert '"min_precision_lo": 0.80' in packet and "frozen_commit: abc1234" in packet
+    assert '"min_precision_lo": 0.80' in packet and f"frozen_commit: {vault.frozen}" in packet
     assert "## Historia" not in packet and "Nada sensible" not in packet
     assert "verifications" not in packet and "status: en_recoleccion" not in packet
     assert "u1" not in packet

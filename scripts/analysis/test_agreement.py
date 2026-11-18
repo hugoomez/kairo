@@ -85,3 +85,19 @@ def test_positive_normalisation_and_refusal(tmp_path):
 def test_kappa_undefined_single_value():
     r = agreement.kappa(["x", "x"], ["x", "x"])
     assert r["kappa"] is None and "indefinido" in r["note"]
+
+
+def test_validate_records_inputs(tmp_path):
+    import hashlib
+    vault = tmp_path / "v"
+    vault.mkdir()
+    g = _w(vault, "g.jsonl", [{"l": "x"}, {"l": "y"}, {"l": "x"}])
+    p = _w(tmp_path, "p.jsonl", [{"l": "x"}, {"l": "x"}, {"l": "x"}])
+    r = _cli("validate", "--gold", g, "--pred", p, "--label", "l", "--positive", " x ", "--ci", "0.9",
+             "--vault", str(vault))
+    assert r.returncode == 0
+    inp = json.loads(r.stdout)["inputs"]
+    assert inp["gold"] == {"path": "g.jsonl", "sha256": hashlib.sha256(Path(g).read_bytes()).hexdigest()}
+    assert inp["pred"]["path"] == p  # outside the vault: as given
+    assert (inp["label"], inp["positive"], inp["ci"]) == ("l", "x", 0.9)
+
