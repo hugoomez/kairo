@@ -1,0 +1,35 @@
+# Registro de diseños de estudio. Cada tabla es un diseño; `designs.py check`
+# valida que todo estado, transición y comprobación de puerta esté declarado.
+# Prefijos en uso que no se pueden reutilizar: H, C, E, P.
+
+[medicion]
+prefix = "Q"
+folder = "Preguntas"
+statuses = ["abierta", "plan_congelado", "en_recoleccion", "estimada", "sin_respuesta", "descartada"]
+terminal = ["estimada", "sin_respuesta", "descartada"]
+transitions = [
+  ["abierta", "plan_congelado"],
+  ["plan_congelado", "en_recoleccion"],
+  ["en_recoleccion", "estimada"],
+  ["en_recoleccion", "sin_respuesta"],
+  ["abierta", "descartada"],
+  ["plan_congelado", "descartada"],
+]
+# Transiciones que solo hace una persona.
+researcher_only = [["abierta", "descartada"], ["plan_congelado", "descartada"]]
+# Estado que exige el manuscrito.
+publishable = "estimada"
+gate = ["plan_frozen", "estimates_reproducible", "classifiers_validated", "verifier_no_errors", "avisos_cerrados"]
+plan_prefix = "M"
+plan_folder = "Mediciones"
+plan_template = "templates/measurement-plan-template.md"
+manuscript_sections = [
+  { id = "introduction", kind = "prosa" },
+  { id = "background", kind = "prosa" },
+  { id = "methodology", kind = "prosa" },
+  { id = "ethics", kind = "prosa" },
+  { id = "results", kind = "resultado" },
+  { id = "discussion", kind = "cierre" },
+  { id = "related-work", kind = "prosa" },
+  { id = "open-science", kind = "prosa" },
+]
