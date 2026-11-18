@@ -280,24 +280,59 @@ def test_run_in_another_repository_does_nothing(vault: Path, tmp_path: Path):
     assert (other / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == text
 
 
-def test_run_refuses_a_vault_outside_the_committing_worktree(tmp_path: Path):
-    # the vault's git dir is the committing one, but --vault names a folder that is
-    # not under that repository's top (a hand-edited hook): refuse, never skip all
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    git(repo, "init", "-q")
-    elsewhere = tmp_path / "vault-fuera"
-    (elsewhere / "Papers").mkdir(parents=True)
-    (elsewhere / "Projects").mkdir()
-    env = clean_env()
-    env.update({"PYTHONIOENCODING": "utf-8", "GIT_DIR": str(repo / ".git"), "GIT_WORK_TREE": str(repo)})
-    # GIT_DIR in the hook's environment names the committing repo; the vault folder
-    # itself must still resolve to that same git dir for the check to apply
-    (elsewhere / ".git").write_text(f"gitdir: {(repo / '.git').as_posix()}\n", encoding="utf-8")
-    r = subprocess.run([sys.executable, str(SCRIPT), "run", "--vault", str(elsewhere)], cwd=repo,
-                       capture_output=True, env=env)
+def test_run_refuses_when_the_vault_cannot_be_placed(vault: Path, tmp_path: Path):
+    # --vault names the repository itself but not a worktree of it (a bare clone
+    # here): same repository as the committing worktree, no place to map: refuse
+    bare = tmp_path / "vault.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(vault), str(bare)], capture_output=True,
+                   env=clean_env(), check=True)
+    wt = tmp_path / "wt-bare"
+    git(bare, "worktree", "add", "-q", str(wt))
+    put(wt / "nota.md", fake_block() + "\n")
+    git(wt, "add", "nota.md")
+    r = run("run", "--vault", str(bare), cwd=wt)
     assert r.returncode == 1
-    assert "no está dentro del repositorio" in r.stderr.decode("utf-8")
+    assert "no sé dónde queda el vault" in r.stderr.decode("utf-8")
+
+
+def test_hook_checks_a_linked_worktree_of_the_vault(vault: Path, tmp_path: Path):
+    assert run("install", "--vault", str(vault), "--python", sys.executable).returncode == 0
+    wt = tmp_path / "wt"
+    git(vault, "worktree", "add", "-q", "-b", "rama", str(wt))
+    rel = "Projects/x/Criticas/CR-9016.md"
+    (wt / rel).parent.mkdir(parents=True, exist_ok=True)  # empty folders are not in git
+    put(wt / rel, "Desde otro worktree.\n" + fake_block() + "\n")
+    git(wt, "add", rel)
+    c = git(wt, "commit", "-q", "-m", "critica", check=False)
+    assert c.returncode == 0, c.stderr
+    committed = git(wt, "show", "HEAD:" + rel).stdout.decode("utf-8")
+    assert "PRIVATE KEY" not in committed and "[REDACTADO private_key" in committed
+    assert "PRIVATE KEY" not in (wt / rel).read_text(encoding="utf-8")
+    assert "PRIVATE KEY" not in staged(wt, rel)
+
+
+def test_hook_maps_a_vault_subfolder_into_a_linked_worktree(tmp_path: Path):
+    repo = tmp_path / "Kairo"
+    v = repo / "vault"
+    (v / "Papers").mkdir(parents=True)
+    (v / "Projects" / "x").mkdir(parents=True)
+    put(v / "Projects" / "x" / "_hub.md", "---\nid: PROJ-902\n---\n")
+    git(repo, "init", "-q")
+    git(repo, "config", "core.autocrlf", "false")
+    git(repo, "add", "vault/Projects/x/_hub.md")
+    git(repo, "commit", "-q", "-m", "inicio")
+    assert run("install", "--vault", str(v), "--python", sys.executable).returncode == 0
+    wt = tmp_path / "wt-sub"
+    git(repo, "worktree", "add", "-q", "-b", "rama", str(wt))
+    inside, outside = "vault/Projects/x/CR-9017.md", "fuera.md"
+    put(wt / inside, fake_block() + "\n")
+    outside_text = "Fuera del vault.\n" + fake_block() + "\n"
+    put(wt / outside, outside_text)
+    git(wt, "add", inside, outside)
+    c = git(wt, "commit", "-q", "-m", "x", check=False)
+    assert c.returncode == 0, c.stderr
+    assert "PRIVATE KEY" not in git(wt, "show", "HEAD:" + inside).stdout.decode("utf-8")
+    assert git(wt, "show", "HEAD:" + outside).stdout.decode("utf-8") == outside_text  # not the vault's
 
 
 def test_commit_with_paths_also_redacts_the_real_index(vault: Path):

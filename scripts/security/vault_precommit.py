@@ -2,9 +2,12 @@
 """The vault's pre-commit backstop: no private material is committed in clear.
 
     vault_precommit.py run --vault V
-        What the git hook runs, from the top of the repository being committed;
-        when that repository is not the vault's (a hook shared through a global
-        core.hooksPath), it does nothing. For every staged file (added, copied,
+        What the git hook runs, from the top of the worktree being committed;
+        when that repository is not the vault's (another git common dir: a hook
+        shared through a global core.hooksPath), it does nothing. In any worktree
+        of the vault's repository (linked ones share its hooks) the vault's place
+        is carried over to that worktree's top; when it cannot be, exit 1. For
+        every staged file (added, copied,
         modified, renamed or changed in type; renames are seen as new files)
         inside the vault, not under Papers/, text and at most 5 MB: if the STAGED
         content holds private material (redact.has_secret), the working file is
@@ -103,23 +106,37 @@ def real_index_env(cwd: Path) -> dict | None:
     return own_repo_env()
 
 
+def vault_in_committing_worktree(vault: Path, cwd: Path) -> Path:
+    """The vault folder as it sits in the worktree being committed: the vault's
+    place inside its own worktree (its top, or a subfolder), carried over to the
+    committing worktree's top. Refused when that place cannot be worked out."""
+    unmapped = (f"no sé dónde queda el vault {vault.as_posix()} en el repositorio que se está "
+                "confirmando; revisa --vault en el hook (vault_precommit.py install)")
+    try:
+        own_top = git_path(vault, "rev-parse", "--show-toplevel", env=own_repo_env())
+        top = git_path(cwd, "rev-parse", "--show-toplevel")
+        inside = vault.relative_to(own_top)
+    except (Refused, ValueError):
+        raise Refused(unmapped)
+    if ".." in inside.parts:
+        raise Refused(unmapped)
+    return (top / inside).resolve()
+
+
 def run(vault: Path) -> int:
     vault = vault.resolve()
     cwd = Path.cwd()
-    # The hook runs from the top of the repository being committed. A hook reached
-    # through a shared core.hooksPath in another repository has nothing to check.
+    # The hook runs from the top of the worktree being committed. A hook reached
+    # through a shared core.hooksPath in another repository has nothing to check;
+    # every worktree of the vault's repository (they share its hooks) is checked.
     try:
-        committing = git_path(cwd, "rev-parse", "--absolute-git-dir")
+        committing = git_path(cwd, "rev-parse", "--git-common-dir")
     except Refused:
         return EXIT_OK
-    if not same(committing, git_path(vault, "rev-parse", "--absolute-git-dir", env=own_repo_env())):
+    if not same(committing, git_path(vault, "rev-parse", "--git-common-dir", env=own_repo_env())):
         return EXIT_OK
+    vault = vault_in_committing_worktree(vault, cwd)
     top = git_path(cwd, "rev-parse", "--show-toplevel")
-    try:
-        vault.relative_to(top)
-    except ValueError:
-        raise Refused(f"el vault {vault.as_posix()} no está dentro del repositorio {top.as_posix()}; "
-                      "revisa --vault en el hook (vault_precommit.py install)")
     real_env = real_index_env(top)
     names = [n for n in git(top, "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z")
              .decode("utf-8").split("\0") if n]
