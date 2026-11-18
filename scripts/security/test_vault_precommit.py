@@ -29,15 +29,34 @@ def put(path: Path, text: str) -> None:
     path.write_bytes(text.encode("utf-8"))  # LF as written, on every platform
 
 
+def clean_env() -> dict:
+    """No GIT_* from the caller except the isolated global config set by `isolated_git`."""
+    keep = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k in keep}
+
+
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    return subprocess.run(["git", *GIT_ID, *args], cwd=repo, capture_output=True, env=env, check=check)
+    return subprocess.run(["git", *GIT_ID, *args], cwd=repo, capture_output=True, env=clean_env(), check=check)
 
 
-def run(*args: str) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """The script as the hook runs it: `run` from the top of the repository being
+    committed (the vault's, unless the test says otherwise)."""
+    if cwd is None and args[0] == "run":
+        cwd = Path(args[2])
+    env = clean_env()
     env["PYTHONIOENCODING"] = "utf-8"
-    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, env=env)
+    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, env=env, cwd=cwd)
+
+
+@pytest.fixture(autouse=True)
+def isolated_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Git reads a temp global config and no system config: the user's never matters."""
+    cfg = tmp_path / "gitconfig-global"
+    cfg.write_bytes(b"")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    return cfg
 
 
 @pytest.fixture
@@ -182,3 +201,128 @@ def test_hook_blocks_commit_on_partial_staging(vault: Path):
     c = git(vault, "commit", "-q", "-m", "critica", check=False)
     assert c.returncode != 0
     assert git(vault, "rev-list", "--count", "HEAD").stdout.strip() == b"1"
+
+
+# ---- fix round 1 ---------------------------------------------------------------
+
+def test_precommit_catches_a_rename_that_adds_a_secret(vault: Path):
+    old, new = "Projects/x/Criticas/CR-9010.md", "Projects/x/Criticas/CR-9011.md"
+    body = "".join(f"Linea inventada numero {i} de una objecion.\n" for i in range(40))
+    put(vault / old, body)
+    git(vault, "add", old)
+    git(vault, "commit", "-q", "-m", "previa")
+    git(vault, "mv", old, new)
+    put(vault / new, body + fake_block() + "\n")
+    git(vault, "add", new)
+    st = git(vault, "-c", "diff.renames=true", "diff", "--cached", "--name-status", "-M").stdout.decode()
+    assert st.startswith("R"), st  # git does see it as a rename
+    r = run("run", "--vault", str(vault))
+    assert r.returncode == 0, r.stderr
+    assert "PRIVATE KEY" not in staged(vault, new)
+    assert f"Kairo: redactado {new} (1)" in r.stderr.decode("utf-8")
+
+
+def test_precommit_catches_a_type_change(vault: Path):
+    # a committed symlink (made in the index, so no symlink privilege is needed)
+    # becomes a regular file holding a key: git stages it as T
+    rel = "Projects/x/Criticas/CR-9012.md"
+    link = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=vault, input=b"otro.md",
+                          capture_output=True, env=clean_env(), check=True).stdout.decode().strip()
+    git(vault, "update-index", "--add", "--cacheinfo", f"120000,{link},{rel}")
+    git(vault, "commit", "-q", "-m", "enlace")
+    put(vault / rel, "Ahora es un fichero.\n" + fake_block() + "\n")
+    git(vault, "rm", "-q", "--cached", rel)
+    git(vault, "add", rel)
+    st = git(vault, "diff", "--cached", "--name-status").stdout.decode()
+    if not st.startswith("T"):
+        pytest.skip(f"este git no deja preparar un cambio de tipo aquí ({st.strip()!r})")
+    r = run("run", "--vault", str(vault))
+    assert r.returncode == 0, r.stderr
+    assert "PRIVATE KEY" not in staged(vault, rel)
+
+
+def test_install_refuses_a_shared_core_hooks_path(vault: Path, isolated_git: Path, tmp_path: Path):
+    shared = tmp_path / "hooks-compartidos"
+    shared.mkdir()
+    isolated_git.write_text(f"[core]\n\thooksPath = {shared.as_posix()}\n", encoding="utf-8")
+    r = run("install", "--vault", str(vault), "--python", sys.executable)
+    assert r.returncode == 3, r.stderr
+    out = json.loads(r.stdout)
+    assert "core.hooksPath" in out["error"] and "git config --local core.hooksPath" in out["error"]
+    assert list(shared.iterdir()) == []
+    # a local core.hooksPath (even the same folder) is the vault's own decision
+    git(vault, "config", "--local", "core.hooksPath", shared.as_posix())
+    r = run("install", "--vault", str(vault), "--python", sys.executable)
+    assert r.returncode == 0, r.stderr
+    assert (shared / "pre-commit").is_file()
+
+
+def test_run_in_another_repository_does_nothing(vault: Path, tmp_path: Path):
+    other = tmp_path / "otro-repo"
+    other.mkdir()
+    git(other, "init", "-q")
+    git(other, "config", "core.autocrlf", "false")
+    rel = "nota.md"
+    text = "Ajeno.\n" + fake_block() + "\n"
+    put(other / rel, text)
+    git(other, "add", rel)
+    # the vault has its own staged key with unstaged changes: none of its business here
+    vrel = "Projects/x/Criticas/CR-9015.md"
+    vtext = fake_block() + "\n"
+    put(vault / vrel, vtext)
+    git(vault, "add", vrel)
+    put(vault / vrel, vtext + "sin preparar\n")
+    r = run("run", "--vault", str(vault), cwd=other)
+    assert r.returncode == 0, r.stderr
+    assert r.stderr == b""
+    assert staged(vault, vrel) == vtext
+    assert staged(other, rel) == text
+    assert (other / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == text
+
+
+def test_run_refuses_a_vault_outside_the_committing_worktree(tmp_path: Path):
+    # the vault's git dir is the committing one, but --vault names a folder that is
+    # not under that repository's top (a hand-edited hook): refuse, never skip all
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    elsewhere = tmp_path / "vault-fuera"
+    (elsewhere / "Papers").mkdir(parents=True)
+    (elsewhere / "Projects").mkdir()
+    env = clean_env()
+    env.update({"PYTHONIOENCODING": "utf-8", "GIT_DIR": str(repo / ".git"), "GIT_WORK_TREE": str(repo)})
+    # GIT_DIR in the hook's environment names the committing repo; the vault folder
+    # itself must still resolve to that same git dir for the check to apply
+    (elsewhere / ".git").write_text(f"gitdir: {(repo / '.git').as_posix()}\n", encoding="utf-8")
+    r = subprocess.run([sys.executable, str(SCRIPT), "run", "--vault", str(elsewhere)], cwd=repo,
+                       capture_output=True, env=env)
+    assert r.returncode == 1
+    assert "no está dentro del repositorio" in r.stderr.decode("utf-8")
+
+
+def test_commit_with_paths_also_redacts_the_real_index(vault: Path):
+    run("install", "--vault", str(vault), "--python", sys.executable)
+    rel = "Projects/x/Criticas/CR-9013.md"
+    put(vault / rel, "Primera version.\n")
+    git(vault, "add", rel)
+    git(vault, "commit", "-q", "-m", "previa")
+    put(vault / rel, "Segunda version.\n" + fake_block() + "\n")
+    c = git(vault, "commit", "-q", "-m", "solo esta", "--", rel, check=False)
+    assert c.returncode == 0, c.stderr
+    committed = git(vault, "show", "HEAD:" + rel).stdout.decode("utf-8")
+    assert "PRIVATE KEY" not in committed and "[REDACTADO private_key" in committed
+    assert "PRIVATE KEY" not in staged(vault, rel)  # the index git leaves behind
+    assert git(vault, "status", "--porcelain", "--", rel).stdout == b""
+
+
+def test_hook_says_when_python_is_gone(vault: Path, tmp_path: Path):
+    gone = tmp_path / "no-existe" / "python.exe"
+    r = run("install", "--vault", str(vault), "--python", str(gone))
+    assert r.returncode == 0, r.stderr
+    rel = "Projects/x/Criticas/CR-9014.md"
+    put(vault / rel, "Nada privado.\n")
+    git(vault, "add", rel)
+    c = git(vault, "commit", "-q", "-m", "x", check=False)
+    assert c.returncode != 0
+    assert (f"Kairo: no encuentro Python en {gone.as_posix()}; vuelve a ejecutar vault_precommit.py install"
+            in c.stderr.decode("utf-8"))

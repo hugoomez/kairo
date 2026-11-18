@@ -259,9 +259,11 @@ STEP_BUDGET_S = {"sota_staleness": 20, "digest": 25, "ledger": 30, "reindex": 25
 def redact_written(path: Path, vault: Path) -> None:
     """Private material an agent wrote into a vault file is replaced in place by its
     fingerprint (redact.py). Papers/ is third-party text checked verbatim elsewhere and
-    is left alone; binaries and files over 5 MB too. Never raises; the event names the
+    is left alone; symlinks, binaries and files over 5 MB too. Never raises; the event names the
     file and the count, never the material."""
     try:
+        if path.is_symlink():           # never replace a link (nor write through it)
+            return
         try:
             r = path.resolve().relative_to(vault.resolve()).as_posix()
         except ValueError:

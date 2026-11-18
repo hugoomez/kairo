@@ -109,6 +109,36 @@ class TestPostWriteRedacts(unittest.TestCase):
         self.assertEqual(big.read_text(encoding="utf-8"), big_text)
         self.assertNotIn('"redact"', self.log_text())
 
+    def test_post_write_never_replaces_a_symlink(self):
+        block = fake_block()
+        target = self.vault / "Projects" / "x" / "destino.md"
+        target.write_text(block + "\n", encoding="utf-8")
+        link = self.vault / "Projects" / "x" / "Criticas" / "CR-9003.md"
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"no se pueden crear enlaces simbólicos aquí ({exc})")
+        r = self.hook({"tool_name": "Write", "tool_input": {"file_path": str(link)}, "cwd": str(self.vault)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(target.read_text(encoding="utf-8"), block + "\n")
+
+    def test_redact_written_skips_what_is_a_symlink(self):
+        # runs where symlinks cannot be created: the path only claims to be one
+        from unittest import mock
+        sys.path.insert(0, str(HOOK.parent))
+        import kairo_hook
+        block = fake_block()
+        note = self.vault / "Projects" / "x" / "Criticas" / "CR-9004.md"
+        note.write_text(block + "\n", encoding="utf-8")
+        real = Path.is_symlink
+        with mock.patch.dict(os.environ, {"KAIRO_STATE_DIR": str(self.state)}):  # never the real ~/.kairo
+            with mock.patch.object(Path, "is_symlink", lambda p: p == note or real(p)):
+                kairo_hook.redact_written(note, self.vault)
+            self.assertEqual(note.read_text(encoding="utf-8"), block + "\n")
+            kairo_hook.redact_written(note, self.vault)  # and without the claim it is redacted
+        self.assertNotIn("PRIVATE KEY", note.read_text(encoding="utf-8"))
+
     def test_clean_note_is_left_untouched(self):
         note = self.vault / "Projects" / "x" / "Criticas" / "CR-9002.md"
         note.write_text("---\nid: CR-9002\n---\n\nSin nada privado.\n", encoding="utf-8")
