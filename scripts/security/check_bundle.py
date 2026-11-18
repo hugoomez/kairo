@@ -362,6 +362,15 @@ PASSWORD_ASSIGN_RE = re.compile(
 CRED_URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://([^\s:/@\"'<>]+):([^\s@/\"'<>]+)@[^\s/\"'<>]+")
 GIT_CRED_SECTION_RE = re.compile(r"(?im)^\s*\[credential\b|^\s*helper\s*=")
 
+# Content rules (not file-name rules) as (kind, regex), for reuse by redact.py. Matches
+# still need the validators above (looks_secret, provider_ok, ...) before they count.
+PATTERNS: list[tuple[str, re.Pattern]] = (
+    [("private_key", PRIVATE_KEY_RE), ("credential_url", CRED_URL_RE)]
+    + [("api_key", rx) for _n, rx in PROVIDER_RULES]
+    + [("api_key", API_ASSIGN_RE), ("token", TOKEN_ASSIGN_RE), ("token", PASSWORD_ASSIGN_RE),
+       ("token", JWT_RE), ("token", BEARER_RE)]
+)
+
 # vault references in content
 _ABS_PATH_RE = re.compile(r"(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/]|(?<![A-Za-z0-9_.])/(?:Users|home|mnt|root|media|Volumes)/|~[\\/])"
                           r"[^\s\"'`<>|*?]+")
