@@ -107,3 +107,49 @@ def test_idempotent():
 def test_check_bundle_exposes_patterns():
     import check_bundle
     assert all(isinstance(n, str) and hasattr(rx, "finditer") for n, rx in check_bundle.PATTERNS)
+
+
+def test_unterminated_block_plain_text():
+    # plain-text mode: a header with no END is redacted to the end of the text
+    head = DASHES + "BEGIN OPENSSH PRIVATE KEY" + DASHES + "\n" + base64.b64encode(os.urandom(60)).decode()
+    text = "antes\n" + head + "\nresto que tambien se va\n"
+    out, findings = redact.redact_text(text)
+    assert out == "antes\n[REDACTADO private_key sha256:" + sha12(head + "\nresto que tambien se va\n") + "]"
+    assert len(findings) == 1
+
+
+def test_redact_json_keeps_valid_json():
+    block = fake_block()
+    open_head = DASHES + "BEGIN RSA PRIVATE KEY" + DASHES + "\n" + base64.b64encode(os.urandom(60)).decode()
+    doc = {"messages": [
+        {"role": "user", "content": "mira\n" + block + "\nfin"},
+        {"role": "tool", "content": "cortado " + open_head},
+        {"role": "assistant", "content": "mensaje posterior intacto", "n": 3, "ok": True},
+    ]}
+    res = run_cli("redact-json", json.dumps(doc))
+    assert res.returncode == 0
+    out = json.loads(res.stdout.decode("utf-8"))
+    msgs = out["messages"]
+    assert msgs[0]["content"] == "mira\n[REDACTADO private_key sha256:" + sha12(block) + "]\nfin"
+    assert msgs[1]["content"] == "cortado [REDACTADO private_key sha256:" + sha12(open_head) + "]"
+    assert msgs[2] == doc["messages"][2]
+    assert block.splitlines()[1] not in res.stdout.decode("utf-8")
+
+
+def test_redact_json_invalid():
+    res = run_cli("redact-json", "{no es json")
+    assert res.returncode == 1
+    assert res.stdout == b""
+    assert len(res.stderr.decode().strip().splitlines()) == 1
+
+
+def test_overlap_nested():
+    pw = "Zq8vK2mXr7TpL4nB9wYc"
+    inner = DASHES + "BEGIN RSA PRIVATE KEY" + DASHES + "\nAPI_KEY=" + pw + "\n" + DASHES + "END RSA PRIVATE KEY" + DASHES
+    out, findings = redact.redact_text("a " + inner + " b")
+    assert out == "a [REDACTED_PLACEHOLDER] b".replace("[REDACTED_PLACEHOLDER]", "[REDACTADO private_key sha256:" + sha12(inner) + "]")
+    assert [f["type"] for f in findings] == ["private_key"]
+    url = "TOKEN=https://user:" + pw + "@host.example/x"
+    out2, f2 = redact.redact_text(url)
+    assert pw not in out2 and len(f2) == 1 and len(re.findall(r"\[REDACTADO", out2)) == 1
+    assert redact.redact_text(url) == (out2, f2)

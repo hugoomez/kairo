@@ -2,6 +2,10 @@
 """Redact private material from text, leaving a fingerprint instead.
 
     redact.py redact < in > out    exit 0
+    redact.py redact-json < in.json > out.json
+                                   redacts every decoded string (keys too) of a JSON
+                                   document, so fingerprints hash the real material and
+                                   the output stays valid JSON; invalid JSON: exit 1
     redact.py check  < in          exit 0 clean, exit 3 if something was found;
                                    stdout is {"findings": [{"type", "sha256"}]}
 
@@ -98,16 +102,36 @@ def has_secret(text: str) -> bool:
     return bool(_spans(text))
 
 
+def redact_json_value(v):
+    if isinstance(v, str):
+        return redact_text(v)[0]
+    if isinstance(v, list):
+        return [redact_json_value(x) for x in v]
+    if isinstance(v, dict):
+        return {redact_text(k)[0]: redact_json_value(x) for k, x in v.items()}
+    return v
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 1 or argv[0] not in ("redact", "check"):
-        sys.stderr.write("uso: redact.py redact|check < entrada\n")
+    if len(argv) != 1 or argv[0] not in ("redact", "redact-json", "check"):
+        sys.stderr.write("uso: redact.py redact|redact-json|check < entrada\n")
         return EXIT_ERROR
     try:
         text = sys.stdin.buffer.read().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         sys.stderr.write("error: la entrada no es UTF-8 legible\n")
         return EXIT_ERROR
+    if argv[0] == "redact-json":
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            sys.stderr.write("error: la entrada no es JSON valido\n")
+            return EXIT_ERROR
+        payload = json.dumps(redact_json_value(doc), ensure_ascii=False, separators=(",", ":"))
+        sys.stdout.buffer.write(payload.encode("utf-8"))
+        sys.stdout.buffer.flush()
+        return EXIT_OK
     redacted, findings = redact_text(text)
     if argv[0] == "redact":
         sys.stdout.buffer.write(redacted.encode("utf-8"))
