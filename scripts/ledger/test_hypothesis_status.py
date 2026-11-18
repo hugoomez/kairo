@@ -263,8 +263,9 @@ class TestApplyAndDiscard(Base):
 class TestSingleWriter(unittest.TestCase):
     def test_only_the_status_writers_write_a_status(self):
         """A hypothesis status is written only by hypothesis_status.py; claims by
-        claim_status.py; ideas by idea.py. Any new script writing `status` fails here."""
-        allowed = {"hypothesis_status.py", "claim_status.py", "idea.py"}
+        claim_status.py; ideas by idea.py; study questions by
+        study_status.py. Any new script writing `status` fails here."""
+        allowed = {"hypothesis_status.py", "claim_status.py", "idea.py", "study_status.py"}
         scripts = HERE.parent
         writers = set()
         pattern = re.compile(r"""(_?set_scalar\([^)]*["']status["']|set_fields\([^)]*["']status["']|["']status["']\s*:\s*["']descartada)""")

@@ -23,6 +23,13 @@ Included (each --experiment note):
     ## Umbral de invalidez, ## Resultado, and ## Enmiendas (labelled: the
     amendments are part of the frozen record the analysis ran under)
 Included (each --analysis-output file): the file verbatim.
+Included (--question Q-XXXX, instead of --note): the question's frontmatter `id`
+    and ## Pregunta, ## Población y marco, ## Estimandos, ## Resultado (which
+    holds estimate.py's output in a ```estimate-json block); its `linked_plan`
+    (the design's plan folder, same project) with frontmatter id, question,
+    frozen_at, frozen_commit and ## Población y marco muestral, ## Inclusión y
+    exclusión, ## Estimandos, ## Clasificadores, ## Intervalos. Never a units
+    file, and not the plan's ethics section.
 
 Everything else is excluded -- notably ## Revisión del ciclo, ## Hipótesis
 rival descartada, ## Lección, ## Verificación independiente, history,
@@ -42,6 +49,8 @@ Usage:
         [--experiment E-XXXX.md ...] [--analysis-output file ...]
         [--section "<heading>"] [--out packet.md] [--manifest manifest.json]
         [--json]
+    python verifier_packet.py --vault <vault_root> --question Q-XXXX
+        [--out packet.md] [--store] [--manifest manifest.json] [--json]
 
 `send: never` (A3, scripts/security/send_guard.py): a flagged --note or
 --experiment is refused (exit 2) -- its content must never reach a model, so
@@ -71,7 +80,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged, is_model_notes  # noqa: E402  (single definitions)
 
-__version__ = "1.6.0"   # 1.6.0: supplement sections §S1, §S1.2 (verbatim_fulltext 1.6.0); 1.5.0: a bare "Resumen" / "Abstract" locator; 1.4.0: Eq. (3), Tabla S1, Fig. A2, bare §A; named locators match headings only
+__version__ = "1.7.0"   # 1.7.0: --question (study question + frozen plan + estimate.py output); 1.6.0: supplement sections §S1, §S1.2 (verbatim_fulltext 1.6.0); 1.5.0: a bare "Resumen" / "Abstract" locator; 1.4.0: Eq. (3), Tabla S1, Fig. A2, bare §A; named locators match headings only
 TOOL_ID = f"kairo/verifier_packet@{__version__}"
 
 # --------------------------------------------------------------------------
@@ -808,6 +817,82 @@ def build(vault: str, note: str, experiments: list[str],
     return packet, manifest
 
 
+QUESTION_SECTIONS = ("Pregunta", "Población y marco", "Estimandos", "Resultado")
+PLAN_FM_KEYS = ("id", "question", "frozen_at", "frozen_commit")
+PLAN_SECTIONS = ("Población y marco muestral", "Inclusión y exclusión", "Estimandos",
+                 "Clasificadores", "Intervalos")
+
+
+def build_question(vault: str, qid: str) -> tuple[str, dict]:
+    """--question: the question, its frozen plan, and the estimate.py output that
+    ## Resultado holds (the ```estimate-json block). Allow-list as for notes:
+    the question's frontmatter `id` and QUESTION_SECTIONS; the plan's PLAN_FM_KEYS
+    and PLAN_SECTIONS (not its ethics section). Units data are never read."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import designs  # noqa: PLC0415
+    ok_id = re.match(r"^[A-Z]+-\d{4}$", qid or "") and designs.design_for_id(designs.load(), qid)
+    note = find_note(vault, qid) if ok_id else None
+    if note is None:
+        raise ValueError(f"{qid}: no se encuentra la pregunta en Projects/*/ (¿id de un diseño de designs.toml?)")
+    if is_flagged(Path(note)):
+        raise ValueError(f"{qid} is marked send: never; it is never sent to the verifier")
+    fm, body = split_frontmatter(read_text(note))
+    plan_id = fm_scalar(fm, "linked_plan") or ""
+    plan = None
+    if plan_id:
+        proj = Path(note).parents[1]
+        folder = _study_folder(plan_id)
+        cand = proj / folder / f"{plan_id}.md" if folder else None
+        plan = str(cand) if cand and cand.is_file() else None
+    if plan is None:
+        raise ValueError(f"{qid}: linked_plan {plan_id or '(vacío)'} no se encuentra en su proyecto")
+    if is_flagged(Path(plan)):
+        raise ValueError(f"{plan_id} is marked send: never; it is never sent to the verifier")
+    manifest: dict = {"tool": TOOL_ID, "scope": "question", "sources": [], "citations": [],
+                      "analysis_outputs": []}
+    out = [f"# Paquete de verificación ({TOOL_ID})", "",
+           f"- Pregunta verificada: {qid}", "- Alcance: question",
+           "- Contenido: solo la pregunta, su plan de medición congelado y la salida de "
+           "estimate.py guardada en ## Resultado (bloque estimate-json). Ninguna fila de datos.", ""]
+
+    def add(path: str, role: str, title: str, fm_keys: tuple, allowed: tuple, labels: dict) -> None:
+        nfm, nbody = split_frontmatter(read_text(path))
+        out.extend([f"## {title}", ""])
+        fm_inc, fm_exc, kept = [], [], []
+        for k, lines in frontmatter_blocks(nfm):
+            if k in fm_keys:
+                fm_inc.append(k)
+                kept.extend(lines)
+            else:
+                fm_exc.append(k)
+        if kept:
+            out.extend(["### Frontmatter (subconjunto)", "", "```yaml", *kept, "```", ""])
+        inc, exc = [], []
+        for h, text in body_sections(nbody):
+            shown = h or "(preámbulo)"
+            if h not in allowed:
+                exc.append(shown)
+                continue
+            inc.append(shown)
+            out.extend([f"### {labels.get(h, h)}", "", text.strip() or "(sección vacía)", ""])
+        manifest["sources"].append({
+            "path": _display(path, vault), "role": role,
+            "included_sections": inc, "excluded_sections": exc,
+            "included_frontmatter": fm_inc, "excluded_frontmatter": fm_exc})
+
+    add(note, "question", f"Pregunta: {qid}", HYP_FM_KEYS, QUESTION_SECTIONS,
+        {"Resultado": "Resultado (salida de estimate.py en el bloque estimate-json, y su lectura)"})
+    add(plan, "plan", f"Plan de medición congelado: {plan_id}", PLAN_FM_KEYS, PLAN_SECTIONS,
+        {h: f"{h} (plan congelado)" for h in PLAN_SECTIONS})
+    if "```estimate-json" not in dict(body_sections(body)).get("Resultado", ""):
+        out.extend(["(## Resultado no contiene bloque estimate-json: no hay salida de estimate.py "
+                    "que contrastar)", ""])
+    packet = "\n".join(out).rstrip("\n") + "\n"
+    manifest["sha256"] = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+    manifest["bytes"] = len(packet.encode("utf-8"))
+    return packet, manifest
+
+
 def dependency_ids(fm_lines: list[str]) -> list[str]:
     """`depends_on` ids, inline (`[C-0001, H-0002]`) or as a block list."""
     ids: list[str] = []
@@ -819,9 +904,26 @@ def dependency_ids(fm_lines: list[str]) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def _study_folder(nid: str) -> str | None:
+    """The folder of a study-design node (Q-) or of its plan (M-), from designs.toml."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import designs  # noqa: PLC0415
+    reg = designs.load()
+    d = designs.design_for_id(reg, nid)
+    if d is not None:
+        return d["folder"]
+    prefix = nid.split("-", 1)[0]
+    return next((x["plan_folder"] for x in reg.values() if x["plan_prefix"] == prefix), None)
+
+
 def find_note(vault: str, nid: str) -> str | None:
-    """A claim (Claims/) or hypothesis (Hipotesis/) note by id, any project."""
-    folder = "Claims" if nid.startswith("C-") else "Hipotesis"
+    """A claim (Claims/), hypothesis (Hipotesis/), study node or plan note by id, any project."""
+    if nid.startswith(("C-", "H-")):
+        folder = "Claims" if nid.startswith("C-") else "Hipotesis"
+    else:
+        folder = _study_folder(nid)
+        if folder is None:
+            return None
     for p in sorted(glob.glob(os.path.join(vault, "Projects", "*", folder, f"{nid}*.md"))):
         name = os.path.basename(p)
         if name == f"{nid}.md" or name.startswith(f"{nid} "):
@@ -946,8 +1048,11 @@ def main(argv=None) -> int:
                                 "(allow-list isolation).")
     p.add_argument("--version", action="version", version=TOOL_ID)
     p.add_argument("--vault", required=True, help="vault root (for Papers/)")
-    p.add_argument("--note", required=True,
+    p.add_argument("--note",
                    help="hypothesis note, or a draft note file outside the vault")
+    p.add_argument("--question", metavar="Q-XXXX",
+                   help="study question: the question, its frozen plan and the estimate.py "
+                        "output in ## Resultado (instead of --note)")
     p.add_argument("--experiment", action="append", default=[],
                    help="adjudicating experiment note (repeatable)")
     p.add_argument("--analysis-output", action="append", default=[],
@@ -969,7 +1074,14 @@ def main(argv=None) -> int:
         except (AttributeError, ValueError):
             pass
 
-    for f in [a.note, *a.experiment, *a.analysis_output]:
+    if bool(a.note) == bool(a.question):
+        print("error: pass exactly one of --note or --question", file=sys.stderr)
+        return 2
+    if a.question and (a.experiment or a.analysis_output or a.section):
+        print("error: --question takes no --experiment, --analysis-output or --section",
+              file=sys.stderr)
+        return 2
+    for f in [*([a.note] if a.note else []), *a.experiment, *a.analysis_output]:
         if not os.path.isfile(f):
             print(f"error: file not found: {f}", file=sys.stderr)
             return 2
@@ -977,8 +1089,11 @@ def main(argv=None) -> int:
         print(f"error: vault not found: {a.vault}", file=sys.stderr)
         return 2
     try:
-        packet, manifest = build(a.vault, a.note, a.experiment,
-                                 a.analysis_output, a.section)
+        if a.question:
+            packet, manifest = build_question(a.vault, a.question)
+        else:
+            packet, manifest = build(a.vault, a.note, a.experiment,
+                                     a.analysis_output, a.section)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

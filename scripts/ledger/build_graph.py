@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Kairo state ledger — dependency graph over Hipotesis/ and Claims/.
+"""Kairo state ledger — dependency graph over Hipotesis/, Claims/ and study nodes.
 
-Builds one graph over every ``Projects/*/Hipotesis/*.md`` (``H-XXXX``) and
-``Projects/*/Claims/*.md`` (``C-XXXX``) note in a vault, from their
+Builds one graph over every ``Projects/*/Hipotesis/*.md`` (``H-XXXX``),
+``Projects/*/Claims/*.md`` (``C-XXXX``) and study-design node (each design's
+``folder`` in ``config/designs.toml``, e.g. ``Preguntas/Q-XXXX``; its valid
+statuses are the design's ``statuses``) note in a vault, from their
 ``depends_on:`` lists (and a claim's ``about:`` link), then:
 
 - **crítico** — dependency cycles; dangling references (an id in
@@ -37,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from notes import as_list, first_line, read_note, section  # noqa: E402
+import designs as _designs  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security"))
 from send_guard import is_flagged  # noqa: E402  (A3's single definition of the flag)
@@ -55,7 +58,7 @@ FAILED = {("H", "refutada"), ("C", "fallido"), ("C", "refutado")}
 @dataclass
 class Node:
     id: str
-    kind: str                 # "H" | "C"
+    kind: str                 # "H" | "C" | a design prefix ("Q")
     project_dir: str          # Projects/<slug>
     path: str                 # vault-relative, forward slashes
     status: str
@@ -84,10 +87,24 @@ def _rel(p: Path, root: Path) -> str:
     return p.relative_to(root).as_posix()
 
 
+def study_designs() -> dict[str, dict]:
+    """prefix -> design, from config/designs.toml ({} if it cannot be read)."""
+    try:
+        return {d["prefix"]: d for d in _designs.load().values()}
+    except Exception:  # noqa: BLE001  the ledger must still build for H / C
+        return {}
+
+
+def study_folders() -> set[str]:
+    return {d["folder"] for d in study_designs().values()}
+
+
 def load_nodes(vault: Path) -> tuple[dict[str, Node], list[Finding]]:
     nodes: dict[str, Node] = {}
     findings: list[Finding] = []
-    for sub, kind in (("Hipotesis", "H"), ("Claims", "C")):
+    studies = study_designs()
+    sources = [("Hipotesis", "H"), ("Claims", "C")] + [(d["folder"], p) for p, d in sorted(studies.items())]
+    for sub, kind in sources:
         for path in sorted(vault.glob(f"Projects/*/{sub}/*.md")):
             parsed = read_note(path)
             if parsed is None:
@@ -98,7 +115,8 @@ def load_nodes(vault: Path) -> tuple[dict[str, Node], list[Finding]]:
                 continue
             proj = _rel(path.parent.parent, vault)
             status = str(fm.get("status", "")).strip()
-            title_src = section(body, "Claim") if kind == "H" else section(body, "Enunciado")
+            title_src = {"H": "Claim", "C": "Enunciado"}.get(kind, "Pregunta")
+            title_src = section(body, title_src)
             node = Node(
                 id=nid, kind=kind, project_dir=proj, path=_rel(path, vault),
                 status=status, depends_on=as_list(fm.get("depends_on")),
@@ -117,7 +135,8 @@ def load_nodes(vault: Path) -> tuple[dict[str, Node], list[Finding]]:
                                         f"id {nid} aparece en {nodes[nid].path} y en {node.path}"))
                 continue
             nodes[nid] = node
-            allowed = H_STATUSES if kind == "H" else C_STATUSES
+            allowed = (H_STATUSES if kind == "H" else C_STATUSES if kind == "C"
+                       else set(studies[kind]["statuses"]))
             if status not in allowed:
                 findings.append(Finding("crítico", "bad_status", nid, proj,
                                         f"status '{status}' fuera del enum ({' | '.join(sorted(allowed))})"))
@@ -306,6 +325,14 @@ def render_ledger(project_dir: str, nodes: dict[str, Node], findings: list[Findi
                          f"{n.source or '—'} | {n.status} |")
     else:
         lines.append("Ninguna.")
+    studies = [x for x in mine if x.kind not in ("H", "C")]
+    if studies:
+        lines += ["", "## Preguntas", "",
+                  "| id | estado | depende de | flags | pregunta |",
+                  "|----|--------|------------|-------|----------|"]
+        for n in studies:
+            lines.append(f"| {n.id} | {n.status} | {', '.join(n.depends_on) or '—'} | "
+                         f"{_flags_for(n.id, findings) or '—'} | {n.title} |")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -326,7 +353,7 @@ def write_ledgers(vault: Path, nodes, findings, dirs: list[str]) -> list[Path]:
     written = []
     for d in dirs:
         pdir = vault / d
-        if not ((pdir / "Hipotesis").is_dir() or (pdir / "Claims").is_dir()):
+        if not any((pdir / f).is_dir() for f in ("Hipotesis", "Claims", *study_folders())):
             continue
         hub = read_note(pdir / "_hub.md")
         text = render_ledger(d, nodes, findings, hub[0] if hub else {})
@@ -347,7 +374,7 @@ def hook_main() -> int:
         fp = Path((payload.get("tool_input") or {}).get("file_path") or "")
         proj = next((p for p in fp.parents
                      if p.parent.name == "Projects" and p != fp), None)
-        if proj is None or fp.parent.name not in ("Hipotesis", "Claims"):
+        if proj is None or fp.parent.name not in ("Hipotesis", "Claims", *study_folders()):
             return 0
         vault = proj.parent.parent
         nodes, findings = build(vault)

@@ -10,6 +10,9 @@ status: abierta
 linea_publicacion: false
 # linked_plan — plan de medición congelado (M-XXXX); vacío hasta que se congele.
 linked_plan:
+# units_dataset — nombre (en Datos/registro.json) del dataset de unidades con el que se
+# corrió estimate.py; la puerta vuelve a correrlo con él. Vacío hasta estimar.
+units_dataset:
 history: []
 ---
 
