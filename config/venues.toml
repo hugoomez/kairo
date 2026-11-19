@@ -1,0 +1,19 @@
+# Congresos a los que apunta un manuscrito. `manuscript.py init --venue <nombre>`
+# solo acepta los de esta lista; `body_pages = 0` es sin límite. `excludes` son
+# las partes que no cuentan para el límite de páginas del cuerpo.
+
+[acm-sigconf]
+class = "acmart"
+options = "sigconf"
+body_pages = 12
+excludes = ["references", "appendix"]
+
+[usenix]
+class = "article"
+package = "usenix-2020-09"
+body_pages = 13
+excludes = ["references", "appendix"]
+
+[generic]
+class = "article"
+body_pages = 0

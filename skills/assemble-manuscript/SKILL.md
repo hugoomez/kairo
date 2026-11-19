@@ -98,6 +98,18 @@ at the end. The outline, not this skill, decides the sections: each has a
    not ready and touches nothing else in the file:
    `manuscript.py write-section --vault <vault> --project-dir Projects/<slug>
    --thread <paper_thread> --section <id> --from <tmp>/section.md`.
+   **Study design, language and venue.** For a study project, start the
+   outline with `manuscript.py init ... --design <design> --lang es|en
+   --venue <venue>`: the sections come from the design's
+   `manuscript_sections` in `config/designs.toml` (`medicion` has eight), and
+   the outline header records `design`, `lang` and `venue` (a name from
+   `config/venues.toml`; an unknown one is refused). A section may rest on a
+   study question `Q-XXXX` (`manuscript.py bind --id Q-XXXX`): it counts only
+   when the question is in its design's publishable state (`estimada` for
+   `medicion`) and passes the study gate (`study_status.py gate`); coverage
+   lists what is missing, including the current status. `write-section`
+   drafts in the outline's `lang`; every other rule is unchanged: real
+   citations, nothing past a gate.
 4. Fresh verification of each drafted section and the AI-use disclosure work
    exactly as below. Commit the manuscript, the coverage view and the
    verification records together.

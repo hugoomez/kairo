@@ -51,13 +51,60 @@ class TestInit(Base):
             ms.init(self.proj, "t2", "T", None)
 
 
+class TestStudyDesign(Base):
+    def question(self, status):
+        d = self.tmp / "Projects" / "demo" / "Preguntas"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "Q-9001.md").write_text(
+            f"---\nid: Q-9001\nproject: PROJ-900\ndesign: medicion\nstatus: {status}\nhistory: []\n---\n\n# Q-9001\n",
+            encoding="utf-8")
+
+    def test_init_measurement_sections(self):
+        o, m = ms.init(self.proj, "med", "Estudio inventado", "acm-sigconf", design="medicion", lang="en")
+        meta, sections, _ = ms.parse_outline(o)
+        self.assertEqual([s["id"] for s in sections], [
+            "introduction", "background", "methodology", "ethics", "results", "discussion", "related-work", "open-science"])
+        self.assertEqual((meta["lang"], meta["venue"], meta["design"]), ("en", "acm-sigconf", "medicion"))
+        head = o.read_text(encoding="utf-8")
+        self.assertIn("\nlang: en\n", head)
+        self.assertIn("\nvenue: acm-sigconf\n", head)
+        self.assertIn("## Related work", m.read_text(encoding="utf-8"))
+
+    def test_default_lang_and_no_design_keep_old_sections(self):
+        o, _ = ms.init(self.proj, "old", "T", None)
+        meta, sections, _ = ms.parse_outline(o)
+        self.assertEqual((meta["lang"], len(sections)), ("es", 5))
+        self.assertNotIn("design", meta)
+
+    def test_unknown_venue_refused(self):
+        with self.assertRaises(ms.Refused):
+            ms.init(self.proj, "v", "T", "nope")
+        rc = ms.main(["init", "--project-dir", str(self.proj), "--thread", "v", "--title", "T", "--venue", "nope"])
+        self.assertEqual(rc, 3)
+        self.assertEqual(ms.main(["init", "--project-dir", str(self.proj), "--thread", "v", "--title", "T",
+                                  "--design", "medicion", "--lang", "en", "--venue", "generic"]), 0)
+
+    def test_question_dep_blocks_until_estimada(self):
+        ms.init(self.proj, "med", "T", None, design="medicion")
+        self.question("en_recoleccion")
+        self.assertEqual(ms.bind(self.proj, "med", "results", "Q-9001"), ["Q-9001"])
+        cov = ms.coverage(self.tmp, self.proj, "med")
+        sec = next(s for s in cov["sections"] if s["id"] == "results")
+        self.assertFalse(sec["ready"])
+        self.assertNotEqual(sec["state"], "respaldada")
+        self.assertTrue(any("en_recoleccion" in m for m in sec["deps"][0]["missing"]))
+        with self.assertRaises(ms.Refused):
+            ms.write_section(self.tmp, self.proj, "med", "results", "texto")
+        self.assertFalse(ms.dep_state(self.tmp, "Q-9001")["ok"])
+
+
 class TestBind(Base):
     def test_binds_existing_notes_once_and_keeps_the_rest(self):
-        o, _ = ms.init(self.proj, "t", "T", "COLT")
+        o, _ = ms.init(self.proj, "t", "T", "usenix")
         self.assertEqual(ms.bind(self.proj, "t", "resultados", "C-9001"), ["C-9001"])
         self.assertEqual(ms.bind(self.proj, "t", "resultados", "C-9001"), ["C-9001"])
         meta, sections, body = ms.parse_outline(o)
-        self.assertEqual(meta["venue"], "COLT")
+        self.assertEqual(meta["venue"], "usenix")
         self.assertIn("## Contribución", body)
         self.assertEqual(next(s for s in sections if s["id"] == "resultados")["depends_on"], ["C-9001"])
 

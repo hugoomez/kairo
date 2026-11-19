@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The paper a `teorico` project is organised around, from day one.
 
-    manuscript.py init  --project-dir D --thread T --title "..." [--venue V]
+    manuscript.py init  --project-dir D --thread T --title "..." [--venue V] [--design D] [--lang es|en]
     manuscript.py bind  --project-dir D --thread T --section S --id C-0003|H-0002
     manuscript.py show  --project-dir D --thread T            (JSON)
 
@@ -52,7 +52,9 @@ from pathlib import Path
 
 __version__ = "1.2.0"
 KINDS = ("prosa", "resultado", "cierre")
-_ID = re.compile(r"^(C|H)-\d{4}$")
+_ID = re.compile(r"^(C|H|Q)-\d{4}$")
+LANGS = ("es", "en")
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 _THREAD = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
 
 DEFAULT_SECTIONS = [
@@ -62,6 +64,18 @@ DEFAULT_SECTIONS = [
     {"id": "resultados", "title": "Resultados principales", "kind": "resultado"},
     {"id": "discusion", "title": "Discusión", "kind": "cierre"},
 ]
+
+# Titles of the sections a design names only by id, per manuscript language.
+TITLES = {
+    "introduction": ("Introducción", "Introduction"),
+    "background": ("Antecedentes", "Background"),
+    "methodology": ("Metodología", "Methodology"),
+    "ethics": ("Ética", "Ethics"),
+    "results": ("Resultados", "Results"),
+    "discussion": ("Discusión", "Discussion"),
+    "related-work": ("Trabajo relacionado", "Related work"),
+    "open-science": ("Ciencia abierta", "Open science"),
+}
 
 PLACEHOLDER = {
     "prosa": "_(pendiente — prosa: se redacta pronto, desde el Estado-del-arte y el propósito, con citas literales)_",
@@ -89,10 +103,17 @@ def project_id(project_dir: Path) -> str:
     return m.group(1) if m else "?"
 
 
+def _scalar(value: str) -> str:
+    return value if re.fullmatch(r"[a-z0-9][a-z0-9-]*", value) else json.dumps(value, ensure_ascii=False)
+
+
 def render_outline(meta: dict, sections: list[dict], body: str) -> str:
     lines = ["---", f"paper_thread: {meta['paper_thread']}", f"project: {meta['project']}",
-             f"title: {json.dumps(meta['title'], ensure_ascii=False)}", f"venue: {json.dumps(meta.get('venue') or 'por decidir', ensure_ascii=False)}",
-             f"created: {meta['created']}", "sections:"]
+             f"title: {json.dumps(meta['title'], ensure_ascii=False)}",
+             f"venue: {_scalar(meta.get('venue') or 'por decidir')}"]
+    if meta.get("design"):
+        lines.append(f"design: {meta['design']}")
+    lines += [f"lang: {meta.get('lang') or 'es'}", f"created: {meta['created']}", "sections:"]
     for s in sections:
         lines += [f"  - id: {s['id']}", f"    title: {json.dumps(s['title'], ensure_ascii=False)}",
                   f"    kind: {s['kind']}", f"    depends_on: [{', '.join(s.get('depends_on', []))}]"]
@@ -133,17 +154,43 @@ def parse_outline(path: Path) -> tuple[dict, list[dict], str]:
             raise Refused(f"section {s['id']}: kind must be one of {KINDS}")
         for d in s["depends_on"]:
             if not _ID.match(d):
-                raise Refused(f"section {s['id']}: depends_on {d!r} is not a C-XXXX / H-XXXX id")
+                raise Refused(f"section {s['id']}: depends_on {d!r} is not a C-XXXX / H-XXXX / Q-XXXX id")
     return meta, sections, m.group(2)
 
 
-def init(project_dir: Path, thread: str, title: str, venue: str | None) -> tuple[Path, Path]:
+def _venues(plugin_root: Path = PLUGIN_ROOT) -> dict:
+    import tomllib  # noqa: PLC0415
+    with open(plugin_root / "config" / "venues.toml", "rb") as fh:
+        return tomllib.load(fh)
+
+
+def design_sections(design: str, lang: str, plugin_root: Path = PLUGIN_ROOT) -> list[dict]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ledger"))
+    import designs as _designs  # noqa: PLC0415
+    reg = _designs.load(plugin_root)
+    if design not in reg:
+        raise Refused(f"unknown design {design!r}; known: {', '.join(sorted(reg))}")
+    out = []
+    for s in reg[design]["manuscript_sections"]:
+        es_en = TITLES.get(s["id"])
+        title = s.get("title") or (es_en[LANGS.index(lang)] if es_en else s["id"].replace("-", " ").capitalize())
+        out.append({"id": s["id"], "title": title, "kind": s["kind"], "depends_on": []})
+    return out
+
+
+def init(project_dir: Path, thread: str, title: str, venue: str | None,
+         design: str | None = None, lang: str = "es") -> tuple[Path, Path]:
     outline, manuscript = paths(project_dir, thread)
+    if lang not in LANGS:
+        raise Refused(f"lang must be one of {LANGS}")
+    if venue is not None and venue not in _venues():
+        raise Refused(f"unknown venue {venue!r}; known: {', '.join(sorted(_venues()))}")
     if outline.exists() or manuscript.exists():
         raise Refused(f"the manuscript for thread {thread} already exists — never overwritten")
     meta = {"paper_thread": thread, "project": project_id(project_dir), "title": title.strip(),
-            "venue": venue, "created": date.today().isoformat()}
-    sections = [dict(s, depends_on=[]) for s in DEFAULT_SECTIONS]
+            "venue": venue, "design": design, "lang": lang, "created": date.today().isoformat()}
+    sections = (design_sections(design, lang) if design
+                else [dict(s, depends_on=[]) for s in DEFAULT_SECTIONS])
     body = (
         f"# Plan del paper — {meta['title']}\n\n"
         "## Contribución\n\n"
@@ -169,13 +216,13 @@ def init(project_dir: Path, thread: str, title: str, venue: str | None) -> tuple
 
 def bind(project_dir: Path, thread: str, section: str, note_id: str) -> list[str]:
     if not _ID.match(note_id):
-        raise Refused("id must be C-XXXX or H-XXXX")
+        raise Refused("id must be C-XXXX, H-XXXX or Q-XXXX")
     outline, _ = paths(project_dir, thread)
     meta, sections, body = parse_outline(outline)
     target = next((s for s in sections if s["id"] == section), None)
     if target is None:
         raise Refused(f"no section {section} in the outline")
-    folder = "Claims" if note_id.startswith("C-") else "Hipotesis"
+    folder = {"C": "Claims", "H": "Hipotesis", "Q": "Preguntas"}[note_id[0]]
     if not any((project_dir / folder).glob(f"{note_id}*.md")):
         raise Refused(f"{note_id} not found in {folder}/")
     if note_id not in target["depends_on"]:
@@ -198,8 +245,31 @@ def _ledger():
     return claim_gate, verifications, parse_frontmatter, split_note, find_note
 
 
+def _question_state(vault: Path, dep: str) -> dict:
+    """A study question: its design's gate plus the design's publishable status."""
+    _ledger()
+    import designs as _designs  # noqa: PLC0415
+    import study_status  # noqa: PLC0415
+    from study_gates import find_node  # noqa: PLC0415
+    from notes import read_note  # noqa: PLC0415
+    design = _designs.design_for_id(_designs.load(), dep)
+    path = find_node(Path(vault), dep, design) if design else None
+    if path is None:
+        return {"id": dep, "ok": False, "status": None, "missing": ["no encontrada en el vault"]}
+    parsed = read_note(path)
+    fm = parsed[0] if parsed else {}
+    status = str(fm.get("status", ""))
+    g = study_status.gate(Path(vault), dep)
+    missing = list(g["missing"])
+    if status != design["publishable"]:
+        missing.append(f"estado «{status}», no {design['publishable']}")
+    return {"id": dep, "ok": g["ok"] and status == design["publishable"], "status": status, "missing": missing}
+
+
 def dep_state(vault: Path, dep: str) -> dict:
     """Whether one bound claim / hypothesis passed its gate."""
+    if dep.startswith("Q-"):
+        return _question_state(vault, dep)
     claim_gate, vf, parse_fm, split_note, find_note = _ledger()
     path = find_note(str(vault), dep)
     if path is None:
@@ -388,6 +458,8 @@ def main(argv: list[str] | None = None) -> int:
         if name == "init":
             p.add_argument("--title", required=True)
             p.add_argument("--venue")
+            p.add_argument("--design")
+            p.add_argument("--lang", choices=LANGS, default="es")
         if name == "bind":
             p.add_argument("--section", required=True)
             p.add_argument("--id", required=True)
@@ -403,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     try:
         if args.cmd == "init":
-            o, m = init(args.project_dir, args.thread, args.title, args.venue)
+            o, m = init(args.project_dir, args.thread, args.title, args.venue, args.design, args.lang)
             print(json.dumps({"outline": str(o), "manuscript": str(m)}, ensure_ascii=False))
         elif args.cmd == "bind":
             print(json.dumps({"depends_on": bind(args.project_dir, args.thread, args.section, args.id)}))
