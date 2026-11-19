@@ -101,3 +101,13 @@ def test_validate_records_inputs(tmp_path):
     assert inp["pred"]["path"] == p  # outside the vault: as given
     assert (inp["label"], inp["positive"], inp["ci"]) == ("l", "x", 0.9)
 
+
+
+def test_non_utf8_file_says_save_as_utf8(tmp_path):
+    a = _w(tmp_path, "a.jsonl", [{"l": "x"}, {"l": "y"}])
+    b = tmp_path / "b.jsonl"
+    b.write_bytes('{"l": "s\u00ed"}\n{"l": "y"}\n'.encode("latin-1"))
+    p = _cli("kappa", "--a", a, "--b", str(b), "--label", "l")
+    assert p.returncode == 3
+    assert "guarda el fichero en UTF-8" in json.loads(p.stdout)["error"]
+    assert "Traceback" not in p.stderr

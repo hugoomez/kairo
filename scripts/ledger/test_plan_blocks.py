@@ -103,3 +103,20 @@ def test_bootstrap_must_be_positive(tmp_path):
     p = plan(tmp_path, ivl={"ci": 0.95, "bootstrap": 0, "seed": 7})
     with pytest.raises(PlanError, match="bootstrap"):
         read_plan(p)
+
+
+@pytest.mark.parametrize("typ", ["conteo", "mediana"])
+def test_cluster_only_on_proportions(tmp_path, typ):
+    with pytest.raises(PlanError, match="Estimandos: a: cluster solo se admite en proporciones"):
+        read_plan(plan(tmp_path, est=[{"id": "a", "type": typ, "column": "c", "filter": {}, "cluster": "g"}]))
+
+
+def test_template_passes_plan_blocks_show():
+    """FW-7/FW-10: the template's example goes through `plan_blocks show`, and its
+    conteo counts a truthy 0/1 column, never an id column."""
+    r = subprocess.run([sys.executable, str(HERE / "plan_blocks.py"), "show", str(TEMPLATE)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout
+    est = {e["id"]: e for e in json.loads(r.stdout)["estimands"]}
+    assert est["est-2"]["type"] == "conteo" and not est["est-2"]["column"].startswith("id")
+    assert all(e["cluster"] is None for e in est.values() if e["type"] != "proporcion")

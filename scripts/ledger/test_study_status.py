@@ -693,3 +693,13 @@ def test_gate_checks_on_exception(vault, monkeypatch):
     assert row["name"] == name and row["ok"] is False
     assert any("roto" in m for m in row["missing"])
     assert not res["ok"]
+
+
+def test_question_packet_finds_a_plan_with_a_title(vault):
+    """FW-11: the plan is found in the design's plan_folder as M-XXXX.md or
+    M-XXXX <title>.md, the rule the gate uses."""
+    vault.question(verified=False)
+    plan = vault.proj / "Mediciones" / "M-9002.md"
+    plan.rename(plan.with_name("M-9002 Plan inventado.md"))
+    packet, _ = verifier_packet.build_question(str(vault.root), "Q-9001")
+    assert "M-9002" in packet

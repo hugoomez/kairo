@@ -80,6 +80,8 @@ def _load(path: str, label: str) -> tuple[list | None, list]:
                 if not isinstance(r, dict) or label not in r:
                     raise Refused(f"la línea {i} de {Path(path).name} no tiene el campo {label!r}")
                 recs.append(r)
+    except UnicodeDecodeError:
+        raise Refused(f"{Path(path).name} no es UTF-8: guarda el fichero en UTF-8") from None
     except (OSError, ValueError) as e:
         if isinstance(e, Refused):
             raise

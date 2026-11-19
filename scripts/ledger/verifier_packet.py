@@ -840,10 +840,9 @@ def build_question(vault: str, qid: str) -> tuple[str, dict]:
     plan_id = fm_scalar(fm, "linked_plan") or ""
     plan = None
     if plan_id:
-        proj = Path(note).parents[1]
-        folder = _study_folder(plan_id)
-        cand = proj / folder / f"{plan_id}.md" if folder else None
-        plan = str(cand) if cand and cand.is_file() else None
+        import study_gates  # noqa: PLC0415
+        found, _why = study_gates.find_plan(Path(vault), plan_id, proj=Path(note).parents[1])
+        plan = str(found) if found is not None else None
     if plan is None:
         raise ValueError(f"{qid}: linked_plan {plan_id or '(vacío)'} no se encuentra en su proyecto")
     if is_flagged(Path(plan)):

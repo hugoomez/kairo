@@ -7,7 +7,9 @@
     manuscript.py export --vault V --project-dir D --thread T --format latex
         writes Manuscritos/latex-<T>/main.tex (venue's class, from config/venues.toml;
         an unknown venue is `generic`, with a warning) and refs.bib (export_bib.py);
-        needs pandoc; with latexmk it reports the body pages against the venue's limit
+        needs pandoc, run as `-f markdown-raw_tex-raw_attribute` (a section cannot
+        inject LaTeX; P-ids cross pandoc as KAIROCITE tokens and become \\cite{key});
+        with latexmk it reports the body pages against the venue's limit
 
 ``init`` writes two files in ``<project>/Manuscritos/``:
 
@@ -458,6 +460,9 @@ _AUX_LABEL = re.compile(r"\\newlabel\{kairo:refs-start\}\{\{[^}]*\}\{(\d+)\}")
 _TEX_SPECIAL = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}",
                 "~": r"\textasciitilde{}", "^": r"\textasciicircum{}", "\\": r"\textbackslash{}"}
 PANDOC_HINT = "winget install --id JohnMacFarlane.Pandoc"
+PANDOC_FROM = "markdown-raw_tex-raw_attribute"
+# A citation crosses pandoc as an opaque token and becomes \cite{key} in its LaTeX output.
+_TOKEN = re.compile(r"KAIROCITE(\d{4})")
 
 
 def _tex_escape(text: str) -> str:
@@ -479,7 +484,8 @@ def _cite_keys(vault: Path) -> dict[str, str]:
 
 def _pandoc(exe: str, markdown: str) -> str:
     import subprocess  # noqa: PLC0415
-    r = subprocess.run([exe, "-f", "markdown", "-t", "latex"], input=markdown, capture_output=True,
+    # raw TeX and raw attributes off: a section body can never inject a LaTeX command
+    r = subprocess.run([exe, "-f", PANDOC_FROM, "-t", "latex"], input=markdown, capture_output=True,
                        text=True, encoding="utf-8")
     if r.returncode != 0:
         raise Refused(f"pandoc falló: {r.stderr.strip()[:300]}")
@@ -537,11 +543,15 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
             return pid
         if pid not in cited:
             cited.append(pid)
-        return "`\\cite{" + keys[pid] + "}`{=latex}"
+        return f"KAIROCITE{cited.index(pid) + 1:04d}"
+
+    def from_token(m: re.Match) -> str:
+        i = int(m.group(1)) - 1
+        return "\\cite{" + keys[cited[i]] + "}" if 0 <= i < len(cited) else m.group(0)
 
     parts = []
     for s in cov["sections"]:
-        tex = _pandoc(pandoc, _CITE.sub(to_cite, bodies[s["id"]]))
+        tex = _TOKEN.sub(from_token, _pandoc(pandoc, _CITE.sub(to_cite, bodies[s["id"]])))
         parts.append(f"\\section{{{_tex_escape(s['title'])}}}\n\n{tex.strip()}\n")
 
     opts = f"[{venue['options']}]" if venue.get("options") else ""

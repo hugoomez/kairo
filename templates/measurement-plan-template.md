@@ -6,7 +6,8 @@ question: <Q-XXXX>
 status: <borrador | congelado>
 # frozen_at — momento en que se congeló el plan, antes de recolectar ni estimar nada.
 frozen_at: <YYYY-MM-DDTHH:MM:SSZ>
-# frozen_commit — sha git del código de recolección y estimación al congelar.
+# frozen_commit — sha del commit del vault que guarda el plan congelado; lo escribe
+# freeze_plan.py. Nunca el sha del repositorio de código.
 frozen_commit: <git-sha>
 ---
 
@@ -22,12 +23,12 @@ frozen_commit: <git-sha>
 
 ## Estimandos
 
-<Cada estimando es una entrada del bloque JSON, que lee estimate.py. `type`: proporcion | conteo | mediana. `id` único. `filter`: {columna: valor}, o {} si no hay filtro. `cluster`: columna de agrupación para el intervalo, o null si no hay. Ejemplo inventado.>
+<Cada estimando es una entrada del bloque JSON, que lee estimate.py. `type`: proporcion | conteo | mediana. `id` único. `filter`: {columna: valor}, o {} si no hay filtro. `cluster`: columna de agrupación para el intervalo, o null si no hay; solo en proporciones. Un `conteo` cuenta las filas cuya `column` es verdadera (1, true, sí), así que nombra una columna 0/1, no un identificador. Ejemplo inventado.>
 
 ```json
 {"estimands": [
   {"id": "est-1", "type": "proporcion", "column": "tiene_x", "filter": {"grupo": "a"}, "cluster": "sitio"},
-  {"id": "est-2", "type": "conteo", "column": "id_unidad", "filter": {}, "cluster": null}
+  {"id": "est-2", "type": "conteo", "column": "es_valida", "filter": {}, "cluster": null}
 ]}
 ```
 

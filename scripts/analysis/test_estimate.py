@@ -158,3 +158,47 @@ def test_percentile_symmetric_indices():
     vals = list(range(11))  # B=11
     assert estimate._percentile(vals, 0.8) == (1, 9)  # a=0.1 -> floor(1.0)=1, ceil(9.0)=9
     assert estimate._percentile(list(range(5)), 0.5) == (1, 3)
+
+
+def _reregister(tmp_path):
+    f = next((tmp_path / "Projects" / "demo" / "Datos").glob("u.*"))
+    reg = tmp_path / "Projects" / "demo" / "Datos" / "registro.json"
+    d = json.loads(reg.read_text(encoding="utf-8"))
+    d[0]["sha256"] = hashlib.sha256(f.read_bytes()).hexdigest()
+    reg.write_text(json.dumps(d), encoding="utf-8")
+
+
+def test_null_cluster_in_jsonl_counts_as_missing(tmp_path):
+    rows = [{"tipo": "org", "tiene_x": 1, "g": "a"}, {"tipo": "org", "tiene_x": 0, "g": None},
+            {"tipo": "org", "tiene_x": 1, "g": "b"}]
+    setup_vault(tmp_path, rows=rows, ext="jsonl")
+    plan = tmp_path / "Projects" / "demo" / "Mediciones" / "M-9002.md"
+    plan.write_text(plan.read_text(encoding="utf-8").replace('"cluster": null', '"cluster": "g"'),
+                    encoding="utf-8")
+    code, out = run(tmp_path)
+    assert code == 3 and "est-1" in out and "1 filas" in out
+
+
+def test_plan_with_a_title_in_its_file_name(tmp_path):
+    setup_vault(tmp_path)
+    folder = tmp_path / "Projects" / "demo" / "Mediciones"
+    (folder / "M-9002.md").rename(folder / "M-9002 Plan inventado.md")
+    code, out = run(tmp_path)
+    assert code == 0, out
+    assert json.loads(out)["plan"] == "M-9002"
+
+
+def test_plan_outside_the_design_plan_folder_is_not_found(tmp_path):
+    setup_vault(tmp_path)
+    proj = tmp_path / "Projects" / "demo"
+    (proj / "Otra").mkdir()
+    (proj / "Mediciones" / "M-9002.md").rename(proj / "Otra" / "M-9002.md")
+    code, out = run(tmp_path)
+    assert code == 3 and "M-9002" in json.loads(out)["error"]
+
+
+def test_plan_lookalike_id_is_not_taken(tmp_path):
+    setup_vault(tmp_path)
+    folder = tmp_path / "Projects" / "demo" / "Mediciones"
+    (folder / "M-9002.md").rename(folder / "M-90021.md")
+    assert run(tmp_path)[0] == 3

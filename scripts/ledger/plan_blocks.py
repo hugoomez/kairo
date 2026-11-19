@@ -71,6 +71,8 @@ def _estimands(data) -> list[dict]:
         c = e.get("cluster")
         if c is not None and not (isinstance(c, str) and c):
             raise PlanError(f"{h}: cluster de {e['id']} debe ser una columna o null")
+        if c is not None and e["type"] != "proporcion":
+            raise PlanError(f"{h}: {e['id']}: cluster solo se admite en proporciones")
     return items
 
 

@@ -99,12 +99,35 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return _run(["git", *args], "git", cwd)
 
 
+def _named(paths, nid: str) -> list[Path]:
+    """The notes of `nid`: `<nid>.md` or `<nid> <título>.md` (never `<nid>1.md`)."""
+    return [p for p in sorted(paths) if p.name == f"{nid}.md" or p.name.startswith(f"{nid} ")]
+
+
 def find_node(vault: Path, nid: str, design: dict, plan: bool = False) -> Path | None:
     """`Projects/*/<folder>/<nid>.md` (or `<nid> <título>.md`) of a design's node or plan."""
     folder = design["plan_folder" if plan else "folder"]
-    hits = [p for p in sorted(Path(vault).glob(f"Projects/*/{folder}/{nid}*.md"))
-            if p.name == f"{nid}.md" or p.name.startswith(f"{nid} ")]
+    hits = _named(Path(vault).glob(f"Projects/*/{folder}/{nid}*.md"), nid)
     return hits[0] if len(hits) == 1 else None
+
+
+def find_plan(vault: Path, pid: str, proj: Path | None = None) -> tuple[Path | None, str]:
+    """A plan note by id, in its design's `plan_folder` (of `proj`, or of any project):
+    `(path, "")`, or `(None, what is wrong)`. The one rule the gate, estimate.py and
+    verifier_packet.py share."""
+    design = _designs.design_for_plan_id(_designs.load(), pid)
+    if design is None or not _ID.match(pid):
+        return None, f"{pid}: ningún diseño de config/designs.toml usa ese prefijo de plan"
+    folder = design["plan_folder"]
+    if proj is not None:
+        hits = _named(Path(proj).joinpath(folder).glob(f"{pid}*.md"), pid)
+        where = f"{folder}/ del proyecto"
+    else:
+        hits = _named(Path(vault).glob(f"Projects/*/{folder}/{pid}*.md"), pid)
+        where = f"Projects/*/{folder}/"
+    if len(hits) != 1:
+        return None, f"plan {pid}: {'no existe' if not hits else 'hay varias notas'} en {where}"
+    return hits[0], ""
 
 
 def _design(fm: dict) -> dict | None:
@@ -121,13 +144,8 @@ def _plan_path(node_path: Path, fm: dict) -> tuple[Path | None, str, list[str]]:
         return None, pid, [f"{fm.get('id')}: ningún diseño de config/designs.toml usa ese prefijo"]
     if not _ID.match(pid) or not pid.startswith(design["plan_prefix"] + "-"):
         return None, pid, [f"linked_plan {pid!r} no es un id {design['plan_prefix']}-XXXX"]
-    proj = Path(node_path).parents[1]
-    folder = proj / design["plan_folder"]
-    hits = [p for p in sorted(folder.glob(f"{pid}*.md")) if p.name == f"{pid}.md" or p.name.startswith(f"{pid} ")]
-    if len(hits) != 1:
-        what = "no existe" if not hits else "hay varias notas"
-        return None, pid, [f"plan {pid}: {what} en {design['plan_folder']}/ del proyecto"]
-    return hits[0], pid, []
+    path, why = find_plan(Path(node_path).parents[3], pid, proj=Path(node_path).parents[1])
+    return path, pid, ([why] if path is None else [])
 
 
 # ---- plan_frozen -----------------------------------------------------------

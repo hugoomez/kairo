@@ -63,6 +63,12 @@ def design_for_id(designs: dict[str, Design], nid: str) -> Design | None:
     return None
 
 
+def design_for_plan_id(designs: dict[str, Design], pid: str) -> Design | None:
+    """The design whose plans carry `pid`'s prefix (M-XXXX → medicion)."""
+    prefix = pid.split("-", 1)[0]
+    return next((d for d in designs.values() if d["plan_prefix"] == prefix), None)
+
+
 def problems(plugin_root: Path = PLUGIN_ROOT) -> list[str]:
     from study_gates import GATES
 

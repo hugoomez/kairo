@@ -154,10 +154,13 @@ def load_rows(data: bytes, ext: str) -> list[dict]:
 
 
 def _find_plan(vault: Path, plan_id: str) -> Path:
-    hits = sorted((vault / "Projects").glob(f"*/Mediciones/{plan_id}.md"))
-    if not hits:
-        raise Refused(f"no existe el plan {plan_id} en Projects/*/Mediciones/")
-    return hits[0]
+    """The plan in its design's plan_folder, `M-XXXX.md` or `M-XXXX <título>.md`
+    (study_gates.find_plan, the rule the gate uses)."""
+    import study_gates  # noqa: PLC0415
+    path, why = study_gates.find_plan(vault, plan_id)
+    if path is None:
+        raise Refused(why)
+    return path
 
 
 def run(vault: Path, plan_id: str, units: str) -> dict:
@@ -204,7 +207,7 @@ def run(vault: Path, plan_id: str, units: str) -> dict:
             flt = e.get("filter") or {}
             miss = sum(1 for r in rows
                        if all(str(r.get(k, "")) == str(v) for k, v in flt.items())
-                       and str(r.get(cl, "")).strip() == "")
+                       and (r.get(cl) is None or str(r.get(cl)).strip() == ""))  # JSONL null = missing
             if miss:
                 raise Refused(f"el estimando {e['id']} usa el cluster {cl!r}, pero {miss} filas no lo tienen")
     estimates = [compute(e, rows, plan["intervals"]) for e in plan["estimands"]]

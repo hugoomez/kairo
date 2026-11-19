@@ -332,6 +332,14 @@ class TestSectionStates(CoverageBase):
         self.assertIn("| bloqueada |", text)
 
 
+def _real_pandoc():
+    import shutil
+    return shutil.which("pandoc")
+
+
+REAL_PANDOC = _real_pandoc()
+
+
 class TestExport(CoverageBase):
     """export --format latex: pandoc and latexmk are fake executables on a temp PATH."""
 
@@ -476,7 +484,9 @@ class TestExport(CoverageBase):
         self.fill("introduccion", "Ver P-9001, `P-9001`, https://x.org/P-9001 y P-9002.\n\n```\nP-9001\n```\n")
         res = json.loads(self.run_export()[1])
         tex = Path(res["tex"]).read_text(encoding="utf-8")
-        self.assertEqual(tex.count("`\\cite{"), 1)
+        self.assertEqual(tex.count("\\cite{"), 1)
+        self.assertNotIn("{=latex}", tex)
+        self.assertNotIn("KAIROCITE", tex)
         self.assertIn("`P-9001`", tex)
         self.assertIn("https://x.org/P-9001", tex)
         self.assertEqual(res["uncited"], ["P-9002"])
@@ -495,6 +505,34 @@ class TestExport(CoverageBase):
         self.assertIn("\\textbackslash{}", tex)
         self.assertNotIn("\\bibliography{", tex)
         self.assertTrue(Path(res["bib"]).is_file())
+
+    def test_pandoc_reads_markdown_without_raw_tex(self):
+        """FW-8: pandoc runs with raw TeX and raw attributes off; citations reach
+        it as opaque tokens and become \\cite in its LaTeX output."""
+        self.fake("pandoc", "import sys\n"
+                  "open(%r, 'w', encoding='utf-8').write(chr(10).join(sys.argv[1:]))\n"
+                  "sys.stdout.write(sys.stdin.read())\n" % str(self.bin / "argv.txt"))
+        res = json.loads(self.run_export()[1])
+        argv = (self.bin / "argv.txt").read_text(encoding="utf-8").split("\n")
+        self.assertIn("markdown-raw_tex-raw_attribute", argv)
+        tex = Path(res["tex"]).read_text(encoding="utf-8")
+        self.assertEqual(tex.count("\\cite{"), 2)
+        self.assertNotIn("KAIROCITE", tex)
+        self.assertNotIn("{=latex}", tex)
+
+    def test_raw_latex_in_a_section_is_escaped_by_real_pandoc(self):
+        if REAL_PANDOC is None:
+            self.skipTest("pandoc no está instalado")
+        import shutil
+        shutil.copy(REAL_PANDOC, self.bin / Path(REAL_PANDOC).name)
+        self.fill("introduccion", "Antes P-9001 y \\input{x} y `\\input{y}`{=latex} y P-9001.")
+        rc, out, err = self.run_export()
+        self.assertEqual(rc, 0, err)
+        tex = Path(json.loads(out)["tex"]).read_text(encoding="utf-8")
+        self.assertNotIn("\\input{", tex)
+        self.assertIn("textbackslash", tex)
+        self.assertEqual(tex.count("\\cite{"), 2)
+        self.assertNotIn("KAIROCITE", tex)
 
     def test_placeholder_sections_refuse_naming_them(self):
         self.pandoc()
