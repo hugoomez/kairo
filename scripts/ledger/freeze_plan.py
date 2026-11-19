@@ -54,11 +54,10 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-import designs as _designs  # noqa: E402
 import study_status as ss  # noqa: E402
 from notes import read_note  # noqa: E402
 from plan_blocks import PlanError, read_plan  # noqa: E402
-from study_gates import _blank, find_node  # noqa: E402
+from study_gates import _blank  # noqa: E402
 from verifications import InputError, _set_scalar, load, write_raw  # noqa: E402
 
 TOOL = "kairo/freeze_plan@1.0.0"

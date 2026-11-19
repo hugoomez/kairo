@@ -123,7 +123,7 @@ def build(repo: Path, estado: Path, numbers: list[int], max_chars: int) -> str:
     try:
         prs = json.loads(estado.read_text(encoding="utf-8")).get("prs") or []
     except (OSError, ValueError, AttributeError) as e:
-        raise Refused(f"no se puede leer {estado}: {e}")
+        raise Refused(f"no se puede leer {estado}: {e}") from None
     by_number = {p.get("number"): p for p in prs if isinstance(p, dict)}
     missing = [n for n in numbers if n not in by_number]
     if missing:
