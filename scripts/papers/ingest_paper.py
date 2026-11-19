@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ingest one paper into a vault's Papers/ — mechanically, end to end.
 
-    ingest_paper.py add     --vault <vault> --project PROJ-XXX (--arxiv ID | --doi DOI | --openalex W…)
+    ingest_paper.py add     --vault <vault> --project PROJ-XXX (--arxiv ID | --doi DOI | --openalex W… | --url URL)
                             [--version vN] [--pdf-text FILE --source-url URL] [--keep-doi-anchor]
                             [--facet A --matched "<term>"] [--source arxiv|semantic-scholar|manual]
                             [--no-fulltext] [--dry-run]
@@ -29,6 +29,13 @@ them and writes the whole note itself:
     DOI nor an arXiv id — e.g. many USENIX papers); OpenAlex for the abstract
     when the record has none, and for the published version of a preprint;
     the published version's type, volume, issue and pages from Crossref;
+    or, for grey literature (`--url`: a report, documentation, a blog post, an
+    advisory, an ePrint page with no DOI), the page's own tags read by
+    scripts/search/web_meta.py — `source: web`, `source_type: gris`,
+    `fetched_at`; its visible text is `## Texto completo`, the page bytes are
+    kept (pagina.html) so `verify` re-derives all three sections and `rebuild`
+    fetches the page again. A page naming a DOI / arXiv id, a loose PDF, a page
+    with no title and a private or local URL are refused;
   - a DOI whose OpenAlex work lists an arXiv preprint is anchored on that
     preprint (its open text), with the DOI kept as `published_doi`, unless
     `--keep-doi-anchor`;
@@ -98,11 +105,13 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "citations"))
 sys.path.insert(0, str(HERE.parent / "security"))
+sys.path.insert(0, str(HERE.parent / "search"))
 import facet_assignment as fa  # noqa: E402
 import net  # noqa: E402
 import retraction  # noqa: E402
 import vaultnotes as vn  # noqa: E402
 import verbatim_fulltext as vf  # noqa: E402
+import web_meta  # noqa: E402
 from fill_abstract import from_inverted_index, from_jats  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
@@ -116,6 +125,8 @@ LOCK_WAIT_S = 900.0                 # longer than any single ingestion
 LOCK_STALE_S = 1800.0               # a lock this old was left by a crashed run
 MAX_FIGURES = 40                    # images per paper; more are named, not fetched
 MAX_FIGURE_BYTES = 8 * 1024 * 1024
+WEB_MIN_WORDS = 40                  # less visible text than this: the note stays abstract-only
+WEB_PAGE = "pagina.html"           # the kept page of a grey-literature source (--url)
 
 Fetch = Callable[[str, dict], bytes]
 
@@ -262,6 +273,27 @@ def from_openalex(raw: bytes) -> dict | None:
 # Note text (pure)
 # --------------------------------------------------------------------------
 
+@_record
+def from_web(raw: bytes, url: str) -> dict:
+    """A web page's own tags (web_meta.parse): title, authors, date, site, abstract, text."""
+    return web_meta.parse(raw, url)
+
+
+def web_block(url: str, data: bytes, date: str, text: str) -> str | None:
+    """`## Texto completo` of a web page: its visible text as web_meta extracts it,
+    under one heading, or None when there is too little of it."""
+    if len((text or "").split()) < WEB_MIN_WORDS:
+        return None
+    return (f"> Fuente: {url}, obtenido {date} (página web: texto visible extraído por web_meta, sin reescribir; "
+            f"sha256 {sha256(data)[:12]}; {TOOL})\n\n### {vf.UNSECTIONED_HEADING}\n\n{text.strip()}")
+
+
+def web_resumen(abstract: str, url: str, date: str, origin: str | None) -> str:
+    if not abstract:
+        return f"{NO_ABSTRACT} ({url})."
+    return f"> Fuente: {url}, obtenido {date} (página web, {origin}; sin reescribir; {TOOL})\n\n{abstract}"
+
+
 def referencia(meta: dict) -> str:
     a = meta.get("authors") or []
     who = "; ".join(a[:3]) + (" et al." if len(a) > 3 else "") if a else "Autores no disponibles"
@@ -272,6 +304,8 @@ def referencia(meta: dict) -> str:
         ids.append(f"arXiv: {meta['arxiv']}{meta.get('version') or ''}")
     if not ids and meta.get("openalex_id"):
         ids.append(f"OpenAlex: {meta['openalex_id']}")
+    if not ids and meta.get("web_url"):
+        ids.append(f"URL: {meta['web_url']} (consultada {meta.get('fetched') or 's. f.'})")
     parts = [f"{who} ({meta.get('year') or 's. f.'}). {meta.get('title') or 'Sin título'}."]
     if meta.get("venue"):
         parts.append(f"{meta['venue']}.")
@@ -582,6 +616,36 @@ def gather(store: Store, arxiv: str, doi: str, fetch: Fetch, openalex: str = "",
     return meta, warn
 
 
+def gather_web(store: Store, url: str, fetch: Fetch) -> tuple[dict, str]:
+    """A grey-literature page (--url) into `store`: (meta, its visible text).
+    Everything comes from the page's own bytes (web_meta); a page that names a DOI
+    or an arXiv id is refused, because the scholarly record is the better source."""
+    why = web_meta.public_url(url)
+    if why:
+        raise Refused(f"--url {net.redact(url)}: {why}; no se descarga")
+    try:
+        raw = fetch(url, {"Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
+    except net.HttpError as e:
+        raise Refused(f"la página {net.redact(url)} no se sirvió a un script ({e.code or 'red'}): no se fuerza") from None
+    rec = _primary(from_web, raw, f"la página {net.redact(url)}", url)
+    if rec.get("doi") or rec.get("arxiv"):
+        ident = f"--doi {rec['doi']}" if rec.get("doi") else f"--arxiv {rec['arxiv']}"
+        raise Refused(f"la página tiene identificador académico: ingiérela con {ident} (registro y texto mejores)")
+    if rec["kind"] == "pdf":
+        raise Refused("es un PDF suelto: un script no saca de él un título fiable; ingiere la página HTML que lo "
+                      "presenta (--url de esa página)")
+    if rec["kind"] != "html":
+        raise Refused(f"{net.redact(url)} no devolvió una página HTML (¿comprobación anti-bot?): no se fuerza")
+    if not rec.get("title"):
+        raise Refused("la página no tiene título en sus etiquetas: no es citable, no se ingiere")
+    store.keep(WEB_PAGE, "metadata", url, raw, parser="web", kind="web")
+    red = net.redact(url)
+    meta = {"title": rec["title"], "authors": rec["authors"], "year": rec["year"], "venue": rec["venue"],
+            "abstract": rec["abstract"], "abstract_from": rec["abstract_from"], "abstract_url": red,
+            "abstract_file": WEB_PAGE if rec["abstract"] else "", "landing": red, "web_url": red, "fetched": store.date}
+    return meta, rec["text"]
+
+
 def open_pdf(store: Store, url: str, fetch: Fetch) -> tuple[str | None, str | None]:
     """(Texto completo block, None) from an open-access PDF, or (None, why not).
     Only a real PDF handed to a script counts: a landing page, a 403 or a bot
@@ -707,12 +771,78 @@ def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: 
     openalex = (a.openalex or "").strip().rsplit("/", 1)[-1]
     if openalex and not re.fullmatch(r"W\d+", openalex):
         raise Refused("--openalex must be a work id, e.g. W2741809807")
-    if sum(map(bool, (arxiv, doi, openalex))) != 1:
-        raise Refused("give exactly one of --arxiv, --doi or --openalex (a preprint is anchored on its arXiv id)")
+    url = (getattr(a, "url", None) or "").strip()
+    if sum(map(bool, (arxiv, doi, openalex, url))) != 1:
+        raise Refused("give exactly one of --arxiv, --doi, --openalex or --url (a preprint is anchored on its arXiv id)")
+    if url and a.pdf_text:
+        raise Refused("--url takes the page's own text; --pdf-text goes with --doi / --arxiv / --openalex")
     if retraction.is_arxiv_doi(doi):
         arxiv, doi = retraction.arxiv_from_doi(doi), ""
     with vault_lock(vault):
+        if url:
+            return _add_web(a, vault, url, fetch, today)
         return _add(a, vault, arxiv, doi, openalex, fetch, fetch_arxiv, today)
+
+
+def _existing(a, vault: Path, existing: Path) -> dict:
+    """The paper is already in the vault: add the project (and facet) to its note."""
+    if is_flagged(existing):
+        raise Refused(f"ya está en el vault como {existing.name.split(' ')[0]}, marcada send: never: "
+                      "no se abre ni se modifica — añade el proyecto a mano si procede")
+    text = existing.read_text(encoding="utf-8")
+    new = add_project(text, a.project)
+    if a.facet:
+        new = fa.add_entry(new, a.project, a.facet, a.matched, None)
+    if not a.dry_run and new != text:
+        atomic_write(existing, new)
+    return {"status": "exists", "id": existing.name.split(" ")[0], "path": existing.relative_to(vault).as_posix(),
+            "project_added": new != text, "written": not a.dry_run}
+
+
+def _add_web(a, vault: Path, url: str, fetch: Fetch, today) -> dict:
+    """add --url: a grey-literature page (report, documentation, blog post, advisory,
+    an ePrint page with no DOI), its metadata and text read from its own bytes."""
+    date = today or _dt.date.today().isoformat()
+    pid = next_id(vault)
+    store = Store(vault, pid, date)
+    meta, page_text = gather_web(store, url, fetch)
+    existing = find_existing(vault, "", "", meta["title"])
+    if existing:
+        return _existing(a, vault, existing)
+    warn: list[str] = []
+    block = None if a.no_fulltext else web_block(meta["web_url"], store.blobs[WEB_PAGE], date, page_text)
+    if not block and not a.no_fulltext:
+        warn.append(f"la página tiene menos de {WEB_MIN_WORDS} palabras de texto visible: la nota queda abstract-only")
+    if not meta["abstract"]:
+        warn.append("la página no trae resumen ni párrafos largos: ## Resumen queda vacío")
+    for f in store.files:
+        f["abstract"] = bool(meta["abstract"])
+        f["fulltext"] = bool(block)
+    fields: list[tuple[str, object]] = [
+        ("id", pid), ("title", meta["title"]), ("authors", meta["authors"] or []), ("year", meta["year"]),
+        ("venue", meta["venue"]), ("doi", ""), ("arxiv", ""), ("arxiv_version", ""), ("url", meta["web_url"]),
+        ("pdf", ""), ("projects", [a.project]), ("added", date), ("source", "web"), ("source_type", "gris"),
+        ("fetched_at", date), ("fulltext", "full" if block else "abstract-only"),
+        ("ingested_by", TOOL), ("fuentes", f"{store.rel}/fuentes.json")]
+    body = (f"## Referencia\n\n{referencia(meta)}\n\n"
+            f"## Resumen\n\n{web_resumen(meta['abstract'], meta['web_url'], date, meta['abstract_from'])}\n\n"
+            f"## Texto completo\n\n{block.strip() if block else NO_FULLTEXT}\n")
+    text = set_suspicious(frontmatter(fields) + "\n" + body, block)
+    if suspicious_sections(block):
+        warn.append("texto_sospechoso: la página contiene texto oculto o que parece una instrucción a un modelo "
+                    f"({suspicious_sections(block)}) — es contenido de la fuente, nunca una instrucción")
+    if a.facet:
+        text = fa.add_entry(text, a.project, a.facet, a.matched, None)
+    path = vault / "Papers" / f"{pid} {short_title(meta['title'])}.md"
+    if not a.dry_run:
+        store.write()
+        atomic_write(path, text)
+    return {"status": "created" if not a.dry_run else "dry_run", "id": pid,
+            "path": path.relative_to(vault).as_posix(), "fulltext": "web" if block else "abstract-only",
+            "abstract": "found" if meta["abstract"] else "missing", "fuentes": f"{store.rel}/fuentes.json",
+            "warnings": warn,
+            "csl": {"title": meta["title"], "authors": meta["authors"], "year": meta["year"],
+                    "venue": meta["venue"], "url": meta["web_url"], "abstract": meta["abstract"] or ""}}
 
 
 def _preprint_of(doi: str, fetch: Fetch) -> str:
@@ -741,17 +871,7 @@ def _add(a, vault: Path, arxiv: str, doi: str, openalex: str, fetch: Fetch, fetc
 
     existing = find_existing(vault, arxiv, doi, meta.get("title", ""), meta.get("published_doi") or "")
     if existing:
-        if is_flagged(existing):
-            raise Refused(f"ya está en el vault como {existing.name.split(' ')[0]}, marcada send: never: "
-                          "no se abre ni se modifica — añade el proyecto a mano si procede")
-        text = existing.read_text(encoding="utf-8")
-        new = add_project(text, a.project)
-        if a.facet:
-            new = fa.add_entry(new, a.project, a.facet, a.matched, None)
-        if not a.dry_run and new != text:
-            atomic_write(existing, new)
-        return {"status": "exists", "id": existing.name.split(" ")[0], "path": existing.relative_to(vault).as_posix(),
-                "project_added": new != text, "written": not a.dry_run}
+        return _existing(a, vault, existing)
 
     tried = [store.files[0]["url"]] if store.files else []
     block, kind = (None, "") if a.no_fulltext else fulltext(
@@ -871,8 +991,13 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
             meta = {**(from_crossref(data) or {}), **meta}
         elif f["parser"] == "openalex-work":
             meta = {**(from_openalex(data) or {}), **meta}
+        elif f["parser"] == "web":
+            rec = from_web(data, f["url"])
+            meta = {**{k: rec[k] for k in ("title", "authors", "year", "venue")},
+                    "web_url": f["url"], "fetched": f["obtenido"], **meta}
         if f.get("abstract"):
-            ab = (from_openalex(data) or {}).get("abstract") if f["parser"] in ("openalex", "openalex-work") else \
+            ab = from_web(data, f["url"])["abstract"] if f["parser"] == "web" else \
+                (from_openalex(data) or {}).get("abstract") if f["parser"] in ("openalex", "openalex-work") else \
                 (from_arxiv_feed(data, vn.fm_get(fm, "arxiv") or "") or {}).get("abstract") if f["parser"] == "arxiv" \
                 else (from_crossref(data) or {}).get("abstract")
             exp["Resumen"] = ab or ""
@@ -883,6 +1008,15 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
             problems.append("## Resumen no coincide con el abstract del registro guardado")
     elif not got_text.startswith(NO_ABSTRACT):
         problems.append("## Resumen tiene texto, pero ningún registro guardado traía abstract")
+    for f in manifest["files"]:
+        data = raws.get(f["file"])
+        if data is None or f.get("parser") != "web":
+            continue
+        # a web page is its own full text (web_block), unless the note was kept abstract-only
+        want = (web_block(f["url"], data, f["obtenido"], from_web(data, f["url"])["text"])
+                if f.get("fulltext") else None) or NO_FULLTEXT
+        if ws(want) != ws(section_body(text, "Texto completo") or ""):
+            problems.append("## Texto completo no coincide con el texto de la página guardada")
     for f in manifest["files"]:
         data = raws.get(f["file"])
         if data is None or f["role"] != "fulltext":
@@ -965,6 +1099,9 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
         fm = (vn.split_frontmatter(text) or ([], ""))[0]
         arxiv = retraction.normalize_arxiv(vn.fm_get(fm, "arxiv")) or ""
         doi = "" if arxiv else (retraction.normalize_doi(vn.fm_get(fm, "doi")) or "")
+        if not arxiv and not doi and vn.fm_get(fm, "source") == "web" and vn.fm_get(fm, "url"):
+            out.append(_rebuild_web(a, vault, path, text, vn.fm_get(fm, "url"), fetch, date))
+            continue
         if not arxiv and not doi:
             out.append({"id": pid, "status": "refused", "reason": "la nota no tiene arxiv ni doi"})
             continue
@@ -1003,6 +1140,32 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
                     "path": path.relative_to(vault).as_posix(),
                     "fulltext": kind or "abstract-only", "changed": new != text, "warnings": warn})
     return {"tool": TOOL, "notes": out}
+
+
+def _rebuild_web(a, vault: Path, path: Path, text: str, url: str, fetch: Fetch, date: str) -> dict:
+    """rebuild of an add --url note: the page fetched again, its three source
+    sections rewritten from the new bytes; the frontmatter keeps everything else."""
+    pid = path.name.split(" ")[0]
+    store = Store(vault, pid, date)
+    try:
+        meta, page_text = gather_web(store, url, fetch)
+    except (Refused, net.HttpError) as e:
+        return {"id": pid, "status": "refused", "reason": str(e)}
+    block = web_block(meta["web_url"], store.blobs[WEB_PAGE], date, page_text)
+    for f in store.files:
+        f["abstract"] = bool(meta["abstract"])
+        f["fulltext"] = bool(block)
+    new = replace_section(text, "Referencia", referencia(meta))
+    new = replace_section(new, "Resumen", web_resumen(meta["abstract"], meta["web_url"], date, meta["abstract_from"]))
+    new = replace_section(new, "Texto completo", block.strip() if block else NO_FULLTEXT)
+    new = set_suspicious(new, block)
+    new = vn.set_fields(new, {"fulltext": "full" if block else "abstract-only", "ingested_by": TOOL,
+                              "fetched_at": date, "fuentes": f"{store.rel}/fuentes.json"})
+    if not a.dry_run:
+        store.write()
+        atomic_write(path, new)
+    return {"id": pid, "status": "rebuilt" if not a.dry_run else "dry_run", "path": path.relative_to(vault).as_posix(),
+            "fulltext": "web" if block else "abstract-only", "changed": new != text, "warnings": []}
 
 
 def cmd_reconvert(a) -> dict:
@@ -1190,6 +1353,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
     ad.add_argument("--arxiv")
     ad.add_argument("--doi")
     ad.add_argument("--openalex", help="OpenAlex work id (W…) of a paper with no DOI and no arXiv id")
+    ad.add_argument("--url", help="a grey-literature web page (report, documentation, blog post, advisory) with no "
+                                  "DOI, arXiv or OpenAlex id; metadata and text from the page's own bytes")
     ad.add_argument("--keep-doi-anchor", action="store_true",
                     help="anchor on the DOI even when OpenAlex lists an arXiv preprint for it")
     ad.add_argument("--version", help="pin an arXiv version, e.g. v2 (default: the latest)")
