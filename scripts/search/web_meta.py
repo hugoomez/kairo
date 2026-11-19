@@ -4,7 +4,7 @@ date, DOI, arXiv id, site and an abstract, read from the page's own tags.
 
     parse(data: bytes, url: str) -> dict
         {"title", "authors": [...], "date", "year", "doi", "arxiv", "venue",
-         "abstract", "abstract_from", "kind": "html"|"pdf"|"other", "text"}
+         "abstract", "abstract_from", "kind": "html"|"pdf"|"other", "text", "pdf_url"}
 
 Order of preference, all from the bytes (never typed by a model):
   title     citation_title, dc.title, og:title, <title>
@@ -13,6 +13,7 @@ Order of preference, all from the bytes (never typed by a model):
             article:published_time, dc.date, date, pubdate
   doi       citation_doi, dc.identifier (10.…), a doi.org link in the URL
   arxiv     citation_arxiv_id, an arxiv.org/abs|pdf URL
+  pdf_url   citation_pdf_url (the paper's own PDF, as the page links it)
   venue     citation_journal_title, citation_conference_title, og:site_name, host
   abstract  citation_abstract, dc.description, og:description, description,
             then the first paragraphs of the page (up to ABSTRACT_CHARS)
@@ -162,7 +163,8 @@ def public_url(url: str) -> str | None:
 def parse(data: bytes, url: str) -> dict:
     host = host_of(url)
     out = {"title": "", "authors": [], "date": None, "year": None, "doi": None, "arxiv": None,
-           "venue": host or None, "abstract": "", "abstract_from": None, "kind": "other", "text": ""}
+           "venue": host or None, "abstract": "", "abstract_from": None, "kind": "other", "text": "",
+           "pdf_url": None}
     am = _ARXIV_URL.search(url)
     if am:
         out["arxiv"] = am.group(1)
@@ -206,6 +208,9 @@ def parse(data: bytes, url: str) -> dict:
     dm2 = _DOI.search(doi)
     if dm2:
         out["doi"] = dm2.group(1).rstrip(".,;)").lower()
+    pdf = _first(meta, "citation_pdf_url")
+    if pdf:
+        out["pdf_url"] = urllib.parse.urljoin(url, pdf)
     arx = _first(meta, "citation_arxiv_id")
     if arx:
         out["arxiv"] = arx

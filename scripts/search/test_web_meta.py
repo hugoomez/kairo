@@ -15,6 +15,7 @@ SCHOLARLY = b"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="citation_publication_date" content="2031/04/07">
 <meta name="citation_doi" content="10.9999/INVENT.2031.1">
 <meta name="citation_conference_title" content="Imaginary Security Symposium">
+<meta name="citation_pdf_url" content="/paper/1.pdf">
 <meta name="citation_abstract" content="We measure invented things across imaginary repositories and find that most of them are made up.">
 </head><body><nav>menu menu menu menu menu menu menu menu</nav><p>Body text.</p></body></html>"""
 
@@ -37,6 +38,7 @@ def test_scholarly_tags_win():
     assert (m["date"], m["year"]) == ("2031-04-07", 2031)
     assert m["doi"] == "10.9999/invent.2031.1"
     assert m["venue"] == "Imaginary Security Symposium"
+    assert m["pdf_url"] == "https://example.org/paper/1.pdf"
     assert m["abstract"].startswith("We measure") and m["abstract_from"] == "citation_abstract"
 
 
