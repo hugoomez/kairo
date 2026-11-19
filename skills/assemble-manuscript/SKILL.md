@@ -113,6 +113,30 @@ at the end. The outline, not this skill, decides the sections: each has a
 4. Fresh verification of each drafted section and the AI-use disclosure work
    exactly as below. Commit the manuscript, the coverage view and the
    verification records together.
+5. **Export to LaTeX**, once every section is written:
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/manuscript.py" export
+   --vault <vault> --project-dir Projects/<slug> --thread <paper_thread>
+   --format latex`.
+   - It refuses (exit 3) while a `resultado` section is not `respaldada` or
+     any section still holds its placeholder, and names them.
+   - It writes `Manuscritos/latex-<paper_thread>/main.tex`, with the venue's
+     document class from `config/venues.toml` (an unknown venue is `generic`,
+     with a warning), and `refs.bib`, built by `export_bib.py` with only the
+     cited papers. Each `P-XXXX` in the text becomes `\cite{key}`; one in
+     code or a URL is left as it is.
+   - It needs **pandoc** (`winget install --id JohnMacFarlane.Pandoc`; without
+     it the export refuses and says so). Pandoc reads the sections with raw
+     TeX off, so a `\command` or a `{=latex}` span written in a section comes
+     out escaped, as text: a section cannot inject LaTeX.
+   - With **latexmk** (a TeX distribution) it also compiles the PDF and
+     reports `pages` (the body: the page where the references start) against
+     the venue's `body_pages` limit as `limit` and `over`. Without latexmk,
+     `pages` and `over` are `null`.
+   - stdout is JSON `{tex, bib, pages, limit, over, uncited}`. `uncited`
+     lists P-ids with no `Papers/` note, left as plain text. `warning`
+     appears when the venue was unknown, LaTeX failed (`latex_failed: <last
+     error>`) or the page label was not found. Report every warning, and an
+     `over: true`, to the researcher.
 
 Never fill a placeholder with "to be completed" prose, and never draft a
 `resultado` section around a claim that has not passed its gate "to show the

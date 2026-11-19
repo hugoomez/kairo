@@ -49,7 +49,8 @@ allow. You **never**:
 - argue a verifier finding away, or apply `estimada` with the gate failing.
   `apply` refuses it anyway;
 - apply `sin_respuesta` or `descartada` on your own. Those are the
-  researcher's calls.
+  researcher's calls: el investigador decide sin_respuesta, and
+  `study_status.py` refuses that edge inside an agent session.
 
 ## Steps
 
@@ -201,4 +202,5 @@ Never `git add -A`. Report:
 - **Recording the verdict without `--report` and `--packet-sha256`.** The
   gate then fails closed.
 - **Applying `sin_respuesta` because the gate failed.** A failed gate is a
-  list of things to fix. «No answer» is the researcher's conclusion.
+  list of things to fix. «No answer» is the researcher's conclusion: el
+  investigador decide sin_respuesta.
