@@ -33,9 +33,7 @@ class TestMedicionTemplate(unittest.TestCase):
         self.assertRegex(TEMPLATE, r"code_repo — .*medicion")
 
     def test_skill_offers_plan_study_and_names_hub_fields(self):
-        m = re.search(r"\*\*`medicion`\*\*(.*?)(?=
-\*\*|
-#{2,3} )", SKILL, re.S)
+        m = re.search(r"\*\*`medicion`\*\*(.*?)(?=\n\*\*|\n#{2,3} )", SKILL, re.S)
         self.assertIsNotNone(m, "no medicion section in SKILL.md")
         span = m.group(1)
         for needle in ("code_repo", "default_linea_publicacion", "deadline",
