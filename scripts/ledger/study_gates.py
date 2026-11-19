@@ -14,7 +14,9 @@ puede comprobar (sin git, git o un script fallan o tardan más de TIMEOUT s), fa
     Clasificadores e Intervalos que el fichero actual («el plan cambió después de
     congelarlo: <sección>»);
   - congelar antes de los datos: el primer commit en que `Datos/registro.json` del proyecto
-    contiene el dataset `units_dataset` del nodo no es `frozen_commit` ni un antecesor suyo
+    contiene el dataset `units_dataset` del nodo (por nombre, o por la sha256 que el registro
+    actual le da: renombrarlo no oculta un registro anterior del mismo fichero) no es
+    `frozen_commit` ni un antecesor suyo
     («los datos se registraron antes de congelar el plan»). Sin `units_dataset`, falta
     «sin units_dataset».
 - `estimates_reproducible`: volver a correr `scripts/analysis/estimate.py --plan <linked_plan>
@@ -127,7 +129,21 @@ def _plan_path(node_path: Path, fm: dict) -> tuple[Path | None, str, list[str]]:
 
 # ---- plan_frozen -----------------------------------------------------------
 
-def _first_registration(top: Path, reg_rel: str, name: str) -> str | None:
+def _current_sha(reg: Path, name: str) -> str | None:
+    """The sha256 the working-tree registry gives dataset `name` (None if absent or unreadable)."""
+    try:
+        data = json.loads(reg.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for d in data if isinstance(data, list) else []:
+        if isinstance(d, dict) and d.get("name") == name:
+            sha = str(d.get("sha256") or "").strip()
+            return sha or None
+    return None
+
+
+def _first_registration(top: Path, reg_rel: str, name: str, sha: str | None = None) -> str | None:
+    """First commit whose registry holds the dataset by `name`, or any entry with `sha`."""
     log = _git(["log", "--reverse", "--format=%H", "--", reg_rel], top)
     if log.returncode != 0:
         raise _Fail(f"git log de {reg_rel} falló: no se puede comprobar cuándo se registraron los datos")
@@ -139,7 +155,9 @@ def _first_registration(top: Path, reg_rel: str, name: str) -> str | None:
             reg = json.loads(shown.stdout)
         except ValueError:
             continue
-        if isinstance(reg, list) and any(isinstance(d, dict) and d.get("name") == name for d in reg):
+        if isinstance(reg, list) and any(
+                isinstance(d, dict) and (d.get("name") == name or (sha and d.get("sha256") == sha))
+                for d in reg):
             return c
     return None
 
@@ -177,7 +195,7 @@ def _frozen_in_git(plan_path: Path, pid: str, sha: str, node_path: Path, fm: dic
         reg_rel = reg.resolve().relative_to(top).as_posix()
     except ValueError:
         return out + ["Datos/registro.json está fuera del repositorio del vault"]
-    first = _first_registration(top, reg_rel, units)
+    first = _first_registration(top, reg_rel, units, _current_sha(reg, units))
     if first is None:
         return out + [f"el dataset {units!r} no está registrado en ningún commit del vault: "
                       "haz commit de Datos/registro.json (después de congelar el plan)"]

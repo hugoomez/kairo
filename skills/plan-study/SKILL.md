@@ -60,6 +60,9 @@ critique if they want it, freeze when they say so. You **never**:
 
 ## Steps
 
+Run every command below with the vault root as the working directory (cwd);
+`<vault>` is that same folder.
+
 ### 1. The design
 
 ```
@@ -168,9 +171,10 @@ It does, in order:
 2. Writes `frozen_at` (UTC) and `frozen_commit` (that commit's sha), and sets
    `status: congelado` in the plan.
 3. Creates `Projects/<slug>/Avisos/registro.json` as `[]` if it does not
-   exist. It never opens an existing one, and it does not commit it.
+   exist. It never opens an existing one, and never commits one.
 4. Runs `study_status.py apply --to plan_congelado` on the question.
-5. Commits the plan and the question again.
+5. Commits the plan and the question again. If step 3 created the registry
+   in this same run, the commit includes it.
 
 Exit 3 means refused, and nothing was written. The reasons: the question is
 not `abierta`, there is no plan or there are several, the plan names another
@@ -179,7 +183,10 @@ no git. Report the reason and its fix.
 
 Exit 1 is a git error, for example a vault pre-commit hook that refused. Show
 git's message. Never skip the hook. Fix the content it names, then run the
-script again.
+same command again. If the second commit failed, the plan already has
+`frozen_at` and `frozen_commit`. The rerun finishes that freeze with the same
+`frozen_commit` (`reanudado: true`) and does not freeze again. Never edit the
+frozen fields by hand.
 
 When `avisos_creado` is true, tell the researcher, verbatim: «sin avisos
 registrados todavía; añade los que correspondan antes de estimar». The gate of
@@ -196,12 +203,14 @@ Report:
 
   - **Register the units dataset only now, after the freeze.** The gate checks
     in git that the first commit holding the dataset in `Datos/registro.json`
-    comes after `frozen_commit`. A dataset registered earlier, or committed in
-    the freeze commit, fails «los datos se registraron antes de congelar el
-    plan» forever. That is the mechanical proof that the plan was fixed before
+    comes after `frozen_commit`. It matches the dataset by name or by the
+    file's sha256, so renaming does not help. A dataset registered earlier,
+    or committed in the freeze commit, fails «los datos se registraron antes
+    de congelar el plan» forever. That is the mechanical proof that the plan was fixed before
     the data could be seen.
-  - Collect the data (the interface's Recolecciones, or the researcher's own
-    script).
+  - Start the collection: Recolecciones → «Empezar la recolección». That
+    moves the question to `en_recoleccion`, and only the researcher does it,
+    because `study_status.py` refuses that edge inside an agent session.
   - Register the dataset (`kind: file`, `sensitive: true` if it holds
     third-party material), and commit `Datos/registro.json`.
   - Annotate and validate the classifiers

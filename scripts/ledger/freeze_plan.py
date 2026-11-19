@@ -13,23 +13,33 @@ question (then `linked_plan` is set to it). In order:
 2. write `frozen_at` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `frozen_commit` (that commit's sha)
    and `status: congelado` in the plan's frontmatter; nothing else in it changes;
 3. create `Projects/<slug>/Avisos/registro.json` as `[]` if it does not exist. An
-   existing registry is never opened: only its existence is checked. It is not
-   committed (the notices are the researcher's);
+   existing registry is never opened (only its existence is checked) and never
+   committed;
 4. `study_status.apply --to plan_congelado` on the question;
-5. commit the plan and the question again.
+5. commit the plan and the question again, plus the registry if step 3 created it
+   in this same run.
 
 So `frozen_commit` holds the plan whose Estimandos, Clasificadores and Intervalos the
 gate (`study_gates.plan_frozen`) compares with the current file, and a units dataset
 registered in a LATER commit passes the gate's «congelar antes de los datos».
 
-Refused (exit 3, nothing written or committed): the vault is not a git repository;
-the question is not `abierta`; no plan or several plans; the plan names another
-question; the plan is already frozen; the plan's JSON blocks are invalid
-(plan_blocks.read_plan). A git failure (e.g. a pre-commit hook that refuses) exits 1
-with git's message; the hook is never skipped.
+Resuming: if step 5 (or 4) failed, the plan already carries `frozen_at` and
+`frozen_commit` and the files are left changed. Running the script again finishes
+the freeze: when `frozen_commit` is a commit whose tree holds this plan and the
+question is `abierta`, or `plan_congelado` with the plan or question uncommitted, it
+does steps 3-5 with that same `frozen_commit` (`reanudado: true`). A plan frozen and
+fully committed is refused as «ya está congelado».
 
-Prints JSON: {question, plan, frozen_commit, frozen_at, to, avisos_creado, aviso,
-commits}. Exit codes: 0 ok · 3 refused · 1 error. Standard library only.
+Refused (exit 3): the vault is not a git repository; the question is not `abierta`
+(and there is no freeze to finish); no plan or several plans; the plan names another
+question; the plan is already frozen; the plan's JSON blocks are invalid
+(plan_blocks.read_plan). A refusal writes and commits nothing. A git failure (e.g.
+a pre-commit hook that refuses) exits 1 with git's message, and the hook is never
+skipped. If it was the first commit, at most `linked_plan` was written; if it was
+the second, run the script again once the cause is fixed.
+
+Prints JSON: {question, plan, frozen_commit, frozen_at, to, reanudado, avisos_creado,
+aviso, commits}. Exit codes: 0 ok · 3 refused · 1 error. Standard library only.
 """
 from __future__ import annotations
 
@@ -116,6 +126,18 @@ def _commit(top: Path, paths: list[str], msg: str) -> str | None:
     return _git_ok(top, "rev-parse", "HEAD")
 
 
+def _resumable(top: Path, rel: list[str], pfm: dict, status: str) -> bool:
+    """A freeze whose second half did not finish: both frozen fields set, `frozen_commit`
+    is a commit whose tree holds this plan, and the question is still `abierta` or its
+    `plan_congelado` change is not committed yet."""
+    sha = str(pfm.get("frozen_commit") or "").strip()
+    if _blank(pfm.get("frozen_at")) or _blank(sha) or status not in (FROM, TO):
+        return False
+    if _git(top, "cat-file", "-e", f"{sha}:{rel[0]}").returncode != 0:
+        return False
+    return status == FROM or bool(_git_ok(top, "status", "--porcelain", "--", *rel))
+
+
 def freeze(vault: Path, qid: str, by: str) -> dict:
     vault = Path(vault).resolve()
     if not by.strip():
@@ -123,8 +145,6 @@ def freeze(vault: Path, qid: str, by: str) -> dict:
     design, q = ss._locate(vault, qid)
     qfm = _fm(q)
     status = str(qfm.get("status") or "").strip()
-    if status != FROM:
-        raise Refused(f"{qid} está en «{status}»: el plan solo se congela desde «{FROM}»")
     if (FROM, TO) not in set(design["transitions"]):
         raise Refused(f"el diseño de {qid} no tiene la transición {FROM} → {TO}")
     proj = q.parents[1]
@@ -133,27 +153,33 @@ def freeze(vault: Path, qid: str, by: str) -> dict:
     named = str(pfm.get("question") or "").strip()
     if named != qid:
         raise Refused(f"el plan {pid} es el plan de {named or '(question vacío)'}, no de {qid}")
-    if not _blank(pfm.get("frozen_at")) or not _blank(pfm.get("frozen_commit")):
-        raise Refused(f"el plan {pid} ya está congelado (frozen_at/frozen_commit); un cambio va en un plan nuevo")
-    try:
-        read_plan(plan)
-    except PlanError as e:
-        raise Refused(f"plan {pid}: {e}; corrígelo antes de congelar") from None
     top_r = _git(proj, "rev-parse", "--show-toplevel")
     if top_r.returncode != 0:
         raise Refused("el vault no es un repositorio git: congelar exige un commit (git init y un primer commit)")
     top = Path(top_r.stdout.strip()).resolve()
     rel = [plan.resolve().relative_to(top).as_posix(), q.resolve().relative_to(top).as_posix()]
+    commits: list[str] = []
 
-    if _blank(qfm.get("linked_plan")):
-        _set(q, [("linked_plan", pid)])
-    commits = []
-    first = _commit(top, rel, f"Plan {pid} de {qid}: contenido que se congela")
-    sha = first or _git_ok(top, "rev-parse", "HEAD")
-    if first:
-        commits.append(first)
-    frozen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _set(plan, [("frozen_at", frozen_at), ("frozen_commit", sha), ("status", "congelado")])
+    resumed = not _blank(pfm.get("frozen_at")) or not _blank(pfm.get("frozen_commit"))
+    if resumed:
+        if not _resumable(top, rel, pfm, status):
+            raise Refused(f"el plan {pid} ya está congelado (frozen_at/frozen_commit); un cambio va en un plan nuevo")
+        sha, frozen_at = str(pfm["frozen_commit"]).strip(), str(pfm["frozen_at"]).strip()
+    else:
+        if status != FROM:
+            raise Refused(f"{qid} está en «{status}»: el plan solo se congela desde «{FROM}»")
+        try:
+            read_plan(plan)
+        except PlanError as e:
+            raise Refused(f"plan {pid}: {e}; corrígelo antes de congelar") from None
+        if _blank(qfm.get("linked_plan")):
+            _set(q, [("linked_plan", pid)])
+        first = _commit(top, rel, f"Plan {pid} de {qid}: contenido que se congela")
+        sha = first or _git_ok(top, "rev-parse", "HEAD")
+        if first:
+            commits.append(first)
+        frozen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _set(plan, [("frozen_at", frozen_at), ("frozen_commit", sha), ("status", "congelado")])
 
     reg = proj / "Avisos" / "registro.json"
     created = not reg.exists()
@@ -161,12 +187,16 @@ def freeze(vault: Path, qid: str, by: str) -> dict:
         reg.parent.mkdir(parents=True, exist_ok=True)
         reg.write_text("[]\n", encoding="utf-8", newline="\n")
 
-    ss.apply(vault, qid, TO, by.strip(), f"plan {pid} congelado en el commit {sha[:12]}")
-    second = _commit(top, rel, f"Plan {pid} congelado (frozen_commit {sha[:12]}); {qid} → {TO}")
+    if status == FROM:
+        ss.apply(vault, qid, TO, by.strip(), f"plan {pid} congelado en el commit {sha[:12]}")
+    # Only a registry created by THIS run is committed; an existing one never is.
+    paths = rel + ([reg.resolve().relative_to(top).as_posix()] if created else [])
+    second = _commit(top, paths, f"Plan {pid} congelado (frozen_commit {sha[:12]}); {qid} → {TO}")
     if second:
         commits.append(second)
     return {"tool": TOOL, "question": qid, "plan": pid, "frozen_commit": sha, "frozen_at": frozen_at,
-            "to": TO, "avisos_creado": created, "aviso": AVISO if created else "", "commits": commits}
+            "to": TO, "reanudado": resumed, "avisos_creado": created, "aviso": AVISO if created else "",
+            "commits": commits}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -141,9 +141,55 @@ def test_an_existing_notice_registry_is_left_untouched(vault):
     assert reg.read_text(encoding="utf-8") == "NO-ES-JSON-Y-NO-SE-LEE"
 
 
-def test_registry_is_not_committed(vault):
+def test_a_registry_it_creates_goes_in_the_second_commit(vault):
+    out = fp.freeze(vault, "Q-9001", "tester")
+    assert git(vault, "ls-files", "Projects/demo/Avisos") == "Projects/demo/Avisos/registro.json"
+    changed = git(vault, "show", "--name-only", "--format=", out["commits"][-1]).splitlines()
+    assert "Projects/demo/Avisos/registro.json" in changed
+    assert git(vault, "status", "--porcelain") == ""
+
+
+def test_an_existing_registry_is_never_committed(vault):
+    reg = vault / "Projects" / "demo" / "Avisos" / "registro.json"
+    reg.parent.mkdir()
+    reg.write_text("[]", encoding="utf-8")
     fp.freeze(vault, "Q-9001", "tester")
     assert git(vault, "ls-files", "Projects/demo/Avisos") == ""
+
+
+def test_a_failed_second_commit_is_finished_by_running_it_again(vault, monkeypatch):
+    real, calls = fp._commit, []
+
+    def flaky(top, paths, msg):
+        calls.append(paths)
+        if len(calls) == 2:
+            raise fp.GitError("git commit falló: hook de prueba")
+        return real(top, paths, msg)
+
+    monkeypatch.setattr(fp, "_commit", flaky)
+    with pytest.raises(fp.GitError):
+        fp.freeze(vault, "Q-9001", "tester")
+    frozen = fm(vault / "Projects/demo/Mediciones/M-9002.md")["frozen_commit"]
+    assert git(vault, "status", "--porcelain") != ""      # the second commit is missing
+    monkeypatch.setattr(fp, "_commit", real)
+    out = fp.freeze(vault, "Q-9001", "tester")
+    assert out["frozen_commit"] == frozen and out["reanudado"] is True
+    assert git(vault, "rev-parse", "HEAD~1") == frozen
+    assert fm(vault / "Projects/demo/Preguntas/Q-9001.md")["status"] == "plan_congelado"
+    assert git(vault, "status", "--porcelain", "--", "Projects/demo/Preguntas", "Projects/demo/Mediciones") == ""
+    # finished: a third run has nothing to do
+    with pytest.raises(fp.Refused, match="ya está congelado"):
+        fp.freeze(vault, "Q-9001", "tester")
+
+
+def test_resume_refuses_a_frozen_commit_without_the_plan(vault):
+    plan = vault / "Projects/demo/Mediciones/M-9002.md"
+    head = git(vault, "rev-parse", "HEAD")  # the hub commit: no plan in it
+    plan.write_text(plan.read_text(encoding="utf-8").replace("frozen_commit: <git-sha>", f"frozen_commit: {head}")
+                    .replace("frozen_at: <YYYY-MM-DDTHH:MM:SSZ>", "frozen_at: 2031-01-01T00:00:00Z"),
+                    encoding="utf-8")
+    with pytest.raises(fp.Refused, match="ya está congelado"):
+        fp.freeze(vault, "Q-9001", "tester")
 
 
 def test_other_uncommitted_files_stay_out_of_the_freeze_commits(vault):

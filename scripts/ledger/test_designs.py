@@ -48,6 +48,8 @@ def test_load_medicion():
     d = reg["medicion"]
     assert d["publishable"] == "estimada"
     assert ("en_recoleccion", "estimada") in d["transitions"]
+    # starting the collection is the researcher's action (R12)
+    assert ("plan_congelado", "en_recoleccion") in d["researcher_only"]
     assert d["prefix"] == "Q" and d["plan_prefix"] == "M"
     assert designs.design_for_id(reg, "Q-9001") is d
     assert designs.design_for_id(reg, "H-0001") is None

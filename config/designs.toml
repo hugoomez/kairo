@@ -15,8 +15,10 @@ transitions = [
   ["abierta", "descartada"],
   ["plan_congelado", "descartada"],
 ]
-# Transiciones que solo hace una persona.
-researcher_only = [["abierta", "descartada"], ["plan_congelado", "descartada"]]
+# Transiciones que solo hace una persona: study_status.py las rechaza dentro de una sesión
+# de agente. Descartar va por `discard`; empezar la recolección (plan_congelado →
+# en_recoleccion) es la acción del investigador «Empezar la recolección».
+researcher_only = [["abierta", "descartada"], ["plan_congelado", "descartada"], ["plan_congelado", "en_recoleccion"]]
 # Estado que exige el manuscrito.
 publishable = "estimada"
 gate = ["plan_frozen", "estimates_reproducible", "classifiers_validated", "verifier_no_errors", "avisos_cerrados"]

@@ -13,8 +13,10 @@ and its gate checks all come from the node's design in `config/designs.toml`
 `propose` (read-only, JSON) lists the edges open from the current state; the edge to the
 `publishable` state carries the gate result, and is proposed (`to`) only when the gate passes.
 
-`apply` writes one edge, and refuses any pair the design does not declare. Researcher-only
-pairs are refused (they go through `discard`). The edge to `publishable` additionally needs
+`apply` writes one edge, and refuses any pair the design does not declare. A researcher-only
+pair is refused inside an agent session (`CLAUDECODE` / `KAIRO_AGENT_SESSION`), like
+`discard`; outside one the researcher may apply it, except the edge to `descartada`, which
+always goes through `discard` (it needs a reason). The edge to `publishable` additionally needs
 `gate(...)["ok"]`. It sets `status` and `updated` and appends one `history` entry; nothing
 else in the note changes.
 
@@ -158,7 +160,12 @@ def apply(vault: Path, nid: str, to: str, by: str, evidence: str) -> dict:
     if (status, to) not in set(design["transitions"]):
         raise Refused(f"«{status} → {to}» no es una transición del diseño de {nid}")
     if (status, to) in set(design["researcher_only"]):
-        raise Refused(f"«{status} → {to}» es decisión del investigador: usa discard")
+        if to == DISCARDED:
+            raise Refused(f"«{status} → {to}» es decisión del investigador: usa discard")
+        for m in AGENT_MARKERS:
+            if os.environ.get(m):
+                raise Refused(f"«{status} → {to}» es decisión del investigador: rechazado dentro de una "
+                              f"sesión de agente ({m}); la hace el investigador desde la interfaz")
     evidence = " ".join(evidence.split())
     if not evidence:
         raise Refused("--evidence es obligatorio")

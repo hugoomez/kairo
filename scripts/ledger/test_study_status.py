@@ -281,6 +281,31 @@ def test_researcher_only_edge_refused_in_apply(vault, capsys):
     assert code == 3 and "discard" in err
 
 
+@pytest.mark.parametrize("marker", ss.AGENT_MARKERS)
+def test_start_collection_refused_in_agent_session(vault, capsys, monkeypatch, marker):
+    vault.question(status="plan_congelado", verified=False, resultado="")
+    monkeypatch.setenv(marker, "1")
+    code, _, err = cli(capsys, "apply", "--vault", str(vault.root), "--question", "Q-9001",
+                       "--to", "en_recoleccion", "--by", "agente", "--evidence", "datos registrados")
+    assert code == 3 and marker in err and "investigador" in err
+    assert "status: plan_congelado" in fm(vault.proj / "Preguntas" / "Q-9001.md")
+
+
+def test_start_collection_by_researcher(vault, capsys):
+    p = vault.question(status="plan_congelado", verified=False, resultado="")
+    code, out, err = cli(capsys, "apply", "--vault", str(vault.root), "--question", "Q-9001",
+                         "--to", "en_recoleccion", "--by", "investigador", "--evidence", "recolección lanzada")
+    assert code == 0, err
+    assert out["to"] == "en_recoleccion" and "status: en_recoleccion" in fm(p)
+
+
+def test_propose_marks_start_collection_as_researcher_only(vault, capsys):
+    vault.question(status="plan_congelado", verified=False, resultado="")
+    code, out, _ = cli(capsys, "propose", "--vault", str(vault.root), "--question", "Q-9001")
+    opt = next(o for o in out["options"] if o["to"] == "en_recoleccion")
+    assert code == 0 and opt["researcher_only"] is True and out["to"] is None
+
+
 def test_discard_refused_in_agent(vault, capsys, monkeypatch):
     vault.question(status="abierta", verified=False, resultado="")
     monkeypatch.setenv("CLAUDECODE", "1")
@@ -403,11 +428,27 @@ def test_data_registered_before_freeze_fails(tmp_path, monkeypatch):
     assert "los datos se registraron antes de congelar el plan" in missing(v)
 
 
+def test_data_registered_before_freeze_under_another_name_fails(tmp_path, monkeypatch):
+    """Renaming the dataset after the freeze does not hide that its file (same sha256)
+    was already registered before it."""
+    for m in ss.AGENT_MARKERS:
+        monkeypatch.delenv(m, raising=False)
+    v = Vault(tmp_path / "vault", data_first=True)
+    reg_path = v.proj / "Datos" / "registro.json"
+    reg = json.loads(reg_path.read_text(encoding="utf-8"))
+    v.registry([{**reg[0], "name": "nombre-nuevo"}])
+    v.commit("mismo fichero, otro nombre")
+    p = v.question(verified=False, resultado="")
+    p.write_text(p.read_text(encoding="utf-8").replace("units_dataset: unidades-demo", "units_dataset: nombre-nuevo"),
+                 encoding="utf-8")
+    assert "los datos se registraron antes de congelar el plan" in missing(v)
+
+
 def test_data_never_committed_fails(vault):
     p = vault.question(verified=False)
     reg_path = vault.proj / "Datos" / "registro.json"
     reg = json.loads(reg_path.read_text(encoding="utf-8"))
-    reg_path.write_text(json.dumps(reg + [{**reg[0], "name": "otro-demo"}]), encoding="utf-8")  # not committed
+    reg_path.write_text(json.dumps(reg + [{**reg[0], "name": "otro-demo", "sha256": "0" * 64}]), encoding="utf-8")  # not committed
     p.write_text(p.read_text(encoding="utf-8").replace("units_dataset: unidades-demo", "units_dataset: otro-demo"),
                  encoding="utf-8")
     assert any("otro-demo" in m and "commit" in m for m in missing(vault))

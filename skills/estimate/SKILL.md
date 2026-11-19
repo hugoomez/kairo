@@ -53,6 +53,9 @@ allow. You **never**:
 
 ## Steps
 
+Run every command below with the vault root as the working directory (cwd);
+`<vault>` is that same folder.
+
 ### 1. The question
 
 Find `Projects/*/Preguntas/Q-XXXX.md` (the folder is the design's `folder`):
@@ -61,9 +64,15 @@ Find `Projects/*/Preguntas/Q-XXXX.md` (the folder is the design's `folder`):
 python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/study_status.py" propose --vault <vault> --question Q-XXXX
 ```
 
-`from` must be `plan_congelado` or `en_recoleccion`. If it is `abierta`, the
-plan is not frozen: say so, and point to `kairo:plan-study`. Stop. A
-terminal state also means stop.
+`from` must be `en_recoleccion`; `estimada` is reached only from there.
+
+- `plan_congelado`: the collection has not been started. Starting it is the
+  researcher's action, never yours. `study_status.py apply` refuses that edge
+  inside an agent session. Tell them to start it in the interface
+  (Recolecciones → «Empezar la recolección»), and stop.
+- `abierta`: the plan is not frozen. Say so, point to `kairo:plan-study`, and
+  stop.
+- A terminal state: stop.
 
 ### 2. `units_dataset`
 
@@ -75,19 +84,7 @@ data. The dataset must be `kind: file` (estimate.py refuses a folder). Write
 its `name` into `units_dataset`. Never infer the dataset from file names in
 the data folder.
 
-### 3. `en_recoleccion`
-
-`estimada` is reached only from `en_recoleccion`. If the question is still
-`plan_congelado`, the registered units dataset is the evidence that the
-collection ran:
-
-```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/study_status.py" apply --vault <vault> \
-  --question Q-XXXX --to en_recoleccion --by <agent id> \
-  --evidence "datos de unidades registrados como <dataset>"
-```
-
-### 4. Run `estimate.py`
+### 3. Run `estimate.py`
 
 ```
 python "${CLAUDE_PLUGIN_ROOT}/scripts/analysis/estimate.py" --vault <vault> --plan <linked_plan> --units <units_dataset>
@@ -95,11 +92,10 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/analysis/estimate.py" --vault <vault> --pl
 
 Exit 3 prints `{"error": …}`, sometimes with `esperada`, the fingerprint the
 registry expected. Report it and stop. A changed fingerprint means the units
-file changed after it was registered. The researcher re-registers it, which
-also re-dates the registration the gate checks. Never retry with another file
+file changed after it was registered. The researcher decides what to do. Never retry with another file
 or another dataset on your own.
 
-### 5. `## Resultado`
+### 4. `## Resultado`
 
 Replace the contents of `## Resultado` (the template placeholder, or an
 earlier result) with:
@@ -120,7 +116,7 @@ earlier result) with:
 
 Change nothing else in the note.
 
-### 6. Independent verification
+### 5. Independent verification
 
 ```
 python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifier_packet.py" \
@@ -144,15 +140,15 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py" append \
 `verifier_no_errors` fails closed.
 
 - `errors_found`: show each finding. If it points at `## Resultado`, re-run
-  step 4 and rewrite step 5 from the new output; never edit the numbers. If
+  step 3 and rewrite step 4 from the new output; never edit the numbers. If
   it points at the plan, the plan is frozen: tell the researcher. A real flaw
   in the plan means a new plan for a new question, and that is their
-  decision. Do not go on to step 7 until a new verification is
+  decision. Do not go on to step 6 until a new verification is
   `no_errors_found`.
 - `cannot_assess`: report what the verifier said is missing. The gate does not
   pass.
 
-### 7. Gate, propose, apply
+### 6. Gate, propose, apply
 
 ```
 python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/study_status.py" gate    --vault <vault> --question Q-XXXX
@@ -177,14 +173,14 @@ each with its fix:
 | `no está registrado en ningún commit del vault` | commit `Projects/<slug>/Datos/registro.json` alone (`git commit -m … -- <path>`), with the researcher's OK, then re-run the gate |
 | `los datos se registraron antes de congelar el plan` | Not fixable for this plan: the data were in the vault before the freeze. The researcher decides (a new question and plan) |
 | `el plan cambió después de congelarlo: …` | the researcher puts back the named sections exactly as they were at `frozen_commit` (keeping the frozen frontmatter); a real change needs a new plan |
-| `el bloque estimate-json … no coincide` / `no tiene bloque` | steps 4–5 again, with no hand edits |
-| `estimate.py se niega: …` | as in step 4 |
+| `el bloque estimate-json … no coincide` / `no tiene bloque` | steps 3–4 again, with no hand edits |
+| `estimate.py se niega: …` | as in step 3 |
 | `clasificador <n>: falta …validacion-<n>.json` / `…cambió después de validar` / `no coincide` | the researcher validates the classifier in the interface (Anotar → Validar clasificador), or runs `agreement.py validate` |
 | `clasificador <n>: precision_lo/recall_lo … < …` | the classifier does not reach the plan's floor. The plan does not change: improve the classifier and validate it again, or the researcher decides |
-| `verificación: …` / `otro paquete` / `sin sha256` | step 6 again (anything in the packet changed since) |
+| `verificación: …` / `otro paquete` / `sin sha256` | step 5 again (anything in the packet changed since) |
 | `sin registro de avisos` / `avisos sin cerrar …` | the researcher closes the notices in the Avisos panel, or waits for the embargo date. Report only the counts the gate gave |
 
-### 8. Commit and report
+### 7. Commit and report
 
 Commit the question note alone:
 `git add <path> && git commit -m "Q-XXXX: estimación" -- <path>`.
@@ -193,7 +189,7 @@ Never `git add -A`. Report:
 - the estimates, one line each with its interval;
 - the verifier verdict;
 - the state now (`estimada`, or the state it stayed in);
-- if the gate failed, the list from step 7.
+- if the gate failed, the list from step 6.
 
 ## Common mistakes
 
