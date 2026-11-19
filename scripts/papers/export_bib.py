@@ -141,7 +141,7 @@ def note_meta(fm: list[str]) -> dict:
             "published_title": g("published_title"), "citation_key": g("citation_key"),
             "zotero_key": g("zotero_key"), "venue_type": g("venue_type"), "volume": g("volume"),
             "issue": g("issue"), "pages": g("pages"), "openalex": g("openalex"),
-            "status": g("resolution_status"), "source": g("source")}
+            "status": g("resolution_status"), "source": g("source"), "fetched_at": g("fetched_at")}
 
 
 def effective(m: dict) -> dict:
@@ -179,6 +179,8 @@ def entry_type(m: dict) -> tuple[str, str | None]:
     venue = m.get("published_venue") or (m["venue"] if m.get("venue") and m["venue"] != "arXiv preprint" else "")
     if m.get("source") == "patentsview":
         return "patent", None
+    if m.get("source") == "web":
+        return "misc", None                     # grey literature: a web page, never a journal
     if not venue:
         return "misc", None
     kind = TYPE_ENTRY.get((m.get("venue_type") or "").lower())
@@ -237,8 +239,12 @@ def bibtex_entry(m: dict, key: str, read_field: bool = True) -> str:
             fields.append(("primaryclass", "{" + m["primary_class"] + "}"))
         if kind == "misc":
             fields.append(("howpublished", "{arXiv preprint arXiv:" + m["arxiv"] + (m.get("arxiv_version") or "") + "}"))
+    if m.get("source") == "web" and venue:
+        fields.append(("howpublished", "{" + _latex(venue) + "}"))
     if m.get("url") and not doi:
         fields.append(("url", "{" + m["url"] + "}"))
+    if m.get("source") == "web" and m.get("fetched_at"):
+        fields.append(("urldate", "{" + m["fetched_at"] + "}"))
     if notes(m):
         fields.append(("note", "{" + _latex(notes(m)) + "}"))
     if read_field and read_version(m):
@@ -273,6 +279,13 @@ def csl_item(m: dict, key: str) -> dict:
             item[dst] = m[src].replace("--", "-")
     if m.get("arxiv"):
         item["number"] = f"arXiv:{m['arxiv']}"
+    if m.get("source") == "web":
+        item["type"] = "webpage"
+        if m.get("url"):
+            item["URL"] = m["url"]
+        d = [int(x) for x in str(m.get("fetched_at") or "").split("-") if x.isdigit()]
+        if d:
+            item["accessed"] = {"date-parts": [d]}
     if notes(m):
         item["note"] = notes(m)
     if read_version(m):
