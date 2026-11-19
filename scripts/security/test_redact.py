@@ -149,6 +149,60 @@ def test_header_alone_in_prose_not_redacted():
     assert redact.redact_text(text2) == (text2, [])
 
 
+def _key_lines(n=3):
+    body = base64.b64encode(os.urandom(48 * n)).decode()
+    return [body[i:i + 64] for i in range(0, len(body), 64)]
+
+
+def test_unterminated_indented_block():
+    header = DASHES + "BEGIN OPENSSH PRIVATE KEY" + DASHES
+    lines = _key_lines()
+    span = header + "".join("\n    " + ln for ln in lines)
+    text = "Ejemplo:\n\n    " + span + "\nSigue la nota.\n"
+    out, findings = redact.redact_text(text)
+    assert out == "Ejemplo:\n\n    [REDACTADO private_key sha256:" + sha12(span) + "]\nSigue la nota.\n"
+    assert len(findings) == 1 and redact.has_secret(text)
+
+
+def test_unterminated_blockquoted_block():
+    header = DASHES + "BEGIN RSA PRIVATE KEY" + DASHES
+    lines = _key_lines()
+    span = header + "".join("\n> " + ln for ln in lines)
+    text = "> " + span + "\n> Gracias por revisarlo.\n"
+    out, findings = redact.redact_text(text)
+    assert out == "> [REDACTADO private_key sha256:" + sha12(span) + "]\n> Gracias por revisarlo.\n"
+    assert len(findings) == 1
+
+
+def test_unterminated_escaped_newlines_in_raw_json():
+    header = DASHES + "BEGIN RSA PRIVATE KEY" + DASHES
+    lines = _key_lines()
+    raw = json.dumps({"content": "pegado " + header + "\n" + "\n".join(lines)})
+    assert "\\n" in raw
+    out, findings = redact.redact_text(raw)
+    assert len(findings) == 1 and redact.has_secret(raw)
+    for ln in lines:
+        assert ln not in out
+    assert json.loads(out)["content"].startswith("pegado [REDACTADO private_key sha256:")
+
+
+def test_unterminated_truncated_first_line():
+    header = DASHES + "BEGIN OPENSSH PRIVATE KEY" + DASHES
+    run = base64.b64encode(os.urandom(30)).decode().rstrip("=")
+    for tail in ("-", "…", "[truncated]"):
+        text = header + "\n" + run + tail + "\nfin"
+        out, findings = redact.redact_text(text)
+        assert out == "[REDACTADO private_key sha256:" + sha12(header + "\n" + run) + "]" + tail + "\nfin"
+        assert len(findings) == 1 and redact.has_secret(text)
+
+
+def test_header_then_short_word_not_redacted():
+    header = DASHES + "BEGIN OPENSSH PRIVATE KEY" + DASHES
+    for text in (header + "\nGracias\n", header + "\nGracias", header + "\n> Gracias\n"):
+        assert redact.redact_text(text) == (text, [])
+        assert not redact.has_secret(text)
+
+
 def test_redact_json_keeps_valid_json():
     block = fake_block()
     open_head = DASHES + "BEGIN RSA PRIVATE KEY" + DASHES + "\n" + base64.b64encode(os.urandom(60)).decode()

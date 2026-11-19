@@ -32,16 +32,25 @@ import check_bundle as cb  # noqa: E402
 EXIT_OK, EXIT_ERROR, EXIT_FOUND = 0, 1, 3
 
 # A whole key block (header..END of the same label). A block with no END counts only
-# when at least one key-body line follows the header (base64/armor characters, after
-# optional Proc-Type:/DEK-Info:/Version:/Comment: lines and a blank line): the header
-# and those body lines are redacted, stopping at the first line that is not body. A
-# header alone (named in prose or a codebook) is not a key and is left as it is.
-_BODY_LINE = r"[A-Za-z0-9+/=]{4,}[ \t]*(?=\r?\n|\Z)"
+# when key body follows the header (after optional Proc-Type:/DEK-Info:/Version:/
+# Comment: lines and a blank line): a first run of >= 16 base64 characters, which need
+# not reach the end of its line (a truncated paste ending in `-`, `…`, `[truncated]`),
+# then any further whole lines of >= 4 base64 characters. Every line may carry the
+# prefix of an indented code block, a YAML `|` value or a blockquote (`[ \t>]*`), and a
+# line break may be a real one or an escaped `\n` inside a raw JSON/JSONL string. The
+# header and that body are redacted, stopping at the first thing that is not body. A
+# header alone, or followed by a short word (named in prose or a codebook), is not a
+# key and is left as it is.
+_NL = r"(?:\r?\n|(?:\\r)?\\n)"  # a real newline, or an escaped `\n` (as check_bundle._NL_B)
+_PFX = r"[ \t>]*"
+_B64 = r"[A-Za-z0-9+/=]"
+_BODY_LINE = _PFX + _B64 + r"{4,}[ \t]*(?=" + _NL + r'|"|\Z)'
 _BLOCK_RE = re.compile(
     r"-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?)-----.*?-----END \1-----"
-    r"|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[ \t]*\r?\n"
-    r"(?:(?:Proc-Type|DEK-Info|Version|Comment):[^\r\n]*\r?\n)*(?:[ \t]*\r?\n)?"
-    + _BODY_LINE + r"(?:\r?\n" + _BODY_LINE + r")*"
+    r"|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[ \t]*" + _NL
+    + r"(?:" + _PFX + r"(?:Proc-Type|DEK-Info|Version|Comment):(?:[^\r\n\\]|\\(?![rn]))*"
+    + _NL + r")*(?:" + _PFX + _NL + r")?"
+    + _PFX + _B64 + r"{16,}(?:[ \t]*" + _NL + _BODY_LINE + r")*"
     r"|PuTTY-User-Key-File-\d+:.*?(?:Private-MAC|Private-Hash): *[0-9a-fA-F]+",
     re.S)
 _AGE_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")

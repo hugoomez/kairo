@@ -158,7 +158,7 @@ def large_blob_has_secret(top: Path, name: str) -> bool:
             if redact.has_secret(window.decode("utf-8", errors="replace")):
                 found = True
                 break
-            carry = window[len(window) - SCAN_OVERLAP_BYTES:] if SCAN_OVERLAP_BYTES > 0 else b""
+            carry = window[max(0, len(window) - SCAN_OVERLAP_BYTES):] if SCAN_OVERLAP_BYTES > 0 else b""
     finally:
         proc.stdout.close()
         proc.kill()

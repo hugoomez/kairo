@@ -409,6 +409,22 @@ def test_precommit_scans_a_large_file_in_chunks_and_redacts_it(vault: Path, monk
     assert f"Kairo: redactado {rel} (1)" in err
 
 
+def test_large_scan_carry_when_window_shorter_than_overlap(vault: Path, monkeypatch):
+    # chunks smaller than the overlap: the carry must keep the whole window, not its tail
+    monkeypatch.setattr(_vp, "SCAN_CHUNK_BYTES", 1024)
+    monkeypatch.setattr(_vp, "SCAN_OVERLAP_BYTES", 8 * 1024)
+    found = []
+    real = _redact.has_secret
+    monkeypatch.setattr(_redact, "has_secret", lambda t: found.append(len(t)) or real(t))
+    text, _ = _large_with_key_across_chunks(5 * 1024, 40 * 1024)
+    rel = "Projects/x/Criticas/CR-9013.md"
+    put(vault / rel, text)
+    git(vault, "add", rel)
+    assert _vp.large_blob_has_secret(vault, rel) is True
+    # every window up to the overlap holds everything read so far
+    assert len(found) >= 6 and found == [1024 * i for i in range(1, len(found) + 1)]
+
+
 def test_precommit_refuses_a_large_file_it_cannot_redact_in_memory(vault: Path, monkeypatch, capsys):
     monkeypatch.setattr(_redact, "MAX_FILE_BYTES", 64 * 1024)
     monkeypatch.setattr(_vp, "SCAN_CHUNK_BYTES", 32 * 1024)
