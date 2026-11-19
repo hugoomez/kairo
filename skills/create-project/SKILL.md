@@ -123,6 +123,7 @@ existing fields — never a new `type` value:
 | `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
 | `corpus` (search and ingest only) | `ciencia` | `seed_hypotheses: false`, `sota_map: false` | as today; steps 3, 7 and 8 are skipped |
 | `ligero` (search and abstract cards) | `ciencia` | `seed_hypotheses: false`, `sota_map: false`, `fulltext: false` | as today; steps 3, 7 and 8 are skipped |
+| `medicion` (a measurement study) | `ciencia` | `code_repo` (required), `code_remote: none`, `code_visibility: private`, `seed_hypotheses: false` | the repository link as for `aplicado`; then `kairo:plan-study` instead of step 8 |
 
 **`revision`** is the light path for a question like "state of the art on X,
 last two years" or "compare A, B and C": Propósito is the question itself and
@@ -148,6 +149,16 @@ full text, no figures). Estimate it with `estimate_run.py --planned-papers N
 --abstract-only`. A paper the researcher then wants to read in depth gets its
 text with `ingest_paper.py rebuild --vault <vault> --only <P-id>`; the map
 needs full text, so step 7 is never run on a `ligero` project as it stands.
+
+**`medicion`** is for a study that estimates a quantity rather than testing a
+hypothesis (see `config/designs.toml`). `code_repo` is required: the
+collection scripts live there, so create or link it exactly as in "Applied
+projects: the code repository" and refuse to continue without it. Set
+`seed_hypotheses: false`. Ask for `default_linea_publicacion` (does the
+study feed a publication line?) and `deadline`, and record both in the hub.
+`sota_map` stays `true`: a measurement study needs the literature check too,
+so steps 4-7 and the frontier map apply. At the end, instead of step 8, offer
+`kairo:plan-study`; `kairo:estimate` runs later, once the plan is frozen.
 
 Set `template:` to the one used. For `teorico`, tell the researcher once, in
 your report: `default_linea_publicacion: true` means every experiment that
@@ -677,8 +688,9 @@ sha256 inside), so the map's evidence base is auditable and re-runnable.
 
 ### 8. Seed candidate hypotheses
 
-**`seed_hypotheses: false` (the `revision` template)?** Skip this step and end
+**`seed_hypotheses: false` (the `revision` and `medicion` templates)?** Skip this step and end
 the run saying the gaps are ready for hypothesis generation when wanted.
+For `medicion`, end by offering `kairo:plan-study` instead of hypotheses.
 
 **Launched from the Kairo interface?** Skip this step: the prompt says so.
 Hypothesis generation runs on the policy's hard-task model as its own job
