@@ -41,7 +41,8 @@ paper_thread: <slug>
 # adjudicating experiment needs the `completo` preregistration tier.
 default_linea_publicacion: false
 # code_repo — aplicado and medicion (the collection scripts live there):
-# absolute path of the project's own git repository, always OUTSIDE the vault. code_remote: none, or the remote URL.
+# absolute path of the project's own git repository, always OUTSIDE the vault.
+# code_remote: none, or the remote URL.
 # code_visibility: private by default; public only by the researcher's
 # explicit choice. The repo's pre-push guard blocks vault content.
 code_repo: <path>
