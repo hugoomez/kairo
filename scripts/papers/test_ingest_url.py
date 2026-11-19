@@ -41,8 +41,10 @@ class AddUrl(Base):
     def test_a_web_page_becomes_a_verifiable_note(self):
         code, out = self.add_url()
         self.assertEqual(code, 0, out)
-        self.assertEqual((out["status"], out["fulltext"], out["abstract"]), ("created", "web", "found"))
+        self.assertEqual((out["status"], out["fulltext"], out["abstract"]), ("created", "pagina", "found"))
         text = self.note().read_text(encoding="utf-8")
+        self.assertIn("fulltext: pagina", text)
+        self.assertIn("texto de la página web, no de un documento", ip.section_body(text, "Texto completo"))
         for line in ('title: "Invented Secrets Report 2031 | Example Org"', "source: web", "source_type: gris",
                      "fetched_at: 2031-06-01", f"url: \"{URL}\"", "year: 2031", "venue: \"Example Org Research\""):
             self.assertIn(line, text)
@@ -120,3 +122,60 @@ class AddUrl(Base):
         item = export_bib.csl_item(m, "k")
         self.assertEqual((item["type"], item["URL"], item["accessed"]),
                          ("webpage", URL, {"date-parts": [[2031, 6, 1]]}))
+
+
+PDF_URL = "https://reports.example.org/2031/invented-secrets.pdf"
+PDF_TEXT_LINES = ("1 Introduction\nThis invented paper studies imaginary encrypted values in made-up repositories "
+                  "and reports an invented rate of 4.2% across them.\n" * 30)
+WITH_PDF = PAGE.replace(b"</head>", b'<meta name="citation_pdf_url" content="/2031/invented-secrets.pdf"></head>')
+
+
+class LinkedPdf(Base):
+    def setUp(self):
+        super().setUp()
+        self.orig_pdf = ip.vf.pdf_bytes_to_text
+        ip.vf.pdf_bytes_to_text = lambda data: PDF_TEXT_LINES if data.startswith(b"%PDF") else None
+
+    def tearDown(self):
+        ip.vf.pdf_bytes_to_text = self.orig_pdf
+        super().tearDown()
+
+    def test_the_linked_pdf_is_the_full_text_and_verifies(self):
+        pages = {URL: WITH_PDF, PDF_URL: b"%PDF-1.7 invented paper"}
+        code, out = self.add("--url", URL, fetch=fetch_serving(pages))
+        self.assertEqual((code, out["fulltext"]), (0, "pdf"), out)
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("fulltext: full", text)
+        self.assertIn(f'pdf: "{PDF_URL}"', text)
+        self.assertIn("invented rate of 4.2%", ip.section_body(text, "Texto completo"))
+        self.assertIn("A made-up annual report", ip.section_body(text, "Resumen"))      # still the page's
+        manifest = json.loads((self.vault / "Papers" / "_fuentes" / "P-0001" / "fuentes.json").read_text("utf-8"))
+        roles = {f["file"]: (f["role"], f.get("fulltext")) for f in manifest["files"]}
+        self.assertEqual(roles, {"pagina.html": ("metadata", False), "texto.pdf": ("fulltext", None)})
+        self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
+        _, out = self.run_cli("reconvert", "--vault", str(self.vault))
+        self.assertEqual((out["notes"][0]["status"], out["notes"][0]["changed"]), ("reconverted", False), out)
+        _, out = self.run_cli("rebuild", "--vault", str(self.vault), "--only", "P-0001", fetch=fetch_serving(pages))
+        self.assertEqual((out["notes"][0]["status"], out["notes"][0]["fulltext"]), ("rebuilt", "pdf"), out)
+        self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
+
+    def test_a_blocked_pdf_falls_back_to_the_page_text(self):
+        blocked = {URL: WITH_PDF, PDF_URL: b"<!doctype html><title>Checking your browser</title>"}
+        code, out = self.add("--url", URL, fetch=fetch_serving(blocked))
+        self.assertEqual((code, out["fulltext"]), (0, "pagina"), out)
+        self.assertTrue(any("no se fuerza" in w for w in out["warnings"]), out["warnings"])
+        text = self.note().read_text(encoding="utf-8")
+        self.assertIn("fulltext: pagina", text)
+        self.assertIn("imaginary tool keeps encrypted values", ip.section_body(text, "Texto completo"))
+        self.assertEqual(self.run_cli("verify", "--vault", str(self.vault))[1]["counts"], {"ok": 1})
+
+    def test_a_private_pdf_url_is_never_fetched(self):
+        asked = []
+        page = PAGE.replace(b"</head>", b'<meta name="citation_pdf_url" content="http://10.0.0.7/p.pdf"></head>')
+
+        def fetch(url, headers):
+            asked.append(url)
+            return fetch_serving({URL: page})(url, headers)
+        code, out = self.add("--url", URL, fetch=fetch)
+        self.assertEqual((code, out["fulltext"]), (0, "pagina"), out)
+        self.assertEqual(asked, [URL])
