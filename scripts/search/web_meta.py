@@ -37,6 +37,9 @@ _BLOCK = {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquo
           "br", "tr", "td", "th", "dd", "dt"}
 _DATE = re.compile(r"(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?")
 _DOI = re.compile(r"\b(10\.\d{4,9}/[^\s\"'<>]+)")
+# a site's generic description, the same on every page: not an abstract of this one
+_BOILERPLATE = re.compile(r"development by creating an account on GitHub|^Contribute to \S+ development"
+                          r"|^Sign in to |^Log in to |enable JavaScript", re.I)
 _ARXIV_URL = re.compile(r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}|[a-z\-]+(?:\.[A-Z]{2})?/[0-9]{7})")
 
 
@@ -52,6 +55,8 @@ class _Page(HTMLParser):
         self._in_title = False
         self._skip = 0
         self._paras: list[str] = []
+        self._main: list[str] = []           # paragraphs inside <article> / <main>: the content
+        self._in_main = 0
         self._buf: list[str] = []
 
     def handle_starttag(self, tag, attrs):
@@ -63,6 +68,9 @@ class _Page(HTMLParser):
             return
         if tag == "title":
             self._in_title = True
+        if tag in ("article", "main"):
+            self._flush()
+            self._in_main += 1
         if tag in _SKIP:
             self._skip += 1
         if tag in _BLOCK:
@@ -75,6 +83,9 @@ class _Page(HTMLParser):
             self._skip -= 1
         if tag in _BLOCK:
             self._flush()
+        if tag in ("article", "main") and self._in_main:
+            self._flush()
+            self._in_main -= 1
 
     def handle_data(self, data):
         if self._in_title:
@@ -88,10 +99,14 @@ class _Page(HTMLParser):
         self._buf = []
         if t:
             self._paras.append(t)
+            if self._in_main:
+                self._main.append(t)
 
     def paragraphs(self) -> list[str]:
+        """The page's content: the paragraphs of its <article> / <main> when it has
+        some (a site's chrome stays out), else every paragraph."""
         self._flush()
-        return self._paras
+        return self._main or self._paras
 
 
 def _first(meta: dict, *names: str) -> str:
@@ -199,7 +214,7 @@ def parse(data: bytes, url: str) -> dict:
     paras = p.paragraphs()
     for n in ("citation_abstract", "dc.description", "og:description", "description", "twitter:description"):
         v = _first(meta, n)
-        if len(v.split()) >= 8:
+        if len(v.split()) >= 8 and not _BOILERPLATE.search(v):
             out["abstract"], out["abstract_from"] = v, n
             break
     if not out["abstract"]:

@@ -62,3 +62,14 @@ def test_public_url():
            "http://intranet/", "http://printer.local/", "ftp://example.com/f"]
     assert all(web_meta.public_url(u) is None for u in ok)
     assert all(web_meta.public_url(u) for u in bad)
+
+
+def test_article_content_wins_over_site_chrome_and_generic_descriptions():
+    page = (b'<html><head><title>invented/tool</title><meta property="og:description" '
+            b'content="Contribute to invented/tool development by creating an account on GitHub."></head><body>'
+            b"<div>You signed in with another tab or window. Reload to refresh your session, please now.</div>"
+            b"<article><p>The invented tool encrypts toy secrets with imaginary recipients and stores them in git.</p>"
+            b"</article></body></html>")
+    m = web_meta.parse(page, "https://github.com/invented/tool")
+    assert m["abstract_from"] == "parrafos"
+    assert m["abstract"].startswith("The invented tool") and "signed in" not in m["text"]
