@@ -379,9 +379,12 @@ class TestExport(CoverageBase):
     def pandoc(self):
         self.fake("pandoc", "import sys\nsys.stdout.write(sys.stdin.read())\n")
 
-    def latexmk(self, total=14, refs=13):
-        self.fake("latexmk", "open('main.log', 'w').write("
-                  f"'Output written on main.pdf ({total} pages, 1234 bytes).' + chr(10) + 'kairo:refs-start page={refs}' + chr(10))\n")
+    def latexmk(self, refs=12, rc=0, label=True, log=""):
+        aux = "\\\\newlabel{kairo:refs-start}{{}{%d}{x}{}{}}" % refs if label else ""
+        self.fake("latexmk", "import sys\n"
+                  f"open('main.aux', 'w').write('{aux}' + chr(10))\n"
+                  f"open('main.log', 'w').write({log!r} + chr(10))\n"
+                  f"sys.exit({rc})\n")
 
     def run_export(self):
         import io
@@ -439,7 +442,7 @@ class TestExport(CoverageBase):
 
     def test_page_limit_reported(self):
         self.pandoc()
-        self.latexmk(14, 13)
+        self.latexmk(12)
         self.set_venue("acm-sigconf")
         rc, out, _ = self.run_export()
         res = json.loads(out)
@@ -447,10 +450,51 @@ class TestExport(CoverageBase):
 
     def test_page_limit_exceeded(self):
         self.pandoc()
-        self.latexmk(16, 15)
+        self.latexmk(14)
         self.set_venue("acm-sigconf")
         res = json.loads(self.run_export()[1])
         self.assertEqual((res["pages"], res["over"]), (14, True))
+
+    def test_latex_failure_nulls_pages_and_warns(self):
+        self.pandoc()
+        self.latexmk(12, rc=12, log="! Undefined control sequence.")
+        self.set_venue("acm-sigconf")
+        res = json.loads(self.run_export()[1])
+        self.assertEqual((res["pages"], res["over"]), (None, None))
+        self.assertEqual(res["warning"], "latex_failed: ! Undefined control sequence.")
+
+    def test_missing_label_is_null_with_warning(self):
+        self.pandoc()
+        self.latexmk(label=False)
+        self.set_venue("acm-sigconf")
+        res = json.loads(self.run_export()[1])
+        self.assertEqual((res["pages"], res["over"]), (None, None))
+        self.assertIn("kairo:refs-start", res["warning"])
+
+    def test_cites_skip_code_urls_and_report_uncited(self):
+        self.pandoc()
+        self.fill("introduccion", "Ver P-9001, `P-9001`, https://x.org/P-9001 y P-9002.\n\n```\nP-9001\n```\n")
+        res = json.loads(self.run_export()[1])
+        tex = Path(res["tex"]).read_text(encoding="utf-8")
+        self.assertEqual(tex.count("`\\cite{"), 1)
+        self.assertIn("`P-9001`", tex)
+        self.assertIn("https://x.org/P-9001", tex)
+        self.assertEqual(res["uncited"], ["P-9002"])
+
+    def test_escapes_and_author_and_no_bibliography_without_cites(self):
+        self.pandoc()
+        self.fill("introduccion", "Sin citas.")
+        o, _ = ms.paths(self.proj, "t")
+        o.write_text(o.read_text(encoding="utf-8").replace("Paper inventado", "A~B^C\\\\D"), encoding="utf-8", newline="\n")
+        self.set_venue("acm-sigconf")
+        res = json.loads(self.run_export()[1])
+        tex = Path(res["tex"]).read_text(encoding="utf-8")
+        self.assertIn("\\author{Autores por decidir}", tex)
+        self.assertIn("\\textasciitilde{}", tex)
+        self.assertIn("\\textasciicircum{}", tex)
+        self.assertIn("\\textbackslash{}", tex)
+        self.assertNotIn("\\bibliography{", tex)
+        self.assertTrue(Path(res["bib"]).is_file())
 
     def test_placeholder_sections_refuse_naming_them(self):
         self.pandoc()

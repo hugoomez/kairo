@@ -452,8 +452,11 @@ def write_section(vault: Path, project_dir: Path, thread: str, section: str, tex
     manuscript.write_text(new, encoding="utf-8", newline="\n")
 
 
-_CITE = re.compile(r"\bP-\d{4}\b")
-_TEX_SPECIAL = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}"}
+# P-ids are cited in markdown, skipping fenced code, inline code, link targets and URLs
+_CITE = re.compile(r"(?ms)^(?:```|~~~).*?^(?:```|~~~)[^\n]*$|`[^`\n]*`|\]\([^)]*\)|https?://\S+|\bP-\d{4}\b")
+_AUX_LABEL = re.compile(r"\\newlabel\{kairo:refs-start\}\{\{[^}]*\}\{(\d+)\}")
+_TEX_SPECIAL = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}",
+                "~": r"\textasciitilde{}", "^": r"\textasciicircum{}", "\\": r"\textbackslash{}"}
 PANDOC_HINT = "winget install --id JohnMacFarlane.Pandoc"
 
 
@@ -483,11 +486,15 @@ def _pandoc(exe: str, markdown: str) -> str:
     return r.stdout
 
 
-def _page_counts(log: str) -> tuple[int | None, int | None]:
-    """(total pages, page where the references start) from a latexmk/LaTeX log."""
-    total = re.findall(r"\((\d+) pages?\b", log)
-    refs = re.findall(r"kairo:refs-start page=(\d+)", log)
-    return (int(total[-1]) if total else None), (int(refs[-1]) if refs else None)
+def _refs_page(aux: str) -> int | None:
+    """Page of `\\label{kairo:refs-start}` from main.aux: where the references start."""
+    m = _AUX_LABEL.search(aux)
+    return int(m.group(1)) if m else None
+
+
+def _last_error(log: str) -> str:
+    errs = [ln.strip() for ln in log.splitlines() if ln.startswith("!")]
+    return errs[-1] if errs else ""
 
 
 def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
@@ -518,17 +525,23 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
     keys = _cite_keys(vault)
     cited: list[str] = []
 
+    uncited: list[str] = []
+
     def to_cite(m: re.Match) -> str:
         pid = m.group(0)
+        if not re.fullmatch(r"P-\d{4}", pid):
+            return pid
         if pid not in keys:
+            if pid not in uncited:
+                uncited.append(pid)
             return pid
         if pid not in cited:
             cited.append(pid)
-        return "\\cite{" + keys[pid] + "}"
+        return "`\\cite{" + keys[pid] + "}`{=latex}"
 
     parts = []
     for s in cov["sections"]:
-        tex = _CITE.sub(to_cite, _pandoc(pandoc, bodies[s["id"]]))
+        tex = _pandoc(pandoc, _CITE.sub(to_cite, bodies[s["id"]]))
         parts.append(f"\\section{{{_tex_escape(s['title'])}}}\n\n{tex.strip()}\n")
 
     opts = f"[{venue['options']}]" if venue.get("options") else ""
@@ -538,10 +551,14 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
     if venue.get("package"):
         head.append(f"\\usepackage{{{venue['package']}}}")
     style = "ACM-Reference-Format" if venue["class"] == "acmart" else "plain"
+    if venue["class"] == "acmart":
+        head.append("\\author{Autores por decidir}")
     doc = "\n".join(head) + f"\n\\title{{{_tex_escape(meta.get('title') or '')}}}\n\\begin{{document}}\n\\maketitle\n\n"
     doc += "\n".join(parts)
-    doc += ("\n\\clearpage\n\\typeout{kairo:refs-start page=\\thepage}\n\\label{kairo:refs-start}\n"
-            f"\\bibliographystyle{{{style}}}\n\\bibliography{{refs}}\n\\end{{document}}\n")
+    doc += "\n\\label{kairo:refs-start}\n"
+    if cited:
+        doc += f"\\bibliographystyle{{{style}}}\n\\bibliography{{refs}}\n"
+    doc += "\\end{document}\n"
 
     out = project_dir / "Manuscritos" / f"latex-{thread}"
     out.mkdir(parents=True, exist_ok=True)
@@ -559,17 +576,28 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
 
     limit = int(venue.get("body_pages", 0))
     pages = over = None
+    warnings = [warning] if warning else []
     latexmk = shutil.which("latexmk")
     if latexmk:
-        subprocess.run([latexmk, "-pdf", "-interaction=nonstopmode", "main.tex"], cwd=out,
-                       capture_output=True, text=True)
+        for stale in ("main.log", "main.aux"):
+            (out / stale).unlink(missing_ok=True)
+        proc = subprocess.run([latexmk, "-pdf", "-interaction=nonstopmode", "main.tex"], cwd=out,
+                              capture_output=True, text=True)
         log = out / "main.log"
-        if log.is_file():
-            total, refs_page = _page_counts(log.read_text(encoding="utf-8", errors="replace"))
-            pages = refs_page - 1 if refs_page else total
-            if pages is not None:
+        logtext = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+        if proc.returncode != 0:
+            last = _last_error(logtext)
+            warnings.append("latex_failed: " + last if last else "latex_failed")
+        else:
+            aux = out / "main.aux"
+            pages = _refs_page(aux.read_text(encoding="utf-8", errors="replace")) if aux.is_file() else None
+            if pages is None:
+                warnings.append("no se encontró kairo:refs-start en main.aux: páginas desconocidas")
+            else:
                 over = bool(limit and pages > limit)
-    res = {"tex": str(tex_path), "bib": str(bib_path), "pages": pages, "limit": limit, "over": over}
+    res = {"tex": str(tex_path), "bib": str(bib_path), "pages": pages, "limit": limit, "over": over,
+           "uncited": uncited}
+    warning = "; ".join(warnings) or None
     if warning:
         res["warning"] = warning
     return res
