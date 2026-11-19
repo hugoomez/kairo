@@ -332,5 +332,140 @@ class TestSectionStates(CoverageBase):
         self.assertIn("| bloqueada |", text)
 
 
+class TestExport(CoverageBase):
+    """export --format latex: pandoc and latexmk are fake executables on a temp PATH."""
+
+    def setUp(self):
+        super().setUp()
+        import os
+        self.old_path = os.environ.get("PATH", "")
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        os.environ["PATH"] = str(self.bin)
+        (self.vault / "Papers").mkdir()
+        (self.vault / "Papers" / "P-9001 demo.md").write_text(
+            '---\nid: P-9001\ntitle: "Widgets azules"\nauthors: ["Zeta, Ana"]\nyear: 2020\n---\n', encoding="utf-8")
+        for k in ("trabajo-relacionado", "planteamiento", "discusion"):
+            self.fill(k)
+        self.fill("introduccion", "Texto citado en P-9001 y otra vez P-9001.")
+        r = self.claim("resultado_intermedio", "Un resultado inventado.")
+        self.cs.main(["set", "--note", str(r), "--status", "probado", "--by", "t", "--evidence", "x"])
+        ms.bind(self.proj, "t", "resultados", r.stem)
+        self.fill("resultados", "Resultado 1.")
+
+    def tearDown(self):
+        import os
+        os.environ["PATH"] = self.old_path
+        super().tearDown()
+
+    def fill(self, sec, text="Texto."):
+        import re
+        _, m = ms.paths(self.proj, "t")
+        raw = m.read_text(encoding="utf-8")
+        raw = re.sub(r"(<!-- kairo:section %s -->\n).*?(?=\n## |\Z)" % sec,
+                     lambda x: x.group(1) + text + "\n", raw, flags=re.S)
+        m.write_text(raw, encoding="utf-8", newline="\n")
+
+    def fake(self, name, body):
+        script = self.bin / f"{name}_fake.py"
+        script.write_text(body, encoding="utf-8")
+        if sys.platform == "win32":
+            (self.bin / f"{name}.cmd").write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        else:
+            exe = self.bin / name
+            exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n', encoding="utf-8")
+            exe.chmod(0o755)
+
+    def pandoc(self):
+        self.fake("pandoc", "import sys\nsys.stdout.write(sys.stdin.read())\n")
+
+    def latexmk(self, total=14, refs=13):
+        self.fake("latexmk", "open('main.log', 'w').write("
+                  f"'Output written on main.pdf ({total} pages, 1234 bytes).' + chr(10) + 'kairo:refs-start page={refs}' + chr(10))\n")
+
+    def run_export(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = ms.main(["export", "--vault", str(self.vault), "--project-dir", str(self.proj),
+                          "--thread", "t", "--format", "latex"])
+        return rc, out.getvalue(), err.getvalue()
+
+    def set_venue(self, venue):
+        import re
+        o, _ = ms.paths(self.proj, "t")
+        raw = o.read_text(encoding="utf-8")
+        o.write_text(re.sub(r"^venue:.*$", f"venue: {venue}", raw, flags=re.M), encoding="utf-8", newline="\n")
+
+    def test_export_refuses_without_pandoc(self):
+        rc, _, err = self.run_export()
+        self.assertEqual(rc, 3)
+        self.assertIn("winget install --id JohnMacFarlane.Pandoc", err)
+
+    def test_export_writes_tex_with_venue_class(self):
+        self.pandoc()
+        self.set_venue("acm-sigconf")
+        rc, out, _ = self.run_export()
+        self.assertEqual(rc, 0)
+        res = json.loads(out)
+        tex = Path(res["tex"]).read_text(encoding="utf-8")
+        self.assertIn("\\documentclass[sigconf]{acmart}", tex)
+        self.assertIn("\\bibliography{refs}", tex)
+        self.assertIn("\\label{kairo:refs-start}", tex)
+        self.assertNotIn("babel", tex)
+        self.assertIn("\\cite{", tex)
+        self.assertNotIn("P-9001", tex)
+        self.assertIn("kairo:P-9001", Path(res["bib"]).read_text(encoding="utf-8"))
+        self.assertEqual((res["pages"], res["over"], res["limit"]), (None, None, 12))
+        self.assertNotIn("warning", res)
+
+    def test_usenix_package_and_babel(self):
+        self.pandoc()
+        self.set_venue("usenix")
+        rc, out, _ = self.run_export()
+        tex = Path(json.loads(out)["tex"]).read_text(encoding="utf-8")
+        self.assertIn("\\documentclass{article}", tex)
+        self.assertIn("\\usepackage{usenix-2020-09}", tex)
+        self.assertIn("\\usepackage[spanish]{babel}", tex)
+
+    def test_unknown_venue_is_generic_with_warning(self):
+        self.pandoc()
+        self.set_venue("por decidir")
+        rc, out, _ = self.run_export()
+        res = json.loads(out)
+        self.assertEqual((rc, res["limit"]), (0, 0))
+        self.assertEqual(res["warning"], "venue desconocido: se usa generic")
+
+    def test_page_limit_reported(self):
+        self.pandoc()
+        self.latexmk(14, 13)
+        self.set_venue("acm-sigconf")
+        rc, out, _ = self.run_export()
+        res = json.loads(out)
+        self.assertEqual((rc, res["pages"], res["over"], res["limit"]), (0, 12, False, 12))
+
+    def test_page_limit_exceeded(self):
+        self.pandoc()
+        self.latexmk(16, 15)
+        self.set_venue("acm-sigconf")
+        res = json.loads(self.run_export()[1])
+        self.assertEqual((res["pages"], res["over"]), (14, True))
+
+    def test_placeholder_sections_refuse_naming_them(self):
+        self.pandoc()
+        self.fill("discusion", "_(pendiente — x)_")
+        rc, _, err = self.run_export()
+        self.assertEqual(rc, 3)
+        self.assertIn("discusion", err)
+
+    def test_unsupported_result_section_refuses(self):
+        self.pandoc()
+        ms.bind(self.proj, "t", "resultados", self.claim("lema", "Un lema sin probar.").stem)
+        rc, _, err = self.run_export()
+        self.assertEqual(rc, 3)
+        self.assertIn("resultados", err)
+
+
 if __name__ == "__main__":
     unittest.main()

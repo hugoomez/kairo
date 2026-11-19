@@ -4,6 +4,10 @@
     manuscript.py init  --project-dir D --thread T --title "..." [--venue V] [--design D] [--lang es|en]
     manuscript.py bind  --project-dir D --thread T --section S --id C-0003|H-0002
     manuscript.py show  --project-dir D --thread T            (JSON)
+    manuscript.py export --vault V --project-dir D --thread T --format latex
+        writes Manuscritos/latex-<T>/main.tex (venue's class, from config/venues.toml;
+        an unknown venue is `generic`, with a warning) and refs.bib (export_bib.py);
+        needs pandoc; with latexmk it reports the body pages against the venue's limit
 
 ``init`` writes two files in ``<project>/Manuscritos/``:
 
@@ -448,10 +452,133 @@ def write_section(vault: Path, project_dir: Path, thread: str, section: str, tex
     manuscript.write_text(new, encoding="utf-8", newline="\n")
 
 
+_CITE = re.compile(r"\bP-\d{4}\b")
+_TEX_SPECIAL = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}"}
+PANDOC_HINT = "winget install --id JohnMacFarlane.Pandoc"
+
+
+def _tex_escape(text: str) -> str:
+    return "".join(_TEX_SPECIAL.get(c, c) for c in text)
+
+
+def _bib_module():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "papers"))
+    import export_bib  # noqa: PLC0415
+    return export_bib
+
+
+def _cite_keys(vault: Path) -> dict[str, str]:
+    """P-id -> BibTeX key, from export_bib's own functions (never re-derived here)."""
+    eb = _bib_module()
+    every, _ = eb.collect(vault, None, None)
+    return dict(zip((m["id"] for m in every), eb.keys_for(every)))
+
+
+def _pandoc(exe: str, markdown: str) -> str:
+    import subprocess  # noqa: PLC0415
+    r = subprocess.run([exe, "-f", "markdown", "-t", "latex"], input=markdown, capture_output=True,
+                       text=True, encoding="utf-8")
+    if r.returncode != 0:
+        raise Refused(f"pandoc falló: {r.stderr.strip()[:300]}")
+    return r.stdout
+
+
+def _page_counts(log: str) -> tuple[int | None, int | None]:
+    """(total pages, page where the references start) from a latexmk/LaTeX log."""
+    total = re.findall(r"\((\d+) pages?\b", log)
+    refs = re.findall(r"kairo:refs-start page=(\d+)", log)
+    return (int(total[-1]) if total else None), (int(refs[-1]) if refs else None)
+
+
+def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    pandoc = shutil.which("pandoc")
+    if not pandoc:
+        raise Refused(f"falta pandoc: instálalo con `{PANDOC_HINT}` y repite")
+    cov = coverage(vault, project_dir, thread)
+    meta = cov["meta"]
+    _, manuscript = paths(project_dir, thread)
+    if not manuscript.exists():
+        raise Refused(f"no hay manuscrito para el hilo {thread}")
+    bad = [s["id"] for s in cov["sections"] if s["kind"] == "resultado" and s["state"] != "respaldada"]
+    if bad:
+        raise Refused("secciones de resultados sin respaldo (deben estar respaldadas): " + ", ".join(bad))
+    bodies = section_bodies(manuscript)
+    pending = [s["id"] for s in cov["sections"] if is_placeholder(bodies.get(s["id"], ""))]
+    if pending:
+        raise Refused("secciones sin redactar: " + ", ".join(pending))
+
+    venues = _venues()
+    venue_name = meta.get("venue")
+    warning = None
+    if venue_name not in venues:
+        venue_name, warning = "generic", "venue desconocido: se usa generic"
+    venue = venues[venue_name]
+    keys = _cite_keys(vault)
+    cited: list[str] = []
+
+    def to_cite(m: re.Match) -> str:
+        pid = m.group(0)
+        if pid not in keys:
+            return pid
+        if pid not in cited:
+            cited.append(pid)
+        return "\\cite{" + keys[pid] + "}"
+
+    parts = []
+    for s in cov["sections"]:
+        tex = _CITE.sub(to_cite, _pandoc(pandoc, bodies[s["id"]]))
+        parts.append(f"\\section{{{_tex_escape(s['title'])}}}\n\n{tex.strip()}\n")
+
+    opts = f"[{venue['options']}]" if venue.get("options") else ""
+    head = [f"\\documentclass{opts}{{{venue['class']}}}", "\\usepackage[utf8]{inputenc}"]
+    if venue["class"] != "acmart":
+        head.append(f"\\usepackage[{'english' if meta.get('lang') == 'en' else 'spanish'}]{{babel}}")
+    if venue.get("package"):
+        head.append(f"\\usepackage{{{venue['package']}}}")
+    style = "ACM-Reference-Format" if venue["class"] == "acmart" else "plain"
+    doc = "\n".join(head) + f"\n\\title{{{_tex_escape(meta.get('title') or '')}}}\n\\begin{{document}}\n\\maketitle\n\n"
+    doc += "\n".join(parts)
+    doc += ("\n\\clearpage\n\\typeout{kairo:refs-start page=\\thepage}\n\\label{kairo:refs-start}\n"
+            f"\\bibliographystyle{{{style}}}\n\\bibliography{{refs}}\n\\end{{document}}\n")
+
+    out = project_dir / "Manuscritos" / f"latex-{thread}"
+    out.mkdir(parents=True, exist_ok=True)
+    tex_path, bib_path = out / "main.tex", out / "refs.bib"
+    tex_path.write_text(doc, encoding="utf-8", newline="\n")
+    if cited:
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = _bib_module().main(["--vault", str(vault), "--only", *cited, "--out", str(bib_path)])
+        if rc != 0:
+            raise Refused("export_bib.py no pudo escribir refs.bib")
+    else:
+        bib_path.write_text("", encoding="utf-8", newline="\n")
+
+    limit = int(venue.get("body_pages", 0))
+    pages = over = None
+    latexmk = shutil.which("latexmk")
+    if latexmk:
+        subprocess.run([latexmk, "-pdf", "-interaction=nonstopmode", "main.tex"], cwd=out,
+                       capture_output=True, text=True)
+        log = out / "main.log"
+        if log.is_file():
+            total, refs_page = _page_counts(log.read_text(encoding="utf-8", errors="replace"))
+            pages = refs_page - 1 if refs_page else total
+            if pages is not None:
+                over = bool(limit and pages > limit)
+    res = {"tex": str(tex_path), "bib": str(bib_path), "pages": pages, "limit": limit, "over": over}
+    if warning:
+        res["warning"] = warning
+    return res
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("init", "bind", "show", "coverage", "write-section"):
+    for name in ("init", "bind", "show", "coverage", "write-section", "export"):
         p = sub.add_parser(name)
         p.add_argument("--project-dir", required=True, type=Path)
         p.add_argument("--thread", required=True)
@@ -463,10 +590,12 @@ def main(argv: list[str] | None = None) -> int:
         if name == "bind":
             p.add_argument("--section", required=True)
             p.add_argument("--id", required=True)
-        if name in ("coverage", "write-section"):
+        if name in ("coverage", "write-section", "export"):
             p.add_argument("--vault", required=True, type=Path)
         if name == "coverage":
             p.add_argument("--no-write", action="store_true", help="print only; do not write coverage-<thread>.md")
+        if name == "export":
+            p.add_argument("--format", choices=("latex",), required=True)
         if name == "write-section":
             p.add_argument("--section", required=True)
             p.add_argument("--from", dest="source", required=True, type=Path, help="file with the section's text")
@@ -485,6 +614,8 @@ def main(argv: list[str] | None = None) -> int:
                 out = args.project_dir / "Manuscritos" / f"coverage-{args.thread}.md"
                 out.write_text(render_coverage(cov), encoding="utf-8", newline="\n")
             print(json.dumps(cov, ensure_ascii=False))
+        elif args.cmd == "export":
+            print(json.dumps(export_latex(args.vault, args.project_dir, args.thread), ensure_ascii=False))
         elif args.cmd == "write-section":
             write_section(args.vault, args.project_dir, args.thread, args.section, args.source.read_text(encoding="utf-8"))
             print(json.dumps({"written": args.section}))
