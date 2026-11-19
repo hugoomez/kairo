@@ -254,3 +254,58 @@ def test_overlap_nested():
     out2, f2 = redact.redact_text(url)
     assert pw not in out2 and len(f2) == 1 and len(re.findall(r"\[REDACTADO", out2)) == 1
     assert redact.redact_text(url) == (out2, f2)
+
+
+# ---- base64-encoded keys and dotenvx key files ------------------------------
+
+def test_base64_pem_in_yaml_redacted():
+    enc = base64.b64encode((fake_block("RSA PRIVATE KEY") + "\n").encode()).decode()
+    text = "apiVersion: v1\nkind: Secret\ndata:\n  tls.key: " + enc + "\n  otro: x\n"
+    out, findings = redact.redact_text(text)
+    assert enc not in out and enc[:40] not in out
+    assert "[REDACTADO private_key sha256:" + sha12(enc) + "]" in out
+    assert "otro: x" in out and redact.has_secret(text)
+    assert run_cli("check", text).returncode == 3
+
+
+def test_urlsafe_unpadded_base64_key_redacted():
+    enc = base64.urlsafe_b64encode((fake_block() + "\n").encode()).decode().rstrip("=")
+    out, findings = redact.redact_text("k=" + enc)
+    assert enc not in out and findings[0]["type"] == "private_key"
+
+
+def test_base64_age_secret_key_redacted():
+    key = "AGE-SECRET-KEY-1" + "".join("QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"[b % 32] for b in os.urandom(58))
+    enc = base64.b64encode(("# created: 2031-01-01\n" + key + "\n").encode()).decode()
+    out, _ = redact.redact_text("keys.txt: " + enc)
+    assert enc not in out
+
+
+def test_base64_certificate_not_redacted():
+    cert = (DASHES + "BEGIN CERTIFICATE" + DASHES + "\n" + base64.b64encode(os.urandom(90)).decode()
+            + "\n" + DASHES + "END CERTIFICATE" + DASHES + "\n")
+    enc = base64.b64encode(cert.encode()).decode()
+    assert enc.startswith("LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t")
+    text = "  tls.crt: " + enc + "\n"
+    assert redact.redact_text(text) == (text, [])
+
+
+def test_dotenvx_private_key_redacted_public_kept():
+    priv = os.urandom(32).hex()
+    pub = "02" + os.urandom(32).hex()
+    keys = ('#/ private decryption keys /\nDOTENV_PRIVATE_KEY_PRODUCTION="' + priv + '"\n')
+    out, findings = redact.redact_text(keys)
+    assert priv not in out and findings[0]["type"] == "api_key"
+    assert 'DOTENV_PRIVATE_KEY_PRODUCTION="[REDACTADO' in out
+    env = 'DOTENV_PUBLIC_KEY_PRODUCTION="' + pub + '"\nHELLO="encrypted:BAzP1aQ"\n'
+    assert redact.redact_text(env) == (env, [])
+
+
+def test_existing_formats_still_redacted():
+    for label in ("OPENSSH PRIVATE KEY", "PGP PRIVATE KEY BLOCK", "PRIVATE KEY", "EC PRIVATE KEY"):
+        block = fake_block(label)
+        out, findings = redact.redact_text("x\n" + block + "\n")
+        assert block not in out and findings[0]["type"] == "private_key", label
+    key = "AGE-SECRET-KEY-1" + "".join("QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"[b % 32] for b in os.urandom(58))
+    out, findings = redact.redact_text(key)
+    assert key not in out and findings[0]["type"] == "age_secret_key"
