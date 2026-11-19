@@ -361,3 +361,102 @@ def test_hook_says_when_python_is_gone(vault: Path, tmp_path: Path):
     assert c.returncode != 0
     assert (f"Kairo: no encuentro Python en {gone.as_posix()}; vuelve a ejecutar vault_precommit.py install"
             in c.stderr.decode("utf-8"))
+
+
+# --- a staged text file over redact.MAX_FILE_BYTES is scanned in chunks (limits
+# lowered here so the "large" file stays small and the test fast) ---------------
+
+sys.path.insert(0, str(SCRIPT.parent))
+import redact as _redact  # noqa: E402
+import vault_precommit as _vp  # noqa: E402
+
+
+def _run_in_process(vault: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> tuple[int, str]:
+    for k in list(os.environ):
+        if k.startswith("GIT_") and k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"):
+            monkeypatch.delenv(k)
+    monkeypatch.chdir(vault)
+    code = _vp.main(["run", "--vault", str(vault)])
+    return code, capsys.readouterr().err
+
+
+def _large_with_key_across_chunks(chunk: int, total: int) -> tuple[str, str]:
+    block = fake_block()
+    line = "relleno inventado de una nota larga\n"
+    head = (line * (chunk // len(line) + 1))[: chunk - 21]   # the cut falls inside the BEGIN header
+    tail = line * ((total - chunk) // len(line) + 1)
+    return head + "\n" + block + "\n" + tail, block
+
+
+def test_precommit_scans_a_large_file_in_chunks_and_redacts_it(vault: Path, monkeypatch, capsys):
+    monkeypatch.setattr(_redact, "MAX_FILE_BYTES", 64 * 1024)
+    monkeypatch.setattr(_vp, "SCAN_CHUNK_BYTES", 32 * 1024)
+    monkeypatch.setattr(_vp, "SCAN_OVERLAP_BYTES", 8 * 1024)
+    text, block = _large_with_key_across_chunks(32 * 1024, 200 * 1024)
+    rel = "Projects/x/Criticas/CR-9010.md"
+    put(vault / rel, text)
+    assert (vault / rel).stat().st_size > _redact.MAX_FILE_BYTES
+    git(vault, "add", rel)
+    monkeypatch.setattr(_vp, "SCAN_OVERLAP_BYTES", 0)       # without the overlap the cut key is missed
+    assert _vp.large_blob_has_secret(vault, rel) is False
+    monkeypatch.setattr(_vp, "SCAN_OVERLAP_BYTES", 8 * 1024)
+    assert _vp.large_blob_has_secret(vault, rel) is True
+    code, err = _run_in_process(vault, monkeypatch, capsys)
+    assert code == 0, err
+    blob = staged(vault, rel)
+    assert "[REDACTADO private_key sha256:" in blob and "PRIVATE KEY" not in blob
+    assert block.splitlines()[1] not in (vault / rel).read_text(encoding="utf-8")
+    assert f"Kairo: redactado {rel} (1)" in err
+
+
+def test_precommit_refuses_a_large_file_it_cannot_redact_in_memory(vault: Path, monkeypatch, capsys):
+    monkeypatch.setattr(_redact, "MAX_FILE_BYTES", 64 * 1024)
+    monkeypatch.setattr(_vp, "SCAN_CHUNK_BYTES", 32 * 1024)
+    monkeypatch.setattr(_vp, "SCAN_OVERLAP_BYTES", 8 * 1024)
+    monkeypatch.setattr(_vp, "MAX_REDACT_BYTES", 100 * 1024)
+    text, _ = _large_with_key_across_chunks(32 * 1024, 200 * 1024)
+    rel = "Projects/x/Criticas/CR-9011.md"
+    put(vault / rel, text)
+    git(vault, "add", rel)
+    code, err = _run_in_process(vault, monkeypatch, capsys)
+    assert code == 1
+    assert rel in err and "redáctalo a mano" in err
+    assert "PRIVATE KEY" in staged(vault, rel)
+
+
+def test_precommit_leaves_a_clean_large_file(vault: Path, monkeypatch, capsys):
+    monkeypatch.setattr(_redact, "MAX_FILE_BYTES", 64 * 1024)
+    monkeypatch.setattr(_vp, "SCAN_CHUNK_BYTES", 32 * 1024)
+    monkeypatch.setattr(_vp, "SCAN_OVERLAP_BYTES", 8 * 1024)
+    rel = "Projects/x/Criticas/CR-9012.md"
+    body = "nada privado en esta nota larga\n" * 5000
+    put(vault / rel, body)
+    git(vault, "add", rel)
+    code, err = _run_in_process(vault, monkeypatch, capsys)
+    assert code == 0 and err == ""
+    assert staged(vault, rel) == body
+
+
+def test_precommit_refuses_root_config_with_private_material(vault: Path):
+    block = fake_block()
+    for rel in (".env", ".obsidian/plugins/x/data.json"):
+        (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+        content = "VALOR=1\n" + block + "\n"
+        put(vault / rel, content)
+        git(vault, "add", "-f", rel)
+        r = run("run", "--vault", str(vault))
+        assert r.returncode == 1
+        err = r.stderr.decode("utf-8")
+        assert f"{rel}: contiene material privado; quítalo a mano (es configuración, no se reescribe)" in err
+        assert (vault / rel).read_text(encoding="utf-8") == content
+        assert "PRIVATE KEY" in staged(vault, rel)
+        git(vault, "rm", "-q", "--cached", rel)
+
+
+def test_precommit_lets_clean_root_config_through(vault: Path):
+    rel = ".obsidian/app.json"
+    (vault / rel).parent.mkdir(parents=True)
+    put(vault / rel, "{}")
+    git(vault, "add", rel)
+    r = run("run", "--vault", str(vault))
+    assert r.returncode == 0 and r.stderr == b""

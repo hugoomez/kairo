@@ -75,7 +75,14 @@ where this hook is not loaded):
 Limits (stated, not hidden): like send_guard's shell check this is best
 effort; a program can open a path no command line shows (a script that builds
 it). The registry is re-read only when its mtime or size changes
-(`_MEMO`, per process). Standard library only.
+(`_MEMO`, per process). The guard acts only when the hook finds a vault (the
+session folder, its `vault/` subfolder or `$KAIRO_VAULT`): in a Claude Code
+session opened in the code repository, outside the vault, it does nothing
+unless KAIRO_VAULT names the vault («En las sesiones de Claude Code abiertas en
+el repositorio de código (fuera del vault), define KAIRO_VAULT con la ruta del
+vault para que el guardia de datos actúe»). A git-tracked copy of a sensitive
+dataset inside the code repository is not a registered root and is not
+covered. Standard library only.
 """
 
 from __future__ import annotations
@@ -88,7 +95,7 @@ from pathlib import Path
 
 from send_guard import SHELL_READER, _clean, shell_is_recursive, shell_tokens
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 REGISTRY = ("Datos", "registro.json")
 AVISOS = "avisos"

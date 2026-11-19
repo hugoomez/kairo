@@ -216,6 +216,11 @@ Report:
     because `study_status.py` refuses that edge inside an agent session.
   - Register the dataset (`kind: file`, `sensitive: true` if it holds
     third-party material), and commit `Datos/registro.json`.
+  - The data guard acts only when the hook finds the vault. En las sesiones
+    de Claude Code abiertas en el repositorio de código (fuera del vault),
+    define KAIRO_VAULT con la ruta del vault para que el guardia de datos
+    actúe. A git-tracked copy of a sensitive dataset inside the code
+    repository is not covered: keep the data out of that repository.
   - Annotate and validate the classifiers
     (`Datos/anotacion/<sample>/`, `agreement.py validate`).
   - Then run `kairo:estimate`.

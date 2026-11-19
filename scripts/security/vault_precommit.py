@@ -9,13 +9,20 @@
         is carried over to that worktree's top; when it cannot be, exit 1. For
         every staged file (added, copied,
         modified, renamed or changed in type; renames are seen as new files)
-        inside the vault, not under Papers/, text and at most 5 MB: if the STAGED
+        inside the vault, not under Papers/, and text: if the STAGED
         content holds private material (redact.has_secret), the working file is
         redacted in place, staged again, and stderr says
         «Kairo: redactado <path> (<n>)». A file whose working copy differs from
         what is staged (partial staging) is not touched: the commit is refused.
         Under `git commit -- <paths>` the redacted file is staged in the index git
-        installs after the commit too, not only in its temporary one.
+        installs after the commit too, not only in its temporary one. A file over
+        redact.MAX_FILE_BYTES (5 MB) is scanned in overlapping chunks; with findings
+        it is redacted the same way when it is UTF-8 and at most MAX_REDACT_BYTES
+        (200 MB), and otherwise the commit is refused naming the file. A dot-file
+        or a file in a dot-folder at the vault's root (.obsidian/, .env, .mcp.json,
+        .claude/) is configuration and never rewritten: with private material the
+        commit is refused, «<path>: contiene material privado; quítalo a mano (es
+        configuración, no se reescribe)».
         exit 0 commit goes on · exit 1 commit refused (one-line reason on stderr)
 
     vault_precommit.py install --vault V [--python P]
@@ -123,6 +130,42 @@ def vault_in_committing_worktree(vault: Path, cwd: Path) -> Path:
     return (top / inside).resolve()
 
 
+# A staged text file over redact.MAX_FILE_BYTES is scanned in chunks; consecutive
+# windows overlap so a key block that spans a cut is still seen whole. One with
+# findings is redacted in place when it is UTF-8 and at most MAX_REDACT_BYTES;
+# otherwise the commit is refused.
+SCAN_CHUNK_BYTES = 4 * 1024 * 1024
+SCAN_OVERLAP_BYTES = 64 * 1024
+MAX_REDACT_BYTES = 200 * 1024 * 1024
+
+
+def large_blob_has_secret(top: Path, name: str) -> bool:
+    """Whether the staged blob `name` holds private material, read in chunks of
+    SCAN_CHUNK_BYTES with SCAN_OVERLAP_BYTES carried over between them. A blob
+    with a NUL byte is binary and, like a small binary, not scanned."""
+    proc = subprocess.Popen(["git", "--literal-pathspecs", "cat-file", "blob", ":" + name], cwd=top,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    found = False
+    try:
+        carry = b""
+        while True:
+            chunk = proc.stdout.read(SCAN_CHUNK_BYTES)
+            if not chunk:
+                break
+            if b"\x00" in chunk:
+                return False
+            window = carry + chunk
+            if redact.has_secret(window.decode("utf-8", errors="replace")):
+                found = True
+                break
+            carry = window[len(window) - SCAN_OVERLAP_BYTES:] if SCAN_OVERLAP_BYTES > 0 else b""
+    finally:
+        proc.stdout.close()
+        proc.kill()
+        proc.wait()
+    return found
+
+
 def run(vault: Path) -> int:
     vault = vault.resolve()
     cwd = Path.cwd()
@@ -148,22 +191,32 @@ def run(vault: Path) -> int:
             continue                                  # outside the vault
         if os.path.normcase(rel.split("/")[0]) == os.path.normcase("Papers") or path.is_symlink():
             continue
-        if int(git(top, "cat-file", "-s", ":" + name).strip() or 0) > redact.MAX_FILE_BYTES:
-            continue
-        text = redact.decode_text(git(top, "cat-file", "blob", ":" + name))
-        if text is None or not redact.has_secret(text):
-            continue
+        size = int(git(top, "cat-file", "-s", ":" + name).strip() or 0)
+        if size > redact.MAX_FILE_BYTES:
+            if not large_blob_has_secret(top, name):
+                continue
+            if size > MAX_REDACT_BYTES:
+                raise Refused(f"{name}: contiene material privado y es demasiado grande para redactarlo "
+                              "aquí; redáctalo a mano")
+            limit = MAX_REDACT_BYTES
+        else:
+            limit = redact.MAX_FILE_BYTES
+            text = redact.decode_text(git(top, "cat-file", "blob", ":" + name))
+            if text is None or not redact.has_secret(text):
+                continue
+        if redact.is_root_config(rel):                # configuration is never rewritten
+            raise Refused(redact.config_notice(name))
         staged_oid = git(top, "rev-parse", ":" + name).strip()
         if not path.is_file():
             raise Refused(f"{name}: contiene material privado y tiene cambios sin preparar; redáctalo a mano")
         work_oid = git(top, "hash-object", f"--path={name}", "--", name).strip()
         if work_oid != staged_oid:
             raise Refused(f"{name}: contiene material privado y tiene cambios sin preparar; redáctalo a mano")
-        n = redact.redact_file(path)
+        n = redact.redact_file(path, limit)
         git(top, "add", "--", name)
         if real_env is not None:  # the index left after the commit must not keep the material either
             git(top, "add", "--", name, env=real_env)
-        again = redact.decode_text(git(top, "cat-file", "blob", ":" + name))
+        again = redact.decode_text(git(top, "cat-file", "blob", ":" + name), limit)
         if n == 0 or again is None or redact.has_secret(again):
             raise Refused(f"{name}: contiene material privado que no se pudo redactar; redáctalo a mano")
         print(f"Kairo: redactado {name} ({n})", file=sys.stderr)

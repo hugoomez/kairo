@@ -109,6 +109,34 @@ class TestPostWriteRedacts(unittest.TestCase):
         self.assertEqual(big.read_text(encoding="utf-8"), big_text)
         self.assertNotIn('"redact"', self.log_text())
 
+    def test_post_write_leaves_root_config_files_and_says_so(self):
+        block = fake_block()
+        for rel in (".obsidian/plugins/x/data.json", ".env", ".mcp.json", ".claude/settings.local.json"):
+            f = self.vault / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            content = json.dumps({"clave": block})
+            f.write_text(content, encoding="utf-8")
+            r = self.hook({"tool_name": "Write", "tool_input": {"file_path": str(f)}, "cwd": str(self.vault)})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(f.read_text(encoding="utf-8"), content, rel)      # not rewritten
+            err = r.stderr.decode("utf-8")
+            self.assertIn(f"{rel}: contiene material privado; quítalo a mano (es configuración, no se reescribe)",
+                          err)
+            self.assertNotIn(block.splitlines()[1], err)
+        clean = self.vault / ".obsidian" / "app.json"
+        clean.write_text("{}", encoding="utf-8")
+        r = self.hook({"tool_name": "Write", "tool_input": {"file_path": str(clean)}, "cwd": str(self.vault)})
+        self.assertNotIn("contiene material privado", r.stderr.decode("utf-8"))
+
+    def test_post_write_redacts_a_dot_folder_below_the_root(self):
+        block = fake_block()
+        note = self.vault / "Projects" / "x" / ".borrador" / "n.md"
+        note.parent.mkdir(parents=True)
+        note.write_text(block + "\n", encoding="utf-8")
+        r = self.hook({"tool_name": "Write", "tool_input": {"file_path": str(note)}, "cwd": str(self.vault)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("PRIVATE KEY", note.read_text(encoding="utf-8"))
+
     def test_post_write_never_replaces_a_symlink(self):
         block = fake_block()
         target = self.vault / "Projects" / "x" / "destino.md"

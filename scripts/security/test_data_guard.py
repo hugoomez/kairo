@@ -342,3 +342,16 @@ def test_admin_share_in_inline_code(env):
         cmd = f"python -c \"open(r'{raw}')\""
         r = decide(ev("Bash", env["vault"], command=cmd), env["vault"])
         assert r and "encuesta-inventada" in r, cmd
+
+
+def test_limits_documented_where_the_researcher_reads_them():
+    """FW-4: the guard acts only with a vault; the limit is stated in the module,
+    the README and the plan-study skill, and a copy in the code repo is not covered."""
+    root = Path(__file__).resolve().parents[2]
+    sentence = "define KAIRO_VAULT con la ruta del vault para que el guardia de datos actúe"
+    flat = lambda t: " ".join(t.split())  # noqa: E731
+    assert sentence in flat(data_guard.__doc__)
+    assert sentence in flat((root / "README.md").read_text(encoding="utf-8"))
+    assert sentence in flat((root / "skills/plan-study/SKILL.md").read_text(encoding="utf-8"))
+    assert "not covered" in flat(data_guard.__doc__)
+    assert data_guard.__version__ != "1.1.0"

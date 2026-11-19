@@ -33,7 +33,9 @@ whose names contain KEY, TOKEN, SECRET, PASSWORD, PASS, AUTH or CREDENTIAL
 ``sk-ant-…`` keys, GitHub tokens (``ghp_``, ``gho_``, ``ghu_``, ``ghs_``,
 ``ghr_``, ``github_pat_``), AWS key ids (``AKIA…``), Slack tokens
 (``xoxb-``/``xoxa-``/``xoxp-``…), ``Bearer …``, ``api_key=`` / ``apikey=`` /
-``token=`` / ``access_token=`` values and PEM private-key blocks. Each JSONL
+``token=`` / ``access_token=`` values and PEM private-key blocks; then every
+pattern of ``scripts/security/redact.py`` (credential URLs, age keys, private-key
+blocks, password assignments) leaves its ``[REDACTADO <tipo> sha256:…]`` mark. Each JSONL
 line is redacted string by string, so the copy stays valid JSONL. A
 heuristic: a secret of another shape is copied as is. The copy also keeps
 third-party paper text that subagents read (the main thread's hook refuses
@@ -59,6 +61,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bitacora"))
 import action_log  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "security"))
+import redact as _security_redact  # noqa: E402
 
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
@@ -172,6 +177,7 @@ def redact_text(text: str, env_secrets: list[str] | None = None) -> str:
     """`text` with secrets replaced by «redactado» (see the module docstring)."""
     for v in env_secrets if env_secrets is not None else _env_secrets():
         text = text.replace(v, REDACTED)
+    text = _security_redact.redact_text(text)[0]
     for pat in _SECRET_SHAPES:
         text = pat.sub(REDACTED, text)
     return _QUERY_SECRET.sub(lambda m: m.group(1) + REDACTED, text)

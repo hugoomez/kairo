@@ -31,11 +31,17 @@ import check_bundle as cb  # noqa: E402
 
 EXIT_OK, EXIT_ERROR, EXIT_FOUND = 0, 1, 3
 
-# A whole key block (header..END of the same label). A block with no END is redacted
-# from its header to the end of the text, which is the safe side.
+# A whole key block (header..END of the same label). A block with no END counts only
+# when at least one key-body line follows the header (base64/armor characters, after
+# optional Proc-Type:/DEK-Info:/Version:/Comment: lines and a blank line): the header
+# and those body lines are redacted, stopping at the first line that is not body. A
+# header alone (named in prose or a codebook) is not a key and is left as it is.
+_BODY_LINE = r"[A-Za-z0-9+/=]{4,}[ \t]*(?=\r?\n|\Z)"
 _BLOCK_RE = re.compile(
     r"-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?)-----.*?-----END \1-----"
-    r"|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----.*\Z"
+    r"|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[ \t]*\r?\n"
+    r"(?:(?:Proc-Type|DEK-Info|Version|Comment):[^\r\n]*\r?\n)*(?:[ \t]*\r?\n)?"
+    + _BODY_LINE + r"(?:\r?\n" + _BODY_LINE + r")*"
     r"|PuTTY-User-Key-File-\d+:.*?(?:Private-MAC|Private-Hash): *[0-9a-fA-F]+",
     re.S)
 _AGE_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")
@@ -108,10 +114,21 @@ def has_secret(text: str) -> bool:
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
 
-def decode_text(raw: bytes) -> str | None:
+def is_root_config(rel: str) -> bool:
+    """Whether a vault-relative path (posix) is a dot-file or lies in a dot-folder at
+    the vault's root (.obsidian/, .env, .mcp.json, .claude/): configuration, which
+    the hooks never rewrite."""
+    return rel.split("/")[0].startswith(".")
+
+
+def config_notice(rel: str) -> str:
+    return f"{rel}: contiene material privado; quítalo a mano (es configuración, no se reescribe)"
+
+
+def decode_text(raw: bytes, max_bytes: int | None = None) -> str | None:
     """The bytes as text, or None for what is not redacted: a binary (a NUL byte or
-    not UTF-8) or more than MAX_FILE_BYTES."""
-    if len(raw) > MAX_FILE_BYTES or b"\x00" in raw:
+    not UTF-8) or more than `max_bytes` (default MAX_FILE_BYTES)."""
+    if len(raw) > (MAX_FILE_BYTES if max_bytes is None else max_bytes) or b"\x00" in raw:
         return None
     try:
         return raw.decode("utf-8")
@@ -119,15 +136,16 @@ def decode_text(raw: bytes) -> str | None:
         return None
 
 
-def redact_file(path: Path | str) -> int:
+def redact_file(path: Path | str, max_bytes: int | None = None) -> int:
     """Redact a text file in place; returns how many findings were replaced (0: the
-    file was not touched). Bytes are decoded without newline translation, so the
+    file was not touched, e.g. over `max_bytes`, default MAX_FILE_BYTES). Bytes are decoded without newline translation, so the
     newline style and a BOM survive; the new content goes to a temp file next to it
     and replaces it atomically."""
     p = Path(path)
-    if p.stat().st_size > MAX_FILE_BYTES:
+    limit = MAX_FILE_BYTES if max_bytes is None else max_bytes
+    if p.stat().st_size > limit:
         return 0
-    text = decode_text(p.read_bytes())
+    text = decode_text(p.read_bytes(), limit)
     if text is None or not has_secret(text):
         return 0
     new, findings = redact_text(text)

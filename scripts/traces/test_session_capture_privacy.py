@@ -88,6 +88,25 @@ class TestRedaction(Base):
         json.loads(sub)
         self.assertIn(SECRETS[0], self.transcript.read_text(encoding="utf-8"))   # the original is untouched
 
+    def test_credential_url_and_age_key_are_redacted(self):
+        charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+        age = "AGE-SECRET-KEY-1" + "".join(charset[(i * 7) % 32] for i in range(58)).upper()
+        pw = "Inv3nted" + "Pw" + "q7Zr4mXk"
+        url = "postgres://usuario:" + pw + "@db.invented.test:5432/base"
+        said = f"conecta con {url} y guarda {age} en el llavero"
+        self.transcript.write_text("\n".join([
+            json.dumps({"type": "user", "message": {"content": said}}),
+            tool_use("Write", str(self.vault / "Projects/alfa/Hipotesis/H-9012 x.md"))]) + "\n",
+            encoding="utf-8")
+        self.assertEqual(sc.run(self.vault, self.payload(), today="2031-01-03"), ["alfa"])
+        copy = (self.vault / "Projects/alfa/_trazas-agente/cli/2031-01-03__abcd-5678.jsonl").read_text(
+            encoding="utf-8")
+        self.assertNotIn(pw, copy)
+        self.assertNotIn(age, copy)
+        self.assertIn("db.invented.test", copy)
+        for ln in copy.splitlines():
+            json.loads(ln)
+
     def test_capture_can_be_switched_off(self):
         self.transcript.write_text("\n".join(self.secret_lines()) + "\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"KAIRO_CAPTURE_TRANSCRIPTS": "off"}):

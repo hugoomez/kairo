@@ -800,6 +800,22 @@ Connections search results are not filtered and can show the titles of
 `send: never` notes; keep such notes out of its index if their titles are
 private.
 
+### Datos sensibles
+
+A dataset registered `sensitive: true` in `Projects/<slug>/Datos/registro.json`,
+and every project's `Avisos/` folder, are kept away from every agent by
+`scripts/security/data_guard.py`, run by the pre-tool hook. Its limits:
+
+- It acts only when the hook finds a vault (the session folder, its `vault/`
+  subfolder or `$KAIRO_VAULT`). En las sesiones de Claude Code abiertas en el
+  repositorio de código (fuera del vault), define KAIRO_VAULT con la ruta del
+  vault para que el guardia de datos actúe.
+- A git-tracked copy of a sensitive dataset inside the code repository is not
+  covered: the guard protects the registered path, not copies of it. Keep
+  sensitive data out of the code repository.
+- It is best effort against the shell: a program can open a path that no
+  command line shows.
+
 ---
 
 ## Optional companion: Smart Connections (semantic vault search)

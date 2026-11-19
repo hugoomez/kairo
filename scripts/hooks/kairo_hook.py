@@ -259,7 +259,10 @@ STEP_BUDGET_S = {"sota_staleness": 20, "digest": 25, "ledger": 30, "reindex": 25
 def redact_written(path: Path, vault: Path) -> None:
     """Private material an agent wrote into a vault file is replaced in place by its
     fingerprint (redact.py). Papers/ is third-party text checked verbatim elsewhere and
-    is left alone; symlinks, binaries and files over 5 MB too. Never raises; the event names the
+    is left alone; symlinks, binaries and files over 5 MB too. A dot-file or a file in
+    a dot-folder at the vault's root (.obsidian/, .env, .mcp.json, .claude/) is
+    configuration: it is not rewritten, and stderr says to remove the material by
+    hand. Never raises; the event names the
     file and the count, never the material."""
     try:
         if path.is_symlink():           # never replace a link (nor write through it)
@@ -271,6 +274,12 @@ def redact_written(path: Path, vault: Path) -> None:
         if os.path.normcase(r.split("/")[0]) == os.path.normcase("Papers") or not path.is_file():
             return
         import redact
+        if redact.is_root_config(r):    # configuration is never rewritten: say so instead
+            text = redact.decode_text(path.read_bytes()) if path.stat().st_size <= redact.MAX_FILE_BYTES else None
+            if text is not None and redact.has_secret(text):
+                record("PostToolUse", "redact", vault, "config", r)
+                print(f"Kairo: {redact.config_notice(r)}", file=sys.stderr)
+            return
         n = redact.redact_file(path)
         if n:
             record("PostToolUse", "redact", vault, "redacted", f"{r} {n} hallazgos")

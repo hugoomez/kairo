@@ -110,12 +110,43 @@ def test_check_bundle_exposes_patterns():
 
 
 def test_unterminated_block_plain_text():
-    # plain-text mode: a header with no END is redacted to the end of the text
+    # a header with no END is redacted with the body lines that follow it, and no further
     head = DASHES + "BEGIN OPENSSH PRIVATE KEY" + DASHES + "\n" + base64.b64encode(os.urandom(60)).decode()
-    text = "antes\n" + head + "\nresto que tambien se va\n"
+    text = "antes\n" + head + "\nresto que no se va\n"
     out, findings = redact.redact_text(text)
-    assert out == "antes\n[REDACTADO private_key sha256:" + sha12(head + "\nresto que tambien se va\n") + "]"
+    assert out == "antes\n[REDACTADO private_key sha256:" + sha12(head) + "]\nresto que no se va\n"
     assert len(findings) == 1
+
+
+def test_unterminated_header_three_body_lines_then_prose():
+    body = base64.b64encode(os.urandom(144)).decode()
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    assert len(lines) == 3
+    head = DASHES + "BEGIN RSA PRIVATE KEY" + DASHES + "\n" + "\n".join(lines)
+    text = "nota previa\n" + head + "\nAqui sigue la prosa del cuaderno.\nY otra linea.\n"
+    out, findings = redact.redact_text(text)
+    assert out == ("nota previa\n[REDACTADO private_key sha256:" + sha12(head) + "]\n"
+                   "Aqui sigue la prosa del cuaderno.\nY otra linea.\n")
+    assert len(findings) == 1
+
+
+def test_unterminated_with_proc_type_headers():
+    body = base64.b64encode(os.urandom(96)).decode()
+    head = (DASHES + "BEGIN RSA PRIVATE KEY" + DASHES + "\nProc-Type: 4,ENCRYPTED\n"
+            "DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n" + body[:64] + "\n" + body[64:])
+    out, findings = redact.redact_text(head + "\nfin del texto")
+    assert out == "[REDACTADO private_key sha256:" + sha12(head) + "]\nfin del texto"
+    assert len(findings) == 1
+
+
+def test_header_alone_in_prose_not_redacted():
+    header = DASHES + "BEGIN OPENSSH PRIVATE KEY" + DASHES
+    text = ("El codebook marca las lineas que empiezan por " + header + " como clave.\n"
+            "Despues viene el resto de la nota, que no es secreto.\n")
+    out, findings = redact.redact_text(text)
+    assert out == text and findings == []
+    text2 = header + "\nEsta frase no es el cuerpo de una clave.\n"
+    assert redact.redact_text(text2) == (text2, [])
 
 
 def test_redact_json_keeps_valid_json():
