@@ -266,7 +266,7 @@ def test_estimada_requires_gate(vault, capsys):
 def test_estimada_passes_with_full_gate(vault, capsys):
     p = vault.question(status="en_recoleccion")
     g = ss.gate(vault.root, "Q-9001")
-    assert g == {"applies": True, "ok": True, "missing": []}
+    assert (g["applies"], g["ok"], g["missing"]) == (True, True, [])
     code, out, err = cli(capsys, "apply", "--vault", str(vault.root), "--question", "Q-9001",
                          "--to", "estimada", "--by", "tester", "--evidence", "puerta superada")
     assert code == 0, err
@@ -600,7 +600,7 @@ def test_apply_refuses_non_study_id(vault, capsys):
 
 
 def test_gate_not_applicable_to_hypothesis(vault):
-    assert ss.gate(vault.root, "H-0001") == {"applies": False, "ok": True, "missing": []}
+    assert ss.gate(vault.root, "H-0001") == {"applies": False, "ok": True, "missing": [], "checks": []}
 
 
 def test_gate_names_match_registry():
@@ -652,3 +652,29 @@ def test_question_packet_needs_one_mode(vault, capsys):
     assert verifier_packet.main(["--vault", str(vault.root)]) == 2
     assert verifier_packet.main(["--vault", str(vault.root), "--question", "Q-9001",
                                  "--note", str(vault.proj / "Preguntas" / "Q-9001.md")]) == 2
+
+
+def test_gate_reports_checks_per_name(vault):
+    vault.question(verified=False)
+    res = ss.gate(vault.root, "Q-9001")
+    design = ss._designs.design_for_id(ss._designs.load(), "Q-9001")
+    assert [c["name"] for c in res["checks"]] == list(design["gate"])
+    assert all(c["ok"] == (not c["missing"]) for c in res["checks"])
+    assert [m for c in res["checks"] for m in c["missing"]] == res["missing"]
+    assert any(not c["ok"] for c in res["checks"])
+
+
+def test_gate_checks_on_exception(vault, monkeypatch):
+    vault.question()
+    design = ss._designs.design_for_id(ss._designs.load(), "Q-9001")
+    name = design["gate"][0]
+
+    def boom(*_a):
+        raise ValueError("roto")
+
+    monkeypatch.setitem(ss.GATES, name, boom)
+    res = ss.gate(vault.root, "Q-9001")
+    row = res["checks"][0]
+    assert row["name"] == name and row["ok"] is False
+    assert any("roto" in m for m in row["missing"])
+    assert not res["ok"]

@@ -24,7 +24,7 @@ else in the note changes.
 (`CLAUDECODE` / `KAIRO_AGENT_SESSION`), needs a reason, and only follows a declared
 researcher-only pair.
 
-`gate(vault, nid) -> {"applies", "ok", "missing"}`: the design's checks (study_gates.GATES)
+`gate(vault, nid) -> {"applies", "ok", "missing", "checks"}` (checks: one {name, ok, missing} row per design check, in order): the design's checks (study_gates.GATES)
 on the node. `applies` is False for an id no design claims (H-, C-, …).
 
 Exit codes: 0 ok · 3 refused · 1 error. Standard library only.
@@ -83,23 +83,26 @@ def gate(vault: Path, nid: str) -> dict:
     vault = Path(vault)
     design = _designs.design_for_id(_designs.load(), nid)
     if design is None:
-        return {"applies": False, "ok": True, "missing": []}
+        return {"applies": False, "ok": True, "missing": [], "checks": []}
     path = find_node(vault, nid, design)
     if path is None:
-        return {"applies": True, "ok": False, "missing": [f"{nid}: no encontrada en Projects/*/{design['folder']}/"]}
+        return {"applies": True, "ok": False, "missing": [f"{nid}: no encontrada en Projects/*/{design['folder']}/"], "checks": []}
     parsed = read_note(path)
     fm = parsed[0] if parsed else {}
     missing: list[str] = []
+    checks: list[dict] = []
     for name in design["gate"]:
         check = GATES.get(name)
         if check is None:
-            missing.append(f"{name}: comprobación inexistente (corre designs.py check)")
-            continue
-        try:
-            missing += check(vault, path, fm)
-        except Exception as exc:  # noqa: BLE001  a broken check fails the gate, never passes it
-            missing.append(f"{name}: error al comprobar ({type(exc).__name__}: {exc})")
-    return {"applies": True, "ok": not missing, "missing": missing}
+            lines = [f"{name}: comprobación inexistente (corre designs.py check)"]
+        else:
+            try:
+                lines = list(check(vault, path, fm))
+            except Exception as exc:  # noqa: BLE001  a broken check fails the gate, never passes it
+                lines = [f"{name}: error al comprobar ({type(exc).__name__}: {exc})"]
+        missing += lines
+        checks.append({"name": name, "ok": not lines, "missing": lines})
+    return {"applies": True, "ok": not missing, "missing": missing, "checks": checks}
 
 
 def _status(path: Path) -> str:
