@@ -124,7 +124,7 @@ def vault_in_committing_worktree(vault: Path, cwd: Path) -> Path:
         top = git_path(cwd, "rev-parse", "--show-toplevel")
         inside = vault.relative_to(own_top)
     except (Refused, ValueError):
-        raise Refused(unmapped)
+        raise Refused(unmapped) from None
     if ".." in inside.parts:
         raise Refused(unmapped)
     return (top / inside).resolve()

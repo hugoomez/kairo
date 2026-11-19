@@ -12,12 +12,17 @@
 Replacement format: `[REDACTADO <type> sha256:<12 hex>]`, the hash being the SHA-256
 of the original material in UTF-8. For key blocks and age keys the material is the
 whole match; for `name = value` assignments and credential URLs it is the secret
-value only, so the surrounding text stays readable. Findings never carry the material.
+value only, so the surrounding text stays readable. A base64 run that decodes to a
+private key (`tls.key: LS0tLS1CRUdJTi...`) is redacted whole, and so is the value of a
+name that carries PRIVATE_KEY / SECRET_KEY with a suffix (dotenvx's
+`DOTENV_PRIVATE_KEY_<ENV>`). Findings never carry the material.
 redact_file(path) redacts a text file in place (used by the post-write hook and
 vault_precommit.py). Standard library only; patterns come from check_bundle.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -60,6 +65,33 @@ _BLOCK_RE = re.compile(
     re.S)
 _AGE_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")
 _MARK_RE = re.compile(r"\[REDACTADO \w+ sha256:[0-9a-f]{12}\]")
+# A base64 run (standard or URL-safe alphabet) long enough to hold an encoded key
+# header: a Kubernetes / Sealed Secrets `tls.key: LS0tLS1CRUdJTi...` value, a key file
+# pasted through `base64`. It counts when it decodes to private key material.
+_B64_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{40,}={0,2}(?![A-Za-z0-9+/_\-=])")
+_DECODED_PRIVATE_RE = re.compile(
+    rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY|AGE-SECRET-KEY-1|OPENSSH PRIVATE KEY|PuTTY-User-Key-File-")
+# `DOTENV_PRIVATE_KEY_PRODUCTION="<hex>"` (dotenvx .env.keys) and any other name that
+# carries PRIVATE_KEY / SECRET_KEY with a suffix the plain assignment rule does not reach.
+_NAMED_KEY_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])((?:[A-Za-z0-9]+[_.\-])*(?:private|secret)[_\-]?key(?:[_.\-][A-Za-z0-9]+)+)"
+    r"""["']?\s*(?::=|=|:)\s*["']?([0-9A-Za-z+/=_\-]{16,})""")
+_HEX_RE = re.compile(r"[0-9a-fA-F]{32,}")
+
+
+def b64_decode_loose(run: str) -> bytes | None:
+    """The bytes a base64 run encodes (standard or URL-safe, padding optional), or None."""
+    s = run.rstrip("=").replace("-", "+").replace("_", "/")
+    s += "=" * (-len(s) % 4)
+    try:
+        return base64.b64decode(s, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+
+
+def _b64_private(run: str) -> bool:
+    raw = b64_decode_loose(run)
+    return bool(raw) and bool(_DECODED_PRIVATE_RE.search(raw))
 
 
 def _spans(text: str) -> list[tuple[int, int, str]]:
@@ -68,6 +100,13 @@ def _spans(text: str) -> list[tuple[int, int, str]]:
         found.append((m.start(), m.end(), "private_key"))
     for m in _AGE_RE.finditer(text):
         found.append((m.start(), m.end(), "age_secret_key"))
+    for m in _B64_RUN_RE.finditer(text):
+        if _b64_private(m.group(0)):
+            found.append((m.start(), m.end(), "private_key"))
+    for m in _NAMED_KEY_RE.finditer(text):
+        v = m.group(2)
+        if _HEX_RE.fullmatch(v) or cb.looks_secret(v):
+            found.append((m.start(2), m.end(2), "api_key"))
     for _name, rx in cb.PROVIDER_RULES:
         for m in rx.finditer(text):
             if cb.provider_ok(m.group(0)):
