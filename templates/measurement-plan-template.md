@@ -33,11 +33,11 @@ frozen_commit: <git-sha>
 
 ## Clasificadores
 
-<Clasificadores que etiquetan unidades. `sample`: muestra de validación; las cotas, entre 0 y 1, son el límite inferior mínimo aceptable del intervalo de precisión y de exhaustividad. Lista vacía si no hay clasificadores.>
+<Clasificadores que etiquetan unidades. `sample`: muestra de validación; las cotas, entre 0 y 1, son el límite inferior mínimo aceptable del intervalo de precisión y de exhaustividad. Lista vacía si no hay clasificadores. `label` y `positive` fijan la columna y el valor positivo sobre los que se valida; `ci` (opcional, 0.95 por defecto) es el nivel del intervalo. La puerta rechaza una validación hecha con otros.>
 
 ```json
 {"classifiers": [
-  {"name": "clasif-1", "sample": "validacion-1", "min_precision_lo": 0.90, "min_recall_lo": 0.80}
+  {"name": "clasif-1", "sample": "validacion-1", "label": "es_marca", "positive": true, "min_precision_lo": 0.90, "min_recall_lo": 0.80}
 ]}
 ```
 

@@ -63,6 +63,9 @@ from notes import read_note, section  # noqa: E402
 from plan_blocks import PlanError, read_plan, read_plan_text  # noqa: E402
 
 ANALYSIS = HERE.parent / "analysis"
+if str(ANALYSIS) not in sys.path:
+    sys.path.insert(0, str(ANALYSIS))
+from agreement import norm  # noqa: E402
 ESTIMATE = ANALYSIS / "estimate.py"
 AGREEMENT = ANALYSIS / "agreement.py"
 TIMEOUT = 600
@@ -373,6 +376,12 @@ def classifiers_validated(vault: Path, node_path: Path, fm: dict) -> list[str]:
             out.append(f"clasificador {name}: {rel} ilegible; vuelve a generarlo con agreement.py validate")
             continue
         v = v if isinstance(v, dict) else {}
+        inp = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
+        same = (inp.get("label") == c["label"] and norm(inp.get("positive", "")) == norm(c["positive"])
+                and _num(inp.get("ci")) == float(c["ci"]))
+        if inp and not same:
+            out.append(f"clasificador {name}: la validación usa label/positive/ci distintos de los del plan")
+            continue
         problems = _recompute(vault, proj, name, sample, rel, v)
         if problems:
             out += problems

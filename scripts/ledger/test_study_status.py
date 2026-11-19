@@ -85,7 +85,7 @@ Unidades inventadas.
 ## Clasificadores
 
 ```json
-{{"classifiers": [{{"name": "clasif-demo", "sample": "muestra-demo", "min_precision_lo": {min_p}, "min_recall_lo": 0.70}}]}}
+{{"classifiers": [{{"name": "clasif-demo", "sample": "muestra-demo", "label": "x", "positive": true, "min_precision_lo": {min_p}, "min_recall_lo": 0.70}}]}}
 ```
 
 ## Intervalos
@@ -388,6 +388,21 @@ def test_gate_classifier_validation_missing(vault):
     vault.question()
     (vault.proj / "Datos" / "anotacion" / "muestra-demo" / "validacion-clasif-demo.json").unlink()
     assert any("clasif-demo" in m and "validacion-clasif-demo.json" in m for m in missing(vault))
+
+
+def _edit_validation(vault, **inputs):
+    f = vault.validation_file()
+    v = json.loads(f.read_text(encoding="utf-8"))
+    v["inputs"].update(inputs)
+    f.write_text(json.dumps(v), encoding="utf-8")
+
+
+@pytest.mark.parametrize("change", [{"label": "otra"}, {"positive": "false"}, {"ci": 0.9}])
+def test_gate_validation_must_match_plan(vault, change):
+    vault.question()
+    assert not any("distintos de los del plan" in m for m in missing(vault))
+    _edit_validation(vault, **change)
+    assert any("clasif-demo" in m and "label/positive/ci distintos de los del plan" in m for m in missing(vault))
 
 
 def test_gate_recall_below(vault):

@@ -71,11 +71,23 @@ def test_null_cluster_and_empty_filter_ok(tmp_path):
 
 
 def test_classifier_bounds(tmp_path):
-    bad = {"name": "k", "sample": "s", "min_precision_lo": 1.5, "min_recall_lo": 0.5}
+    bad = {"name": "k", "sample": "s", "min_precision_lo": 1.5, "min_recall_lo": 0.5, "label": "x", "positive": True}
     with pytest.raises(PlanError, match="Clasificadores"):
         read_plan(plan(tmp_path, cls=[bad]))
     with pytest.raises(PlanError, match="min_recall_lo"):
         read_plan(plan(tmp_path, cls=[{"name": "k", "sample": "s", "min_precision_lo": 0.5}]))
+
+
+def test_classifier_pins_label_and_positive(tmp_path):
+    ok = {"name": "k", "sample": "s", "min_precision_lo": 0.5, "min_recall_lo": 0.5, "label": "x", "positive": True}
+    assert read_plan(plan(tmp_path, cls=[ok]))["classifiers"][0]["ci"] == 0.95
+    assert read_plan(plan(tmp_path, cls=[{**ok, "ci": 0.9}]))["classifiers"][0]["ci"] == 0.9
+    for drop in ("label", "positive"):
+        bad = {k: v for k, v in ok.items() if k != drop}
+        with pytest.raises(PlanError, match=f"k.*{drop}"):
+            read_plan(plan(tmp_path, cls=[bad]))
+    with pytest.raises(PlanError, match="ci"):
+        read_plan(plan(tmp_path, cls=[{**ok, "ci": 1.2}]))
 
 
 def test_cli(tmp_path):

@@ -91,6 +91,17 @@ def _classifiers(data) -> list[dict]:
         for k in ("min_precision_lo", "min_recall_lo"):
             if not _is_num(c[k]) or not 0 <= c[k] <= 1:
                 raise PlanError(f"{h}: '{k}' de {c['name']} debe ser un número entre 0 y 1")
+        if not isinstance(c.get("label"), str) or not c["label"].strip():
+            raise PlanError(f"{h}: el clasificador {c['name']} debe fijar 'label' (la columna que valida)")
+        pos = c.get("positive")
+        if isinstance(pos, float) and not pos.is_integer():
+            pos = None
+        if pos is None or isinstance(pos, (list, dict)) or (isinstance(pos, str) and not pos.strip()):
+            raise PlanError(f"{h}: el clasificador {c['name']} debe fijar 'positive' (el valor que cuenta como positivo)")
+        if "ci" not in c:
+            c["ci"] = 0.95
+        elif not _is_num(c["ci"]) or not 0 < c["ci"] < 1:
+            raise PlanError(f"{h}: 'ci' de {c['name']} debe ser un número entre 0 y 1")
     return items
 
 

@@ -120,6 +120,9 @@ when you can, then follow up. Typical questions:
 - **Classifiers** that label units:
   - the `name` of each, and its validation `sample`
     (`Datos/anotacion/<sample>/`);
+  - the `label` (the annotation field it is validated on) and the `positive`
+    value that counts as positive; optionally `ci` (default 0.95). The
+    study gate refuses a validation made with any other label, positive or ci;
   - the floors `min_precision_lo` / `min_recall_lo`: the lowest acceptable
     lower bound of each interval, and why that value.
 
