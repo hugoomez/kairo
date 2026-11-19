@@ -1,6 +1,6 @@
 ---
 name: literature-search
-description: Use when finding external papers or patents for a hypothesis, project, or research question in a Kairo vault — multi-facet search across arXiv, Semantic Scholar, OpenAlex and Crossref (DBLP on request; patents for producto/hibrido projects), with a date window, citation-graph snowballing, retraction checks and PRISMA counts. The queries, paging, deduplication and counts are done by scripts/search/lit_search.py, which keeps every raw response; the model writes the facets and criteria before searching and screens every candidate after.
+description: Use when finding external papers or patents for a hypothesis, project, or research question in a Kairo vault — multi-facet search across arXiv, Semantic Scholar, OpenAlex and Crossref (DBLP on request; patents for producto/hibrido projects; a web pass for grey literature and servers the APIs miss, such as IACR ePrint, vendor reports and tool docs, searched by the session and fetched by the script), with a date window, citation-graph snowballing, retraction checks and PRISMA counts. The queries, paging, deduplication and counts are done by scripts/search/lit_search.py, which keeps every raw response; the model writes the facets and criteria before searching and screens every candidate after.
 ---
 
 # Literature Search
@@ -23,10 +23,12 @@ skill finds and screens them; ingestion (create-project step 6) proves they
 exist and fetches their text.
 
 **Scope limit — disclose it.** arXiv, Semantic Scholar, OpenAlex, Crossref, OpenReview (and
-DBLP when asked; US patents for `producto`/`hibrido`) plus the vault. No grey
-literature (theses, technical reports, whitepapers), nothing against
-**publication bias**, no Google Scholar (no API, and its terms forbid
-scraping). Papers in paywalled venues with no preprint (common in HPC: SC,
+DBLP when asked; US patents for `producto`/`hibrido`) plus the vault. Grey
+literature and servers the APIs do not cover (IACR ePrint, vendor reports,
+tool documentation, blog posts, advisories, theses) only through the **web
+pass** (step 3b), when the plan or the researcher asks for it. No Google
+Scholar (no API, and its terms forbid scraping), and nothing fully against
+**publication bias**. Papers in paywalled venues with no preprint (common in HPC: SC,
 IPDPS, ISC, IEEE QCE) often come without an abstract from Crossref and are
 ingested abstract-only until the researcher supplies the PDF
 (`ingest_paper.py gaps` lists them, `attach-pdf --pdf-dir` attaches the PDFs
@@ -251,6 +253,57 @@ snowball again from the newly added strong candidates until a round adds none
 (closure), and say so in the report. A neighbour kept with no abstract is
 looked up in OpenAlex by DOI, as in `run` (`abstracts_completados` in the
 snowball's output).
+
+### 3b. Web pass — what the APIs do not cover (on request)
+
+Run it when the plan's `"web": true`, when the researcher asks, or when the
+field lives outside the indexed literature (security: IACR ePrint, vendor
+reports such as yearly secret-leak studies, tool documentation and issues,
+conference talks; industry whitepapers; theses). The session searches; the
+script fetches, keeps and counts.
+
+1. **Search with your own web search tool**, per facet: the facet's term and
+   synonyms in plain words, plus `site:` queries for the servers the plan or the researcher
+   names (`site:eprint.iacr.org`, the tools' documentation sites, the
+   vendors' blogs). Write each query **before** running it. Never use a fetch
+   tool to read a page yourself: its output is a model's summary, not the
+   page.
+2. **Record every result, in the order shown**, as the search printed it
+   (`url`, `title`). Never drop a result because it looks irrelevant: the
+   screener decides, from the page the script fetched. Write the batch:
+
+   ```json
+   {"searched_by": "<your model id>", "queries": [
+     {"facet": "A", "engine": "<the search tool>", "query": "<exact text>",
+      "results": [{"url": "https://…", "title": "<as shown>"}, …]}]}
+   ```
+   `facet` is one of the plan's facets, or `*` for a query that crosses them.
+3. **Hand it to the script:**
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/search/lit_search.py" web --run <run dir> --batch <batch.json> --vault <vault>
+   ```
+
+   It refuses non-public addresses and fetches every other page. It keeps the
+   bytes with their sha256 in `raw/` (and the batch as `raw/web-lote-NNN.json`),
+   and reads title, authors, date, DOI and abstract from the page's own tags.
+   It applies the window and the facets, and merges the pages into the
+   candidates, with venue `web · <site>`. A page that cannot be downloaded
+   (a bot check, a 403) stays a candidate with the search's title and no
+   text, and is listed under degraded coverage.
+
+   Its output gives `urls`, `descargadas`, `perdidas`, `fuera_de_ventana` and
+   `added`. `busqueda.md` counts the web pass apart, as PRISMA's
+   «identificados por otros métodos». `replay` re-reads the kept pages and
+   does not search again: a search engine's results change, so the batch is
+   the record of what it showed.
+4. Then retraction (step 4) and screening (step 5) as for every candidate.
+   An included grey item with no DOI or arXiv id comes out of `accept` with
+   its `url`. Ingest it with `ingest_paper.py add --url <url>`.
+
+Limits — say them: a search engine's ranking is not reproducible and not
+exhaustive. Pages behind a login or a bot check are lost. A page's own date
+can be missing, and then it is kept whatever the window says.
 
 ### 4. Retraction / withdrawal check
 

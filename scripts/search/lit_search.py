@@ -13,6 +13,7 @@ paged, deduplicated and counted by this script, never by a model.
     lit_search.py show       --run <run dir> [--offset 0] [--limit 60] [--all] [--abstract-chars N]
     lit_search.py merge      --run <run dir> (--from-store | --blocks page1.txt …) [--extra mine.json] --out decisions.json
     lit_search.py replay     --run <run dir> --out <new dir> [--vault <vault>]
+    lit_search.py web        --run <run dir> --batch web.json [--vault <vault>]
 
 The model's part is the judgement around it: it writes `plan.json` (the
 facets and their synonyms, the date window, the inclusion / exclusion /
@@ -190,9 +191,10 @@ import check_retraction  # noqa: E402
 import isolation  # noqa: E402
 import net  # noqa: E402
 import retraction  # noqa: E402
+import web_meta  # noqa: E402
 from untrusted import suspicious  # noqa: E402
 
-TOOL = "kairo/lit_search@1.6.0"
+TOOL = "kairo/lit_search@1.7.0"
 SOURCES = ("arxiv", "s2", "openalex", "crossref", "openreview", "dblp")
 # DBLP's API now sits behind an anti-bot challenge, which Kairo never works
 # around: it stays available on request but is not a default source. Crossref
@@ -953,6 +955,9 @@ def record_keys(r: dict) -> list[str]:
     t = norm_title(r.get("title", ""))
     if len(t.split()) >= 4:
         ks.append("title:" + t)
+    if r.get("source") == "web" and r.get("url"):
+        # the same page found by two web queries (only web records carry this key)
+        ks.append("url:" + r["url"].split("#", 1)[0].rstrip("/").lower())
     return ks
 
 
@@ -1296,6 +1301,8 @@ def cmd_replay(run: Path, out: Path, vault: Path | None = None) -> dict:
     old = load(run / "queries.json")
     (out / "raw").mkdir(parents=True, exist_ok=True)
     shutil.copyfile(run / "plan.json", out / "plan.json")
+    for lote in sorted((run / "raw").glob("web-lote-*.json")):
+        shutil.copyfile(lote, out / "raw" / lote.name)      # what the session searched, as it handed it in
     plan_sha = freeze_plan(out)
     queries: list[dict] = []
     records: list[dict] = []
@@ -1308,6 +1315,28 @@ def cmd_replay(run: Path, out: Path, vault: Path | None = None) -> dict:
                 continue
             if str(oq.get("pass", "")).startswith("snowball"):
                 skipped.append(oq["id"])
+                continue
+            if oq.get("pass") == "web":
+                # a web search is not re-run (the engine's results change): its kept pages are
+                # re-read with the current parser, and the lost ones keep the search's title
+                q = {k: oq[k] for k in ("id", "facet", "source", "pass", "query", "engine", "searched_by",
+                                        "terms", "total", "ranked", "truncated") if k in oq}
+                q.update(raw=[], error=None, lost_urls=list(oq.get("lost_urls") or []))
+                pages: list[tuple[int, str, bytes | None, str]] = []
+                for item in oq.get("raw") or []:
+                    data = (run / "raw" / item["file"]).read_bytes()
+                    if hashlib.sha256(data).hexdigest() != item["sha256"]:
+                        raise ValueError(f"replay: raw/{item['file']} no es la página guardada (sha256 distinto)")
+                    if not (out / "raw" / item["file"]).exists():
+                        (out / "raw" / item["file"]).write_bytes(data)
+                    q["raw"].append(dict(item))
+                    pages.append((item["rank"], item["page_url"], data, item.get("shown_title") or ""))
+                for lost in q["lost_urls"]:
+                    if not str(lost.get("error", "")).startswith("no se pide"):
+                        pages.append((lost["rank"], lost["url"], None, lost.get("title") or ""))
+                pages.sort(key=lambda p: p[0])
+                records.extend(_web_query_records(q, plan, pages))
+                queries.append(q)
                 continue
             q = {k: oq[k] for k in ("id", "facet", "source", "pass", "query", "terms") if k in oq}
             if not oq.get("raw"):
@@ -1357,12 +1386,13 @@ def check_frozen_plan(run: Path) -> None:
 def summary(queries: list[dict], cands: list[dict], out: Path) -> dict:
     per_source: dict[str, int] = {}
     for q in queries:
-        if q.get("pass") == "enrich" or q.get("pass", "").startswith("snowball"):
-            continue                            # a lookup of known candidates, not identification
+        if q.get("pass") == "enrich" or q.get("pass", "").startswith("snowball") or q.get("pass") == "web":
+            continue                            # a lookup of known candidates, or other methods (web)
         s = q["source"].replace("-anchor", "")
         per_source[s] = per_source.get(s, 0) + q["fetched"] - q.get("outside_window", 0)
     return {"tool": TOOL, "run": out.as_posix(), "queries": len(queries),
             "identified": per_source, "identified_total": sum(per_source.values()),
+            "identified_web": sum(q.get("total") or 0 for q in queries if q.get("pass") == "web"),
             "not_work": sum(q.get("not_work", 0) for q in queries),
             "candidates": len(cands), "in_vault": sum(1 for c in cands if c.get("in_vault")),
             "to_read": sum(1 for c in cands if passes_prefilter(c)),
@@ -1755,6 +1785,25 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             else:
                 queries[-1] = q                 # appended above, before its complement got an id
                 queries.append(comp)
+    merged = _remerge(cands, new_records, vault, "snowball")
+    filled = 0
+    if plan.get("enrich", True):
+        # a neighbour kept on its title alone (no abstract) gets one by DOI, as in `run`
+        filled = enrich_abstracts(merged, plan, run / "raw", queries, fetch, only=lambda c: bool(c.get("snowball")))
+    mark_prefilter(merged, plan)
+    save(run / "queries.json", queries)
+    save(run / "candidates.json", merged)
+    stale = run / "retraction.json"
+    if stale.exists():
+        stale.unlink()                      # new candidates: the retraction check must run again
+    return {"tool": TOOL, "added": sum(1 for c in merged if c.get("snowball")), "candidates": len(merged),
+            "abstracts_completados": filled, "next": "retraction"}
+
+
+def _remerge(cands: list[dict], new_records: list[dict], vault: Path | None, flag: str) -> list[dict]:
+    """The run's candidates plus `new_records`, deduplicated together. A candidate
+    that was already there keeps its key, queries, sources and provenance; a new
+    one is marked `flag` (`snowball`, `web`). Shared by snowball and web."""
     # re-merge: existing candidates are re-expanded into one record per facet
     old = []
     for c in cands:
@@ -1795,7 +1844,7 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             if ids["doi"] or ids["arxiv"]:
                 c["other_ids"] = ids
         else:
-            c["snowball"] = True
+            c[flag] = True
     known = known_vault_keys(vault) if vault else None
     for c in merged:
         p = prev.get(c["key"])
@@ -1805,18 +1854,156 @@ def cmd_snowball(run: Path, keys: list[str], direction: str, fetch: Fetch, vault
             c["in_vault"] = p.get("in_vault", False)
         else:
             c["in_vault"] = None                # not checked: pass --vault
-    filled = 0
-    if plan.get("enrich", True):
-        # a neighbour kept on its title alone (no abstract) gets one by DOI, as in `run`
-        filled = enrich_abstracts(merged, plan, run / "raw", queries, fetch, only=lambda c: bool(c.get("snowball")))
+    return merged
+
+
+# --------------------------------------------------------------------------
+# web: pages a session found with its own web search (grey literature, IACR
+# ePrint, vendor reports, tool docs), fetched and recorded by this script
+# --------------------------------------------------------------------------
+
+WEB_PER_QUERY = 30                   # result URLs read per web query
+WEB_ACCEPT = {"Accept": "text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.5"}
+
+
+def _web_batch(path: Path, plan: dict) -> dict:
+    try:
+        b = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise Refused(f"batch ilegible: {e}") from None
+    facets = {f["id"] for f in plan["facets"]} | {"*"}
+    if not isinstance(b, dict) or not isinstance(b.get("queries"), list) or not b["queries"]:
+        raise Refused('el lote debe ser {"searched_by": "<modelo>", "queries": [...]} con al menos una consulta')
+    if not isinstance(b.get("searched_by"), str) or not b["searched_by"].strip():
+        raise Refused("searched_by: el id del modelo que hizo las búsquedas")
+    for i, q in enumerate(b["queries"], 1):
+        if not isinstance(q, dict) or not isinstance(q.get("query"), str) or not q["query"].strip():
+            raise Refused(f"consulta {i}: falta 'query' (el texto exacto que se buscó)")
+        if q.get("facet") not in facets:
+            raise Refused(f"consulta {i}: 'facet' debe ser una faceta del plan o '*'")
+        res = q.get("results")
+        if not isinstance(res, list):
+            raise Refused(f"consulta {i}: 'results' debe ser la lista de resultados en el orden en que salieron")
+        for j, r in enumerate(res, 1):
+            if not isinstance(r, dict) or not isinstance(r.get("url"), str):
+                raise Refused(f"consulta {i}, resultado {j}: cada resultado es {{\"url\", \"title\"}}")
+    return b
+
+
+def _web_record(meta: dict, url: str, q: dict, rank: int, plan: dict) -> list[dict]:
+    """One kept page → one record per facet it reaches (its text, or the query's facet)."""
+    r = {"title": meta.get("title") or "", "authors": meta.get("authors") or [], "year": meta.get("year"),
+         "date": meta.get("date"), "doi": meta.get("doi"), "arxiv": meta.get("arxiv"),
+         "venue": f"web · {meta.get('venue') or web_meta.host_of(url)}", "abstract": meta.get("abstract") or "",
+         "citations": None, "url": url, "source": "web", "anchor": False, "rank": rank, "query": q["id"],
+         "openreview_venue": None, "sin_abstract": not meta.get("abstract")}
+    fm = snowball_keep(r, plan)
+    if not fm:
+        fm = {q["facet"]: f"búsqueda web {q['id']}"} if q["facet"] != "*" else {None: None}
+    return [{**r, "facet": fid, "matched": t} for fid, t in fm.items()]
+
+
+def _web_query_records(q: dict, plan: dict, pages: list[tuple[int, str, bytes | None, str]]) -> list[dict]:
+    """Records of one web query from its pages [(rank, url, bytes or None, title shown by the search)].
+    A page that could not be downloaded keeps the search's title, with no text (`sin_texto`)."""
+    recs: list[dict] = []
+    q["fetched"] = q["outside_window"] = q["kept"] = 0
+    for rank, url, data, shown in pages:
+        if data is None:
+            meta = {"title": ws(shown), "venue": web_meta.host_of(url)}
+            if not meta["title"]:
+                continue
+        else:
+            meta = web_meta.parse(data, url)
+            if not meta.get("title"):
+                meta["title"] = ws(shown)
+            if not meta["title"]:
+                continue
+        q["fetched"] += 1
+        if (meta.get("date") or meta.get("year")) and not in_window(meta.get("date"), meta.get("year"), plan):
+            q["outside_window"] += 1
+            continue
+        q["kept"] += 1
+        for rec in _web_record(meta, url, q, rank, plan):
+            if data is None:
+                rec["sin_texto"] = True
+            recs.append(rec)
+    return recs
+
+
+def cmd_web(run: Path, batch_path: Path, fetch: Fetch, vault: Path | None = None) -> dict:
+    """Add the results of web searches a session ran itself (its own search tool,
+    on what the APIs do not cover) to a run. The session records each query
+    verbatim with every result URL in the order shown — it never picks which
+    to keep: that is the screener's job. This script downloads each page, keeps
+    the bytes with their sha256 in raw/, reads title, authors, date, DOI and
+    abstract from the page's own tags (web_meta), applies the plan's date
+    window and facets, and merges the pages into the candidates. A page that
+    cannot be downloaded is listed as lost, with the title the search showed."""
+    check_frozen_plan(run)
+    plan, queries, cands = load(run / "plan.json"), load(run / "queries.json"), load(run / "candidates.json")
+    batch = _web_batch(batch_path, plan)
+    raw_dir = run / "raw"
+    shutil.copyfile(batch_path, raw_dir / f"web-lote-{sum(1 for q in queries if q.get('pass') == 'web') + 1:03d}.json")
+    seen: dict[str, dict] = {}                   # URL already kept by an earlier web query: reuse its bytes
+    for oq in queries:
+        for item in oq.get("raw") or []:
+            if oq.get("pass") == "web" and item.get("page_url"):
+                seen.setdefault(item["page_url"], item)
+    new_records: list[dict] = []
+    added_q = []
+    n_web = sum(1 for q in queries if q.get("pass") == "web")
+    for bq in batch["queries"]:
+        n_web += 1
+        q = {"id": f"W{n_web:03d}", "facet": bq["facet"], "source": "web", "pass": "web",
+             "query": ws(bq["query"]), "engine": ws(bq.get("engine") or "búsqueda web de la sesión"),
+             "searched_by": ws(batch["searched_by"]), "terms": [], "raw": [], "error": None,
+             "total": len(bq["results"]), "lost_urls": [], "ranked": True,
+             "truncated": len(bq["results"]) > WEB_PER_QUERY}
+        pages: list[tuple[int, str, bytes | None, str]] = []
+        for rank, res in enumerate(bq["results"][:WEB_PER_QUERY], 1):
+            url, shown = res["url"].strip(), ws(res.get("title"))
+            why = web_meta.public_url(url)
+            if why:
+                q["lost_urls"].append({"rank": rank, "url": url, "title": shown, "error": f"no se pide: {why}"})
+                continue
+            if url in seen:
+                item = seen[url]
+                data = (raw_dir / item["file"]).read_bytes()
+                q["raw"].append({**item, "rank": rank, "reused": True, "shown_title": shown})
+                pages.append((rank, url, data, shown))
+                continue
+            try:
+                data = fetch(url, dict(WEB_ACCEPT))
+            except (net.HttpError, OSError, ValueError) as e:
+                q["lost_urls"].append({"rank": rank, "url": url, "title": shown, "error": net.redact(str(e))[:200]})
+                pages.append((rank, url, None, shown))
+                continue
+            ext = "pdf" if data[:5] == b"%PDF-" else "html"
+            name = f"{q['id']}-{rank}.{ext}"
+            (raw_dir / name).write_bytes(data)
+            item = {"file": name, "url": net.redact(url), "page_url": url, "rank": rank,
+                    "sha256": hashlib.sha256(data).hexdigest(), "shown_title": shown}
+            q["raw"].append(item)
+            seen[url] = item
+            pages.append((rank, url, data, shown))
+        new_records += _web_query_records(q, plan, pages)
+        queries.append(q)
+        added_q.append(q)
+    merged = _remerge(cands, new_records, vault, "web")
     mark_prefilter(merged, plan)
     save(run / "queries.json", queries)
     save(run / "candidates.json", merged)
     stale = run / "retraction.json"
     if stale.exists():
         stale.unlink()                      # new candidates: the retraction check must run again
-    return {"tool": TOOL, "added": sum(1 for c in merged if c.get("snowball")), "candidates": len(merged),
-            "abstracts_completados": filled, "next": "retraction"}
+    return {"tool": TOOL, "queries": [q["id"] for q in added_q],
+            "urls": sum(q["total"] for q in added_q),
+            "descargadas": sum(len([i for i in q["raw"] if not i.get("reused")]) for q in added_q),
+            "perdidas": sum(len(q["lost_urls"]) for q in added_q),
+            "fuera_de_ventana": sum(q["outside_window"] for q in added_q),
+            "added": sum(1 for c in merged if c.get("web") and not any(s != "web" for s in c["sources"])),
+            "candidates": len(merged), "next": "retraction"}
 
 
 OTHER_ID_SEP = "#otro-id-"
@@ -1995,12 +2182,20 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
                                      if pf.get("missing_required") else "")}
     save(run / "screened.json", cands)
     identified: dict[str, int] = {}
+    web = {"urls": 0, "descargadas": 0, "perdidas": 0, "fuera_de_ventana": 0, "conservadas": 0}
     by_citations: dict[str, int] = {}
     cit_kept = 0
     for q in queries:
         if q.get("pass") == "enrich":
             continue
         s = q["source"].replace("-anchor", "")
+        if q.get("pass") == "web":
+            web["urls"] += q.get("total") or 0
+            web["descargadas"] += q.get("fetched", 0)
+            web["perdidas"] += len(q.get("lost_urls") or [])
+            web["fuera_de_ventana"] += q.get("outside_window", 0)
+            web["conservadas"] += q.get("kept", 0)
+            continue
         if q.get("pass", "").startswith("snowball"):
             # citation searching is its own PRISMA line, never mixed with the databases
             by_citations[s] = by_citations.get(s, 0) + q.get("fetched", 0)
@@ -2020,7 +2215,8 @@ def cmd_screen(run: Path, decisions_path: Path, screened_by: str | None = None) 
               "citas_descartadas": sum(by_citations.values()) - cit_kept - not_work_cit,
               "tipo_no_articulo": not_work_db + not_work_cit,
               # what dedup (and the retitled-preprint join) removed: the rest of the arithmetic
-              "duplicados": sum(identified.values()) - not_work_db + cit_kept - len(cands),
+              "duplicados": sum(identified.values()) - not_work_db + cit_kept + web["conservadas"] - len(cands),
+              **({"identificados_web": web} if web["urls"] else {}),
               "tras_deduplicacion": len(cands), "tras_prefiltro": len(cands) - tally[PREFILTER],
               "tras_retraccion": len(cands) - tally[PREFILTER] - n_retr,
               "retraccion": retr["counts"],
@@ -2122,6 +2318,8 @@ def cmd_accept(run: Path) -> dict:
         out = {k: c[k] for k in ("doi", "arxiv") if c.get(k)}
         if "openalex.org/" in str(c.get("url") or ""):
             out["openalex"] = str(c["url"]).rsplit("/", 1)[-1]
+        if not out and "web" in (c.get("sources") or []) and c.get("url"):
+            out["url"] = c["url"]           # grey literature: ingest_paper.py add --url
         return out
     includes, scope = [], []
     for c in cands:
@@ -2173,6 +2371,16 @@ def degraded_lines(queries: list[dict]) -> list[str]:
             q["pass"], q["pass"])
         if q.get("error") and q.get("recovered_by"):
             continue                            # its fallback read the same neighbours
+        if q.get("pass") == "web":
+            lost = q.get("lost_urls") or []
+            if lost:
+                out.append(f"- Búsqueda web {q['id']} (faceta {q['facet']}): {len(lost)} de {q.get('total')} "
+                           "páginas no se descargaron (bloqueo, error o dirección no pública); las que tenían "
+                           "título en la búsqueda siguen como candidatas sin texto.")
+            if q.get("truncated"):
+                out.append(f"- Búsqueda web {q['id']}: solo se leyeron los primeros {WEB_PER_QUERY} de "
+                           f"{q.get('total')} resultados.")
+            continue
         if q.get("error"):
             out.append(f"- Faceta {q['facet']} — {what} en {q['source'].replace('-anchor', '')} perdido "
                        f"({q['error']}). Consulta {q['id']}: los papers que solo esta consulta habría traído faltan.")
@@ -2270,6 +2478,11 @@ def busqueda_md(plan: dict, queries: list[dict], counts: dict, provenance: str |
              + f" (total {c['identificados_citas_total']}); descartados fuera de la ventana o sin las facetas: "
              f"{c.get('citas_descartadas', 0)}; quedan {c.get('citas_conservadas', 0)}"]
             if c.get("identificados_citas") else []),
+          *([f"- Identificados por otros métodos (búsqueda web hecha por la sesión: páginas, informes, "
+             f"documentación, preprints fuera de las bases): {c['identificados_web']['urls']} URL; descargadas "
+             f"{c['identificados_web']['descargadas']}, no recuperadas {c['identificados_web']['perdidas']}, fuera "
+             f"de la ventana {c['identificados_web']['fuera_de_ventana']}; quedan "
+             f"{c['identificados_web']['conservadas']}"] if c.get("identificados_web") else []),
           *([f"- Excluidos antes del cribado por tipo no artículo (revisión por pares, número de revista, "
              f"dataset, fe de erratas…): {c['tipo_no_articulo']}"] if "tipo_no_articulo" in c else []),
           *([f"- Duplicados eliminados: {c['duplicados']}"] if "duplicados" in c else []),
@@ -2722,6 +2935,13 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
                           "against the stored reply when there is one")
     mg.add_argument("--extra", type=Path, help="the orchestrator's own decisions, e.g. a prefiltered-out include")
     mg.add_argument("--out", type=Path, required=True, help="the decisions.json to write")
+    wb = sub.add_parser("web", help="add the results of the session's own web searches (grey literature, "
+                        "IACR ePrint, reports, docs): every page fetched, kept and parsed by this script")
+    wb.add_argument("--run", type=Path, required=True)
+    wb.add_argument("--batch", type=Path, required=True,
+                    help='{"searched_by": "<model>", "queries": [{"facet", "query", "engine", '
+                         '"results": [{"url", "title"}, ...]}]}')
+    wb.add_argument("--vault", type=Path)
     rp = sub.add_parser("replay", help="rebuild a run's identification from its raw/ files, no network")
     rp.add_argument("--run", type=Path, required=True)
     rp.add_argument("--out", type=Path, required=True)
@@ -2747,6 +2967,8 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, today: str
             out = cmd_screen(a.run, a.decisions, a.screened_by)
         elif a.cmd == "replay":
             out = cmd_replay(a.run, a.out, a.vault)
+        elif a.cmd == "web":
+            out = cmd_web(a.run, a.batch, fetch, a.vault)
         else:
             out = cmd_show(a.run, a.limit, a.offset, a.all, a.abstract_chars, a.prefiltered, a.with_abstracts,
                            a.sample)
