@@ -160,6 +160,54 @@ def public_url(url: str) -> str | None:
     return None
 
 
+_ABSTRACT_HEAD = re.compile(r"^\s*(?:a\s*b\s*s\s*t\s*r\s*a\s*c\s*t|summary)\b[\s.:—-]*", re.I | re.M)
+_ABSTRACT_END = re.compile(r"^\s*(?:\d+\.?\s+|I\.\s+)?(?:introduction|keywords|index terms|ccs concepts)\b", re.I | re.M)
+
+
+def _run(args: list[str], data: bytes, to_stdout: bool = True) -> str | None:
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    exe = shutil.which(args[0])
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        pdf = Path(d) / "p.pdf"
+        pdf.write_bytes(data)
+        try:
+            r = subprocess.run([exe, *args[1:], str(pdf), *(["-"] if to_stdout else [])],
+                               capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.stdout.decode("utf-8", errors="replace") if r.returncode == 0 else None
+
+
+def pdf_meta(data: bytes) -> dict:
+    """Title and abstract of a PDF from its own bytes, with poppler (`pdfinfo`, `pdftotext`
+    on the first two pages); {} without poppler. Title: the document's Title field when it
+    has >= 4 words, else the first line of >= 4 words before the abstract. Abstract: the
+    text under an «Abstract» heading up to the introduction, else the first paragraphs."""
+    text = _run(["pdftotext", "-enc", "UTF-8", "-f", "1", "-l", "2"], data)
+    if not text:
+        return {}
+    info = _run(["pdfinfo", "-enc", "UTF-8"], data, to_stdout=False) or ""
+    m = re.search(r"^Title:\s*(.+)$", info, re.M)
+    title = ws(m.group(1)) if m else ""
+    head = _ABSTRACT_HEAD.search(text)
+    if len(title.split()) < 4 or re.search(r"\.(?:pdf|docx?|tex)$|^untitled|^microsoft word", title, re.I):
+        before = text[: head.start()] if head else text[:2000]
+        title = next((ws(ln) for ln in before.splitlines() if len(ws(ln).split()) >= 4), "")
+    abstract, src = "", None
+    if head:
+        rest = text[head.end():]
+        end = _ABSTRACT_END.search(rest)
+        abstract, src = ws(rest[: end.start()] if end else rest)[:ABSTRACT_CHARS], "pdf-abstract"
+    if len(abstract.split()) < 8:
+        abstract, src = ws(text)[:ABSTRACT_CHARS], "pdf-texto"
+    return {"title": title, "abstract": abstract, "abstract_from": src}
+
+
 def parse(data: bytes, url: str) -> dict:
     host = host_of(url)
     out = {"title": "", "authors": [], "date": None, "year": None, "doi": None, "arxiv": None,
@@ -173,6 +221,7 @@ def parse(data: bytes, url: str) -> dict:
         out["doi"] = urllib.parse.unquote(dm.group(1)).rstrip(".,;)").lower()
     if data[:5] == b"%PDF-":
         out["kind"] = "pdf"
+        out.update({k: v for k, v in pdf_meta(data).items() if v})
         return out
     head = data[:4096].lower()
     if b"<html" not in head and b"<!doctype html" not in head and b"<meta" not in head and b"<title" not in head:

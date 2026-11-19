@@ -1044,9 +1044,21 @@ def dedup(records: list[dict]) -> list[dict]:
             c["other_ids"] = {"doi": dois[1:], "arxiv": arx[1:]}
         if len(dois) > 1:
             c["doi_choice"] = DOI_CHOICE_RULE
-        c["key"] = ("doi:" + c["doi"]) if c["doi"] else ("arxiv:" + c["arxiv"]) if c["arxiv"] else \
-            "t:" + hashlib.sha256(norm_title(c["title"]).encode()).hexdigest()[:12]
+        if c["doi"] or c["arxiv"]:
+            c["key"] = ("doi:" + c["doi"]) if c["doi"] else ("arxiv:" + c["arxiv"])
+        elif c["sources"] == ["web"] and c["url"]:
+            # a page found only by the web pass: its address, not a title that may be a bare domain
+            c["key"] = "w:" + hashlib.sha256(c["url"].encode()).hexdigest()[:12]
+        else:
+            c["key"] = "t:" + hashlib.sha256(norm_title(c["title"]).encode()).hexdigest()[:12]
         out.append(c)
+    # two works the dedup kept apart may still share a short title's key: never two candidates on one key
+    used: dict[str, int] = {}
+    for c in out:
+        n = used.get(c["key"], 0)
+        used[c["key"]] = n + 1
+        if n:
+            c["key"] = f"{c['key']}-{n + 1}"
     out = join_retitled(out)
     out.sort(key=lambda c: (-len(c["facets"]), c["best_rank"], -(c["year"] or 0)))
     return out

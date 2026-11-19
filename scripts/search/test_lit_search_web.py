@@ -144,3 +144,24 @@ class Web(Base):
         out = ls.cmd_accept(self.run_dir)
         inc = next(x for x in out["includes"] if x["key"] == rep["key"])
         self.assertEqual(inc["url"], "https://vendor.example.com/report")
+
+
+class Keys(Base):
+    def test_two_pages_with_the_same_bare_title_get_two_keys(self):
+        self.run_search()
+        page = b"<html><head><title>x.example</title></head><body></body></html>"
+        PAGES["https://x.example/a"] = PAGES["https://x.example/b"] = page
+        try:
+            batch = {"searched_by": "m", "queries": [{"facet": "A", "query": "q", "results": [
+                {"url": "https://x.example/a", "title": "x.example"},
+                {"url": "https://x.example/b", "title": "x.example"}]}]}
+            p = self.tmp / "w.json"
+            p.write_text(json.dumps(batch), encoding="utf-8")
+            code, out = self.cli("web", "--run", str(self.run_dir), "--batch", str(p), web=WebAndApis())
+        finally:
+            PAGES.pop("https://x.example/a")
+            PAGES.pop("https://x.example/b")
+        self.assertEqual(code, 0, out)
+        keys = [c["key"] for c in ls.load(self.run_dir / "candidates.json")]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(sum(k.startswith("w:") for k in keys), 2)

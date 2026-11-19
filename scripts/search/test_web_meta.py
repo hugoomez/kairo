@@ -75,3 +75,21 @@ def test_article_content_wins_over_site_chrome_and_generic_descriptions():
     m = web_meta.parse(page, "https://github.com/invented/tool")
     assert m["abstract_from"] == "parrafos"
     assert m["abstract"].startswith("The invented tool") and "signed in" not in m["text"]
+
+
+def test_pdf_meta_without_poppler_is_empty(monkeypatch):
+    monkeypatch.setattr(web_meta, "_run", lambda *a, **k: None)
+    m = web_meta.parse(b"%PDF-1.7 invented", "https://example.org/x.pdf")
+    assert m["kind"] == "pdf" and m["title"] == "" and m["abstract"] == ""
+
+
+def test_pdf_meta_reads_title_and_abstract(monkeypatch):
+    text = ("Invented Workshop 2031\nA Study of Invented Secrets in Imaginary Repositories\nAda Inventada\n\n"
+            "Abstract\nWe study invented secrets across imaginary repositories and report made-up numbers.\n\n"
+            "1 Introduction\nBody.")
+    monkeypatch.setattr(web_meta, "_run", lambda args, data, to_stdout=True:
+                        text if args[0] == "pdftotext" else "Title:          paper.pdf\n")
+    m = web_meta.parse(b"%PDF-1.7 invented", "https://example.org/x.pdf")
+    assert m["title"] == "A Study of Invented Secrets in Imaginary Repositories"
+    assert m["abstract"].startswith("We study invented secrets") and "Body" not in m["abstract"]
+    assert m["abstract_from"] == "pdf-abstract"
