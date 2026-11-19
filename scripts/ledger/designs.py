@@ -38,6 +38,8 @@ class Design(TypedDict):
     plan_folder: str
     plan_template: str
     manuscript_sections: list[dict]
+    # optional, default true: false = exploratory (a pilot); the manuscript refuses it
+    citable: bool
 
 
 def _read(plugin_root: Path) -> dict:
@@ -107,6 +109,13 @@ def problems(plugin_root: Path = PLUGIN_ROOT) -> list[str]:
         for g in d["gate"]:
             if g not in GATES:
                 out.append(f"{name}: la comprobación de puerta {g!r} no existe en study_gates.GATES")
+        citable = d.get("citable", True)
+        if not isinstance(citable, bool):
+            out.append(f"{name}: citable debe ser true o false")
+        elif citable and not d["manuscript_sections"]:
+            out.append(f"{name}: un diseño citable necesita manuscript_sections")
+        elif not citable and d["manuscript_sections"]:
+            out.append(f"{name}: un diseño no citable no tiene manuscript_sections (déjalo en [])")
         if not (Path(plugin_root) / d["plan_template"]).is_file():
             out.append(f"{name}: plan_template {d['plan_template']} no existe")
     return out

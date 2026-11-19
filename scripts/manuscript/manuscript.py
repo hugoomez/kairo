@@ -183,6 +183,8 @@ def design_sections(design: str, lang: str, plugin_root: Path = PLUGIN_ROOT) -> 
     reg = _designs.load(plugin_root)
     if design not in reg:
         raise Refused(f"unknown design {design!r}; known: {', '.join(sorted(reg))}")
+    if not reg[design].get("citable", True):
+        raise Refused(f"design {design!r} is exploratory (citable = false): it has no manuscript")
     out = []
     for s in reg[design]["manuscript_sections"]:
         es_en = TITLES.get(s["id"])
@@ -281,7 +283,14 @@ def _question_state(vault: Path, dep: str) -> dict:
 
 def dep_state(vault: Path, dep: str) -> dict:
     """Whether one bound claim / hypothesis passed its gate."""
-    if dep.startswith("Q-"):
+    _ledger()
+    import designs as _designs  # noqa: PLC0415
+    design = _designs.design_for_id(_designs.load(), dep)
+    if design is not None and not design.get("citable", True):
+        return {"id": dep, "ok": False, "status": None,
+                "missing": [f"{dep} es exploratorio (diseño no citable): no sostiene una cifra del "
+                            "manuscrito; apóyala en la pregunta del estudio y cuenta el piloto en la metodología"]}
+    if design is not None:
         return _question_state(vault, dep)
     claim_gate, vf, parse_fm, split_note, find_note = _ledger()
     path = find_note(str(vault), dep)

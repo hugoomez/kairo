@@ -112,11 +112,22 @@ when you can, then follow up. Typical questions:
 - **The unit**: what counts as one unit, and how duplicates are handled.
 - **Inclusion and exclusion** criteria, written now, before any data.
 - **Each estimand**:
-  - its `type` (`proporcion`, `conteo` or `mediana`);
+  - its `type`: `proporcion`, `conteo`, `mediana`, `diferencia` (p(a) − p(b)
+    between two values of a `group` column), `reutilizacion` (share of
+    distinct keys — a fingerprint column, never the key — seen in at least
+    `min_groups` distinct values of `across`, such as repository or
+    organisation), or `supervivencia` (Kaplan-Meier median of a time column,
+    with an `event` column that is false when the unit was still unchanged at
+    the end of observation, and `at`, the times at which to report S(t)).
+    The template documents every field;
   - the `column` it reads, and its `filter` (`{columna: valor}`, or `{}`);
   - whether units are grouped (several per site, author or repository). If
     so, `cluster` names the grouping column, and the interval becomes a
-    bootstrap by clusters. Otherwise `cluster: null`.
+    bootstrap by clusters (`proporcion` and `diferencia`). Otherwise
+    `cluster: null`;
+  - whether it is broken down by a category (`by`: tool, year, owner type;
+    at most 50 values; never an identifier column), for comparisons between
+    groups or a trend over periods.
 - **Classifiers** that label units:
   - the `name` of each, and its validation `sample`
     (`Datos/anotacion/<sample>/`);
@@ -227,6 +238,61 @@ Report:
 
 The plan is now immutable. A change of mind means a new plan for a new
 question, never an edit: the gate compares the plan with its frozen version.
+
+## A pilot before the study
+
+A study often starts with a pilot: counts, a few hundred units labelled by
+hand, a go/no-go decision. The pilot looks at data **before** the study plan
+exists, so it cannot be the study question. Open it as its own node with the
+design `piloto`:
+
+- the pilot `Projects/<slug>/Pilotos/QP-XXXX.md` (`question-template.md`,
+  `design: piloto`) and its plan `Projects/<slug>/Pilotos/MP-XXXX.md`
+  (`templates/pilot-plan-template.md`). Set `linked_plan` by hand: a pilot
+  plan is never frozen (`freeze_plan.py` refuses it) and may be corrected in
+  view of the pilot's data;
+- write `## Decisión` in the pilot plan before its results: what it decides
+  and by which criterion;
+- its dataset may be registered at any time. It must never become the
+  study's units: the study gate rejects a dataset (by name or by sha256)
+  registered before the study plan's freeze, and the pilot's always is;
+- `kairo:estimate` takes it to `explorada` (the only gate is
+  `estimates_reproducible`). It is **not citable**: `manuscript.py` refuses
+  a pilot as a dependency and has no sections for its design. The paper's
+  methodology may describe the pilot; no number of the paper rests on it;
+- size the study's annotation samples from the pilot's rates:
+  `python "${CLAUDE_PLUGIN_ROOT}/scripts/analysis/estimate.py" tamano --p <rate> --half-width <precision>`.
+- The pilot does not appear yet in the interface's «Preguntas» view (it
+  lists `Q-` notes only).
+
+Then open the study question (`Q-XXXX`, `medicion`) and its plan as above,
+naming the pilot in `## Población y marco muestral` of the plan.
+
+## Parsers on sensitive data
+
+Never read a sensitive dataset to write or debug a parser. Take a debug
+sample instead:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/security/debug_sample.py" --vault <vault> --project <slug> \
+  --dataset <name> --n 50 --seed 1 [--glob "*.yaml"]
+```
+
+The dataset is named by its `name` in `Datos/registro.json`, never by its
+path, so the data guard lets the command run (a `cat` or `Read` of the path
+stays blocked). The sample lands in `Projects/<slug>/Datos/depuracion/<name>/`
+under strict redaction: `.env` values, `data:` / `stringData:` of a
+Kubernetes `Secret`, private keys (base64-encoded too), every high-entropy
+string, e-mail addresses and `github.com/<owner>/<repo>` (pseudonymised).
+It keeps what a parser needs to read: SOPS `ENC[...]`, age and PGP encrypted
+blocks, certificates and public keys, `age1…` recipients, Sealed Secrets
+`encryptedData:`, dotenvx `encrypted:` values and the header of binary age
+files. Any item with something left after redaction is dropped whole; the
+command and `manifest.json` print counts only. `--replace` with the same seed
+rebuilds the same sample. Limits: redaction is by pattern, so a short
+password in a free-text field of an unknown format could survive. The sample
+is for understanding formats: never cite or publish it, never register it as
+a dataset, and it does not replace annotation.
 
 ## Common mistakes
 

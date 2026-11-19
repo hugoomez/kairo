@@ -634,3 +634,16 @@ class TestExport(CoverageBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_pilot_design_has_no_manuscript_and_is_not_citable():
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            ms.design_sections("piloto", "en")
+        except ms.Refused as e:
+            assert "exploratory" in str(e)
+        else:
+            raise AssertionError("design_sections accepted the pilot design")
+        st = ms.dep_state(Path(tmp), "QP-9004")
+        assert st["ok"] is False and "exploratorio" in st["missing"][0]

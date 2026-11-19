@@ -67,6 +67,14 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/study_status.py" propose --vault <v
 
 `from` must be `en_recoleccion`; `estimada` is reached only from there.
 
+**A pilot** (`QP-XXXX`, design `piloto`, in `Projects/<slug>/Pilotos/`) is
+estimated from `abierta`, with its own unfrozen plan `MP-XXXX`. Do steps 2–4
+as below, skip step 5 (its gate has no verifier), then run `gate` and apply
+`--to explorada` with `--evidence "piloto: estimaciones reproducibles"`. In
+the report, say that the pilot's numbers are exploratory and not citable,
+and quote its plan's `## Decisión` so the researcher decides; never decide
+the go/no-go yourself.
+
 - `plan_congelado`: the collection has not been started. Starting it is the
   researcher's action, never yours. `study_status.py apply` refuses that edge
   inside an agent session. Tell them to start it in the interface
@@ -104,7 +112,11 @@ earlier result) with:
 1. a table for reading: `estimando | tipo | valor | intervalo | n | método`.
    Write one row per entry of `estimates`, in the same order. Copy the values
    as printed. A `proporcion` may also show as a percentage in a second
-   column, but only if you also keep the printed value;
+   column, but only if you also keep the printed value. An estimand with
+   `groups` (`by`) gets one more row per group (`est-1 · <group>`). A
+   `diferencia` row names its two groups; a `reutilizacion` row is followed
+   by its `histogram`; a `supervivencia` with `median_reached: false` shows
+   «no alcanzada» as its value, and its `survival_at` as `S(t)` rows;
 2. one plain sentence per estimand: what it measures, from the plan's
    `## Estimandos`, with its interval. Draw no conclusions beyond that;
 3. the block, with `estimate.py`'s stdout **exactly**, nothing added:

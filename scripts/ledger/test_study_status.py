@@ -703,3 +703,97 @@ def test_question_packet_finds_a_plan_with_a_title(vault):
     plan.rename(plan.with_name("M-9002 Plan inventado.md"))
     packet, _ = verifier_packet.build_question(str(vault.root), "Q-9001")
     assert "M-9002" in packet
+
+
+# ---- piloto (QP / MP): exploratory, never citable ---------------------------
+
+PILOT_PLAN = """---
+id: MP-9003
+project: PROJ-901
+question: QP-9004
+status: borrador
+---
+
+# MP-9003 — Plan de piloto inventado
+
+## Estimandos
+
+```json
+{"estimands": [{"id": "pil-1", "type": "proporcion", "column": "marca", "filter": {}, "cluster": null}]}
+```
+
+## Clasificadores
+
+```json
+{"classifiers": []}
+```
+
+## Intervalos
+
+```json
+{"ci": 0.95, "bootstrap": 200, "seed": 11}
+```
+"""
+
+PILOT = """---
+id: QP-9004
+project: PROJ-901
+design: piloto
+status: {status}
+updated: 2031-01-01
+linked_plan: MP-9003
+units_dataset: piloto-demo
+history: []
+---
+
+# QP-9004 — Piloto inventado
+
+## Pregunta
+
+¿Merece la pena medir la marca X?
+
+## Resultado
+
+{resultado}
+"""
+
+
+def make_pilot(vault, status="abierta", resultado=None) -> Path:
+    d = vault.proj / "Pilotos"
+    d.mkdir(exist_ok=True)
+    (d / "MP-9003.md").write_text(PILOT_PLAN, encoding="utf-8")
+    reg = json.loads((vault.proj / "Datos" / "registro.json").read_text(encoding="utf-8"))
+    sha = hashlib.sha256(UNITS.encode("utf-8")).hexdigest()
+    reg.append({"name": "piloto-demo", "kind": "file", "path": "Datos/u.csv", "sha256": sha})
+    vault.registry(reg)
+    if resultado is None:
+        out = json.dumps(estimate.run(vault.root, "MP-9003", "piloto-demo"), ensure_ascii=False, indent=2)
+        resultado = f"```estimate-json\n{out}\n```"
+    p = d / "QP-9004.md"
+    p.write_text(PILOT.format(status=status, resultado=resultado), encoding="utf-8")
+    return p
+
+
+def test_pilot_reaches_explorada_on_reproducible_estimates(vault, capsys):
+    p = make_pilot(vault)
+    g = ss.gate(vault.root, "QP-9004")
+    assert g["ok"], g
+    assert [c["name"] for c in g["checks"]] == ["estimates_reproducible"]
+    code, out, err = cli(capsys, "apply", "--vault", str(vault.root), "--question", "QP-9004",
+                         "--to", "explorada", "--by", "tester", "--evidence", "piloto estimado")
+    assert code == 0, err
+    assert "status: explorada" in fm(p)
+
+
+def test_pilot_with_hand_edited_numbers_fails(vault):
+    make_pilot(vault, resultado='```estimate-json\n{"plan": "MP-9003", "estimates": []}\n```')
+    g = ss.gate(vault.root, "QP-9004")
+    assert not g["ok"] and "no coincide" in " ".join(g["missing"])
+
+
+def test_pilot_cannot_be_frozen_into_plan_congelado(vault, capsys):
+    make_pilot(vault)
+    code, _, _ = cli(capsys, "apply", "--vault", str(vault.root), "--question", "QP-9004",
+                     "--to", "plan_congelado", "--by", "tester", "--evidence", "x")
+    assert code == 3
+

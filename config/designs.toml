@@ -37,3 +37,27 @@ manuscript_sections = [
   { id = "related-work", kind = "prosa" },
   { id = "open-science", kind = "prosa" },
 ]
+
+# Piloto: una exploración antes del estudio (recuentos, muestras manuales, tamaño de las
+# muestras de anotación), que decide si se sigue y cómo. Su plan no se congela y sus datos
+# se pueden registrar en cualquier momento; por eso no es citable: el manuscrito se niega a
+# apoyar una cifra en él. Sus datos nunca sirven de unidades de la pregunta del estudio: la
+# puerta plan_frozen de `medicion` rechaza un dataset (por nombre o huella) registrado antes
+# del congelado, como lo estará el del piloto.
+[piloto]
+prefix = "QP"
+folder = "Pilotos"
+statuses = ["abierta", "explorada", "descartada"]
+terminal = ["explorada", "descartada"]
+transitions = [
+  ["abierta", "explorada"],
+  ["abierta", "descartada"],
+]
+researcher_only = [["abierta", "descartada"]]
+publishable = "explorada"
+gate = ["estimates_reproducible"]
+plan_prefix = "MP"
+plan_folder = "Pilotos"
+plan_template = "templates/pilot-plan-template.md"
+citable = false
+manuscript_sections = []

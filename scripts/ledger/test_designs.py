@@ -100,7 +100,9 @@ def test_templates_exist():
         p = ROOT / d["plan_template"]
         assert p.is_file(), name
         fm = p.read_text(encoding="utf-8").split("---")[1]
-        assert re.search(r"^frozen_at:", fm, re.M) and re.search(r"^frozen_commit:", fm, re.M)
+        frozen = bool(re.search(r"^frozen_at:", fm, re.M) and re.search(r"^frozen_commit:", fm, re.M))
+        # a plan is frozen exactly when its design has the freeze edge (a pilot's is not)
+        assert frozen == (("abierta", "plan_congelado") in d["transitions"]), name
     q = (ROOT / "templates" / "question-template.md").read_text(encoding="utf-8")
     for h in ("## Pregunta", "## Población y marco", "## Estimandos", "## Resultado", "## Historia"):
         assert h in q
@@ -109,3 +111,21 @@ def test_templates_exist():
 def test_show_is_json():
     r = subprocess.run([sys.executable, str(HERE / "designs.py"), "show"], capture_output=True, text=True)
     assert r.returncode == 0 and "medicion" in json.loads(r.stdout)
+
+
+def test_pilot_design_is_exploratory():
+    reg = designs.load(ROOT)
+    d = reg["piloto"]
+    assert d["prefix"] == "QP" and d["plan_prefix"] == "MP" and d["citable"] is False
+    assert d["manuscript_sections"] == [] and d["gate"] == ["estimates_reproducible"]
+    assert designs.design_for_id(reg, "QP-9004") is d and designs.design_for_plan_id(reg, "MP-9003") is d
+    assert reg["medicion"].get("citable", True) is True
+
+
+def test_citable_needs_sections(tmp_path):
+    root = make_root(tmp_path)
+    toml = root / "config" / "designs.toml"
+    toml.write_text(toml.read_text(encoding="utf-8").replace("[disenio]", "[disenio]\ncitable = false"),
+                    encoding="utf-8")
+    r = run_check(root)
+    assert r.returncode == 3 and "no citable" in r.stdout
