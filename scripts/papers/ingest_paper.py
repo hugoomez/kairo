@@ -284,8 +284,9 @@ def web_block(url: str, data: bytes, date: str, text: str) -> str | None:
     under one heading, or None when there is too little of it."""
     if len((text or "").split()) < WEB_MIN_WORDS:
         return None
-    return (f"> Fuente: {url}, obtenido {date} (página web: texto visible extraído por web_meta, sin reescribir; "
-            f"sha256 {sha256(data)[:12]}; {TOOL})\n\n### {vf.UNSECTIONED_HEADING}\n\n{text.strip()}")
+    return (f"> Fuente: {url}, obtenido {date} (texto de la página web, no de un documento: lo visible que "
+            f"extrae web_meta, sin reescribir; sha256 {sha256(data)[:12]}; {TOOL})\n\n"
+            f"### {vf.UNSECTIONED_HEADING}\n\n{text.strip()}")
 
 
 def web_resumen(abstract: str, url: str, date: str, origin: str | None) -> str:
@@ -642,14 +643,19 @@ def gather_web(store: Store, url: str, fetch: Fetch) -> tuple[dict, str]:
     red = net.redact(url)
     meta = {"title": rec["title"], "authors": rec["authors"], "year": rec["year"], "venue": rec["venue"],
             "abstract": rec["abstract"], "abstract_from": rec["abstract_from"], "abstract_url": red,
-            "abstract_file": WEB_PAGE if rec["abstract"] else "", "landing": red, "web_url": red, "fetched": store.date}
+            "abstract_file": WEB_PAGE if rec["abstract"] else "", "landing": red, "web_url": red, "fetched": store.date,
+            "pdf_url": rec.get("pdf_url") or ""}
     return meta, rec["text"]
 
 
-def open_pdf(store: Store, url: str, fetch: Fetch) -> tuple[str | None, str | None]:
-    """(Texto completo block, None) from an open-access PDF, or (None, why not).
+OA_PDF = "publicada (PDF de acceso abierto)"
+LINKED_PDF = "PDF enlazado por la página (citation_pdf_url)"
+
+
+def open_pdf(store: Store, url: str, fetch: Fetch, version: str = OA_PDF) -> tuple[str | None, str | None]:
+    """(Texto completo block, None) from an open PDF, or (None, why not).
     Only a real PDF handed to a script counts: a landing page, a 403 or a bot
-    check is a no — never worked around."""
+    check is a no — never worked around. `version` names where the PDF came from."""
     if not url:
         return None, None
     try:
@@ -658,11 +664,48 @@ def open_pdf(store: Store, url: str, fetch: Fetch) -> tuple[str | None, str | No
         return None, f"el PDF abierto ({net.redact(url)}) no se sirvió a un script ({e.code or 'red'}): no se fuerza"
     if data[:4] != b"%PDF":
         return None, f"{net.redact(url)} no devolvió un PDF (página o comprobación anti-bot): no se fuerza"
-    block = vf.build("pdf", url, "publicada (PDF de acceso abierto)", data, store.date)
+    block = vf.build("pdf", url, version, data, store.date)
     if not block:
         return None, "PDF abierto descargado, pero sin texto extraíble (¿pdftotext instalado?)"
-    store.keep("texto.pdf", "fulltext", url, data, kind="pdf", version="publicada (PDF de acceso abierto)")
+    store.keep("texto.pdf", "fulltext", url, data, kind="pdf", version=version)
     return block, None
+
+
+def web_fulltext(store: Store, meta: dict, page_text: str, fetch: Fetch,
+                 no_fulltext: bool = False) -> tuple[str | None, str, list[str]]:
+    """`## Texto completo` of an add --url note: (block, kind, warnings). kind is
+    "pdf" when the page links its own PDF (citation_pdf_url) and the server hands
+    a script a real one; else "pagina", the page's visible text, said as such;
+    else "" (abstract-only). The page entry of the manifest records which."""
+    warn: list[str] = []
+    block, kind = None, ""
+    pdf_url = meta.get("pdf_url") or ""
+    if not no_fulltext and pdf_url:
+        why = web_meta.public_url(pdf_url)
+        if why:
+            warn.append(f"el PDF enlazado ({net.redact(pdf_url)}) no se descarga: {why}")
+        else:
+            block, why = open_pdf(store, pdf_url, fetch, LINKED_PDF)
+            kind = "pdf" if block else ""
+            if why:
+                warn.append(why + "; el texto completo sale de la página")
+    if not no_fulltext and not block:
+        block = web_block(meta["web_url"], store.blobs[WEB_PAGE], store.date, page_text)
+        kind = "pagina" if block else ""
+        if not block:
+            warn.append(f"la página tiene menos de {WEB_MIN_WORDS} palabras de texto visible: "
+                        "la nota queda abstract-only")
+    for f in store.files:
+        if f["file"] == WEB_PAGE:
+            f["abstract"] = bool(meta["abstract"])
+            f["fulltext"] = kind == "pagina"
+    return block, kind, warn
+
+
+def web_fulltext_field(kind: str) -> str:
+    """The frontmatter `fulltext` of an add --url note: full (a document), pagina
+    (only the page's own text), abstract-only."""
+    return {"pdf": "full", "pagina": "pagina"}.get(kind, "abstract-only")
 
 
 def fig_prefix(pid: str) -> str:
@@ -809,20 +852,15 @@ def _add_web(a, vault: Path, url: str, fetch: Fetch, today) -> dict:
     existing = find_existing(vault, "", "", meta["title"])
     if existing:
         return _existing(a, vault, existing)
-    warn: list[str] = []
-    block = None if a.no_fulltext else web_block(meta["web_url"], store.blobs[WEB_PAGE], date, page_text)
-    if not block and not a.no_fulltext:
-        warn.append(f"la página tiene menos de {WEB_MIN_WORDS} palabras de texto visible: la nota queda abstract-only")
+    block, kind, warn = web_fulltext(store, meta, page_text, fetch, a.no_fulltext)
     if not meta["abstract"]:
         warn.append("la página no trae resumen ni párrafos largos: ## Resumen queda vacío")
-    for f in store.files:
-        f["abstract"] = bool(meta["abstract"])
-        f["fulltext"] = bool(block)
     fields: list[tuple[str, object]] = [
         ("id", pid), ("title", meta["title"]), ("authors", meta["authors"] or []), ("year", meta["year"]),
         ("venue", meta["venue"]), ("doi", ""), ("arxiv", ""), ("arxiv_version", ""), ("url", meta["web_url"]),
-        ("pdf", ""), ("projects", [a.project]), ("added", date), ("source", "web"), ("source_type", "gris"),
-        ("fetched_at", date), ("fulltext", "full" if block else "abstract-only"),
+        ("pdf", net.redact(meta["pdf_url"]) if kind == "pdf" else ""), ("projects", [a.project]), ("added", date),
+        ("source", "web"), ("source_type", "gris"),
+        ("fetched_at", date), ("fulltext", web_fulltext_field(kind)),
         ("ingested_by", TOOL), ("fuentes", f"{store.rel}/fuentes.json")]
     body = (f"## Referencia\n\n{referencia(meta)}\n\n"
             f"## Resumen\n\n{web_resumen(meta['abstract'], meta['web_url'], date, meta['abstract_from'])}\n\n"
@@ -838,7 +876,7 @@ def _add_web(a, vault: Path, url: str, fetch: Fetch, today) -> dict:
         store.write()
         atomic_write(path, text)
     return {"status": "created" if not a.dry_run else "dry_run", "id": pid,
-            "path": path.relative_to(vault).as_posix(), "fulltext": "web" if block else "abstract-only",
+            "path": path.relative_to(vault).as_posix(), "fulltext": kind or "abstract-only",
             "abstract": "found" if meta["abstract"] else "missing", "fuentes": f"{store.rel}/fuentes.json",
             "warnings": warn,
             "csl": {"title": meta["title"], "authors": meta["authors"], "year": meta["year"],
@@ -1012,9 +1050,14 @@ def expected_sections(vault: Path, text: str) -> tuple[dict, list[str]]:
         data = raws.get(f["file"])
         if data is None or f.get("parser") != "web":
             continue
-        # a web page is its own full text (web_block), unless the note was kept abstract-only
-        want = (web_block(f["url"], data, f["obtenido"], from_web(data, f["url"])["text"])
-                if f.get("fulltext") else None) or NO_FULLTEXT
+        # the page is the full text (web_block) when no linked PDF gave one; with a PDF
+        # (a role fulltext entry) the loop below checks it; with neither, abstract-only
+        if f.get("fulltext"):
+            want = web_block(f["url"], data, f["obtenido"], from_web(data, f["url"])["text"]) or NO_FULLTEXT
+        elif any(x["role"] == "fulltext" for x in manifest["files"]):
+            continue
+        else:
+            want = NO_FULLTEXT
         if ws(want) != ws(section_body(text, "Texto completo") or ""):
             problems.append("## Texto completo no coincide con el texto de la página guardada")
     for f in manifest["files"]:
@@ -1151,21 +1194,19 @@ def _rebuild_web(a, vault: Path, path: Path, text: str, url: str, fetch: Fetch, 
         meta, page_text = gather_web(store, url, fetch)
     except (Refused, net.HttpError) as e:
         return {"id": pid, "status": "refused", "reason": str(e)}
-    block = web_block(meta["web_url"], store.blobs[WEB_PAGE], date, page_text)
-    for f in store.files:
-        f["abstract"] = bool(meta["abstract"])
-        f["fulltext"] = bool(block)
+    block, kind, warn = web_fulltext(store, meta, page_text, fetch)
     new = replace_section(text, "Referencia", referencia(meta))
     new = replace_section(new, "Resumen", web_resumen(meta["abstract"], meta["web_url"], date, meta["abstract_from"]))
     new = replace_section(new, "Texto completo", block.strip() if block else NO_FULLTEXT)
     new = set_suspicious(new, block)
-    new = vn.set_fields(new, {"fulltext": "full" if block else "abstract-only", "ingested_by": TOOL,
-                              "fetched_at": date, "fuentes": f"{store.rel}/fuentes.json"})
+    new = vn.set_fields(new, {"fulltext": web_fulltext_field(kind), "ingested_by": TOOL, "fetched_at": date,
+                              "pdf": net.redact(meta["pdf_url"]) if kind == "pdf" else "",
+                              "fuentes": f"{store.rel}/fuentes.json"})
     if not a.dry_run:
         store.write()
         atomic_write(path, new)
     return {"id": pid, "status": "rebuilt" if not a.dry_run else "dry_run", "path": path.relative_to(vault).as_posix(),
-            "fulltext": "web" if block else "abstract-only", "changed": new != text, "warnings": []}
+            "fulltext": kind or "abstract-only", "changed": new != text, "warnings": warn}
 
 
 def cmd_reconvert(a) -> dict:
