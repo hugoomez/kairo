@@ -10,7 +10,6 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 
-import plan_blocks  # noqa: E402
 from plan_blocks import PlanError, read_plan  # noqa: E402
 
 TEMPLATE = ROOT / "templates" / "measurement-plan-template.md"
@@ -33,7 +32,7 @@ def plan(tmp_path, est=None, cls=None, ivl=None, raw_est=None):
 
 def test_reads_template_example():
     r = read_plan(TEMPLATE)
-    assert [e["id"] for e in r["estimands"]] == ["est-1", "est-2"]
+    assert [e["id"] for e in r["estimands"]] == ["est-1", "est-2", "est-3", "est-4", "est-5"]
     assert r["estimands"][0]["filter"] == {"grupo": "a"}
     assert r["classifiers"][0]["min_recall_lo"] == 0.80
     assert r["intervals"] == {"ci": 0.95, "bootstrap": 2000, "seed": 12345}
@@ -107,7 +106,7 @@ def test_bootstrap_must_be_positive(tmp_path):
 
 @pytest.mark.parametrize("typ", ["conteo", "mediana"])
 def test_cluster_only_on_proportions(tmp_path, typ):
-    with pytest.raises(PlanError, match="Estimandos: a: cluster solo se admite en proporciones"):
+    with pytest.raises(PlanError, match="Estimandos: a: cluster solo se admite en proporcion y diferencia"):
         read_plan(plan(tmp_path, est=[{"id": "a", "type": typ, "column": "c", "filter": {}, "cluster": "g"}]))
 
 
@@ -119,4 +118,37 @@ def test_template_passes_plan_blocks_show():
     assert r.returncode == 0, r.stdout
     est = {e["id"]: e for e in json.loads(r.stdout)["estimands"]}
     assert est["est-2"]["type"] == "conteo" and not est["est-2"]["column"].startswith("id")
-    assert all(e["cluster"] is None for e in est.values() if e["type"] != "proporcion")
+    assert all(e["cluster"] is None for e in est.values() if e["type"] not in ("proporcion", "diferencia"))
+
+
+def _est(**kw):
+    e = {"id": "e", "type": "proporcion", "column": "c", "filter": {}, "cluster": None}
+    e.update(kw)
+    return e
+
+
+@pytest.mark.parametrize("extra, msg", [
+    ({"type": "diferencia"}, "'group'"),
+    ({"type": "diferencia", "group": "t", "a": "x"}, "'b'"),
+    ({"type": "diferencia", "group": "t", "a": "x", "b": "x"}, "distintos"),
+    ({"type": "reutilizacion"}, "'across'"),
+    ({"type": "reutilizacion", "across": "c"}, "misma columna"),
+    ({"type": "reutilizacion", "across": "r", "min_groups": 1}, "min_groups"),
+    ({"type": "supervivencia"}, "'event'"),
+    ({"type": "supervivencia", "event": "ev", "at": [-1]}, "'at'"),
+    ({"type": "supervivencia", "event": "ev", "cluster": "g"}, "cluster solo"),
+    ({"type": "diferencia", "group": "t", "a": "x", "b": "y", "by": "z"}, "'by' solo"),
+    ({"by": "g", "cluster": "g"}, "misma columna"),
+])
+def test_new_types_need_their_fields(tmp_path, extra, msg):
+    with pytest.raises(PlanError, match=msg):
+        read_plan(plan(tmp_path, est=[_est(**extra)]))
+
+
+def test_new_types_defaults(tmp_path):
+    r = read_plan(plan(tmp_path, est=[
+        _est(id="d", type="diferencia", group="t", a="x", b="y", cluster="org"),
+        _est(id="r", type="reutilizacion", across="repo"),
+        _est(id="s", type="supervivencia", event="ev", by="tool")]))
+    d, ru, s = r["estimands"]
+    assert ru["min_groups"] == 2 and s["at"] == [] and d["cluster"] == "org"

@@ -23,12 +23,22 @@ frozen_commit: <git-sha>
 
 ## Estimandos
 
-<Cada estimando es una entrada del bloque JSON, que lee estimate.py. `type`: proporcion | conteo | mediana. `id` único. `filter`: {columna: valor}, o {} si no hay filtro. `cluster`: columna de agrupación para el intervalo, o null si no hay; solo en proporciones. Un `conteo` cuenta las filas cuya `column` es verdadera (1, true, sí), así que nombra una columna 0/1, no un identificador. Ejemplo inventado.>
+<Cada estimando es una entrada del bloque JSON, que lee estimate.py. `id` único. `filter`: {columna: valor}, o {} si no hay filtro. `cluster`: columna de agrupación para el intervalo (bootstrap por conglomerados), o null si no hay; solo en proporcion y diferencia. `by` (opcional): columna categórica (herramienta, año, tipo de propietario; como mucho 50 valores) que añade una estimación por valor, para comparar grupos o ver una tendencia por periodos; en proporcion, conteo, mediana y supervivencia. Tipos:
+- `proporcion`: fracción de filas cuya `column` es verdadera (1, true, sí). Wilson, o bootstrap si hay cluster.
+- `conteo`: filas cuya `column` es verdadera; nombra una columna 0/1, no un identificador.
+- `mediana`: de una `column` numérica, con bootstrap.
+- `diferencia`: p(a) − p(b) de la `column` 0/1 entre dos valores `a` y `b` de la columna `group`. Newcombe, o bootstrap si hay cluster.
+- `reutilizacion`: fracción de valores distintos de `column` (una huella de clave, nunca la clave) que aparecen en al menos `min_groups` (por defecto 2) valores distintos de `across` (repositorio, organización). Wilson sobre las claves, con un histograma de recuentos; nunca imprime una clave ni un grupo.
+- `supervivencia`: mediana de Kaplan-Meier de `column` (tiempo hasta el cambio, p. ej. días), con `event` verdadero si el cambio se vio y falso si seguía sin cambiar al final de la observación (censura). `at`: lista de tiempos en los que dar S(t), [] si ninguno. Si la mediana no se alcanza, `value` es null y `median_reached` false.
+Ejemplo inventado.>
 
 ```json
 {"estimands": [
   {"id": "est-1", "type": "proporcion", "column": "tiene_x", "filter": {"grupo": "a"}, "cluster": "sitio"},
-  {"id": "est-2", "type": "conteo", "column": "es_valida", "filter": {}, "cluster": null}
+  {"id": "est-2", "type": "conteo", "column": "es_valida", "filter": {}, "cluster": null},
+  {"id": "est-3", "type": "diferencia", "column": "tiene_x", "group": "formato", "a": "f1", "b": "f2", "filter": {}, "cluster": "sitio"},
+  {"id": "est-4", "type": "reutilizacion", "column": "huella", "across": "sitio", "min_groups": 2, "filter": {}, "cluster": null},
+  {"id": "est-5", "type": "supervivencia", "column": "dias", "event": "cambio_visto", "at": [365], "by": "formato", "filter": {}, "cluster": null}
 ]}
 ```
 

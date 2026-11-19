@@ -202,3 +202,106 @@ def test_plan_lookalike_id_is_not_taken(tmp_path):
     folder = tmp_path / "Projects" / "demo" / "Mediciones"
     (folder / "M-9002.md").rename(folder / "M-90021.md")
     assert run(tmp_path)[0] == 3
+
+
+# ---- by, diferencia, reutilizacion, supervivencia, tamano ------------------
+
+def test_by_adds_one_estimate_per_group():
+    r = estimate.compute(est(by="tipo"), ROWS, IVL)
+    assert r["value"] == pytest.approx(5 / 8)
+    assert [g["group"] for g in r["groups"]] == ["org", "per"]
+    org = r["groups"][0]
+    assert org["value"] == pytest.approx(3 / 5) and org["n"] == 5 and "id" not in org
+
+
+def test_by_refuses_identifier_like_columns():
+    rows = [{"x": "1", "repo": f"r{i}"} for i in range(60)]
+    with pytest.raises(estimate.Refused, match="máximo 50"):
+        estimate.compute(est(column="x", by="repo"), rows, IVL)
+
+
+def test_difference_newcombe_known_value():
+    # Newcombe (1998) example: 56/70 vs 48/80 -> 0.2, 95% CI 0.0524 to 0.3339
+    rows = ([{"x": "1", "t": "a"}] * 56 + [{"x": "0", "t": "a"}] * 14
+            + [{"x": "1", "t": "b"}] * 48 + [{"x": "0", "t": "b"}] * 32)
+    r = estimate.compute(est(type="diferencia", column="x", group="t", a="a", b="b"), rows, IVL)
+    assert r["value"] == pytest.approx(0.2)
+    assert r["lo"] == pytest.approx(0.0524, abs=1e-3) and r["hi"] == pytest.approx(0.3339, abs=1e-3)
+    assert r["a"] == {"group": "a", "n": 70, "value": pytest.approx(0.8)} and r["method"] == "newcombe"
+
+
+def test_difference_cluster_bootstrap_is_deterministic():
+    rows = [{"x": str(i % 3 == 0), "t": "a" if i % 2 else "b", "org": f"o{i // 4}"} for i in range(80)]
+    e = est(type="diferencia", column="x", group="t", a="a", b="b", cluster="org")
+    one, two = estimate.compute(e, rows, IVL), estimate.compute(e, rows, IVL)
+    assert one == two and one["method"] == "cluster-bootstrap" and one["lo"] <= one["value"] <= one["hi"]
+
+
+def test_difference_with_an_empty_side():
+    r = estimate.compute(est(type="diferencia", column="x", group="t", a="a", b="z"),
+                         [{"x": "1", "t": "a"}], IVL)
+    assert r["value"] is None and r["b"]["n"] == 0
+
+
+def test_reuse_counts_keys_never_prints_them():
+    rows = ([{"k": "K1", "repo": "r1"}, {"k": "K1", "repo": "r2"}, {"k": "K1", "repo": "r3"},
+             {"k": "K2", "repo": "r1"}, {"k": "K2", "repo": "r1"}, {"k": "K3", "repo": "r4"},
+             {"k": "", "repo": "r5"}])
+    r = estimate.compute(est(type="reutilizacion", column="k", across="repo", min_groups=2), rows, IVL)
+    assert r["n"] == 3 and r["value"] == pytest.approx(1 / 3)
+    assert r["histogram"] == {"1": 2, "2": 0, "3-5": 1, "6-10": 0, ">10": 0}
+    assert r["max_groups"] == 3 and r["rows"] == 6 and r["rows_with_shared_key"] == 3
+    text = json.dumps(r)
+    assert "K1" not in text and "r1" not in text
+
+
+def test_survival_kaplan_meier_median_with_censoring():
+    # times 1..10, every second one censored: S(5) = .9 * 7/8 * 5/6, median 7
+    rows = [{"d": str(t), "ev": "1" if t % 2 else "0"} for t in range(1, 11)]
+    e = est(type="supervivencia", column="d", event="ev", at=[5])
+    r = estimate.compute(e, rows, IVL)
+    assert r["value"] == 7 and r["events"] == 5 and r["median_reached"] is True
+    assert r["survival_at"][0]["t"] == 5 and r["survival_at"][0]["s"] == pytest.approx(0.65625)
+    assert r == estimate.compute(e, rows, IVL)
+
+
+def test_survival_median_not_reached():
+    rows = [{"d": str(t), "ev": "1" if t == 1 else "0"} for t in range(1, 11)]
+    r = estimate.compute(est(type="supervivencia", column="d", event="ev", at=[]), rows, IVL)
+    assert r["value"] is None and r["median_reached"] is False and r["hi"] is None
+
+
+def test_survival_by_group():
+    rows = [{"d": str(t), "ev": "1", "tool": "x" if t < 6 else "y"} for t in range(1, 11)]
+    r = estimate.compute(est(type="supervivencia", column="d", event="ev", at=[], by="tool"), rows, IVL)
+    assert [g["value"] for g in r["groups"]] == [3, 8]
+
+
+def test_sample_size_matches_wilson():
+    n = estimate.sample_size(0.5, 0.05)
+    lo, hi = wilson(round(0.5 * n), n, 0.95)
+    assert (hi - lo) / 2 <= 0.05 and 370 <= n <= 390
+    lo, hi = wilson(round(0.5 * (n - 1)), n - 1, 0.95)
+    assert (hi - lo) / 2 > 0.05
+
+
+def test_tamano_cli():
+    p = subprocess.run([sys.executable, str(SCRIPT), "tamano", "--p", "0.1", "--half-width", "0.03"],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout
+    assert json.loads(p.stdout)["n"] > 300
+    bad = subprocess.run([sys.executable, str(SCRIPT), "tamano", "--p", "2", "--half-width", "0.03"],
+                         capture_output=True, text=True)
+    assert bad.returncode == 3
+
+
+def test_cli_checks_new_columns(tmp_path):
+    setup_vault(tmp_path)
+    plan = tmp_path / "Projects" / "demo" / "Mediciones" / "M-9002.md"
+    e = json.dumps({"estimands": [{"id": "r", "type": "reutilizacion", "column": "tiene_x",
+                                   "across": "no_existe", "filter": {}, "cluster": None}]})
+    text = plan.read_text(encoding="utf-8")
+    start = text.index("```json\n") + len("```json\n")
+    plan.write_text(text[:start] + e + text[text.index("\n```", start):], encoding="utf-8")
+    code, out = run(tmp_path)
+    assert code == 3 and "no_existe" in out

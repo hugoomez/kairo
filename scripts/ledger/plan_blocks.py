@@ -18,7 +18,9 @@ if str(HERE) not in sys.path:
 
 import notes  # noqa: E402
 
-TYPES = ("proporcion", "conteo", "mediana")
+TYPES = ("proporcion", "conteo", "mediana", "diferencia", "reutilizacion", "supervivencia")
+CLUSTER_TYPES = ("proporcion", "diferencia")
+BY_TYPES = ("proporcion", "conteo", "mediana", "supervivencia")
 _FENCE = re.compile(r"```json[ \t]*\n(.*?)\n[ \t]*```", re.S)
 
 
@@ -71,9 +73,48 @@ def _estimands(data) -> list[dict]:
         c = e.get("cluster")
         if c is not None and not (isinstance(c, str) and c):
             raise PlanError(f"{h}: cluster de {e['id']} debe ser una columna o null")
-        if c is not None and e["type"] != "proporcion":
-            raise PlanError(f"{h}: {e['id']}: cluster solo se admite en proporciones")
+        if c is not None and e["type"] not in CLUSTER_TYPES:
+            raise PlanError(f"{h}: {e['id']}: cluster solo se admite en {' y '.join(CLUSTER_TYPES)}")
+        _type_fields(h, e)
     return items
+
+
+def _col(h: str, e: dict, k: str, required: bool = True) -> None:
+    v = e.get(k)
+    if v is None and not required:
+        return
+    if not isinstance(v, str) or not v:
+        raise PlanError(f"{h}: el estimando {e['id']} necesita '{k}' (nombre de columna)")
+
+
+def _type_fields(h: str, e: dict) -> None:
+    """The fields each type adds (docs: templates/measurement-plan-template.md)."""
+    t = e["type"]
+    if "by" in e and e["by"] is not None:
+        if t not in BY_TYPES:
+            raise PlanError(f"{h}: {e['id']}: 'by' solo se admite en {', '.join(BY_TYPES)}")
+        _col(h, e, "by")
+        if e["by"] == e.get("cluster"):
+            raise PlanError(f"{h}: {e['id']}: 'by' y 'cluster' no pueden ser la misma columna")
+    if t == "diferencia":
+        _col(h, e, "group")
+        for k in ("a", "b"):
+            if not isinstance(e.get(k), (str, int)) or isinstance(e.get(k), bool) or str(e[k]) == "":
+                raise PlanError(f"{h}: {e['id']}: diferencia necesita '{k}' (valor de '{e.get('group')}')")
+        if str(e["a"]) == str(e["b"]):
+            raise PlanError(f"{h}: {e['id']}: 'a' y 'b' deben ser valores distintos")
+    if t == "reutilizacion":
+        _col(h, e, "across")
+        if e["across"] == e["column"]:
+            raise PlanError(f"{h}: {e['id']}: 'across' y 'column' no pueden ser la misma columna")
+        mg = e.setdefault("min_groups", 2)
+        if not isinstance(mg, int) or isinstance(mg, bool) or mg < 2:
+            raise PlanError(f"{h}: {e['id']}: min_groups debe ser un entero >= 2")
+    if t == "supervivencia":
+        _col(h, e, "event")
+        at = e.setdefault("at", [])
+        if not isinstance(at, list) or not all(_is_num(x) and x >= 0 for x in at):
+            raise PlanError(f"{h}: {e['id']}: 'at' debe ser una lista de números >= 0 ([] si no hay)")
 
 
 def _classifiers(data) -> list[dict]:
