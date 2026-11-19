@@ -695,7 +695,9 @@ For `medicion`, end by offering `kairo:plan-study` instead of hypotheses.
 **Launched from the Kairo interface?** Skip this step: the prompt says so.
 Hypothesis generation runs on the policy's hard-task model as its own job
 («Generar hipótesis»), never inside project creation. End the run saying the
-gaps are ready for it.
+gaps are ready for it. For `medicion` end instead by pointing to the next
+step: «planifica la primera pregunta (plan-study)», the interface's
+«Planificar una pregunta» job.
 
 Input = the **"Huecos identificados"** section — or, **when the project has a
 frontier map** (`Projects/<slug>/Frontera/mapa.json`, e.g. `kairo:frontier-map`
@@ -772,7 +774,7 @@ never is).
 
 ## Applied projects: the code repository
 
-For the `aplicado` template, in step 2, after the scaffold:
+For the `aplicado` and `medicion` templates, in step 2, after the scaffold:
 
 1. **Where:** the brief gives an absolute path for the project's code
    repository. It is always a **separate** git repository and never inside

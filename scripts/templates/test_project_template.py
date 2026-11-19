@@ -33,12 +33,10 @@ class TestMedicionTemplate(unittest.TestCase):
         self.assertRegex(TEMPLATE, r"code_repo — .*medicion")
 
     def test_skill_offers_plan_study_and_names_hub_fields(self):
-        sec = SKILL.split("**`medicion`**", 1)
-        self.assertEqual(len(sec), 2, "no medicion section in SKILL.md")
-        body = sec[1].split("\n\n")[0:6]
-        text = "\n\n".join(body)
-        for needle in ("kairo:plan-study", "code_repo", "default_linea_publicacion", "deadline", "sota_map"):
-            self.assertIn(needle, text)
+        self.assertIn("**`medicion`**", SKILL)
+        for needle in ("kairo:plan-study", "default_linea_publicacion", "deadline",
+                       "sota_map", "plan-study)", "`aplicado` and `medicion` templates"):
+            self.assertIn(needle, SKILL)
         self.assertRegex(SKILL, r"`seed_hypotheses: false` \(.*`medicion`")
 
 

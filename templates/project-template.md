@@ -16,7 +16,8 @@ type: <ciencia | producto | hibrido>
 #              no full text, figures, map or hypotheses (minutes, not hours)
 #   medicion — type ciencia, a measurement study (estimate a quantity, not test a
 #              hypothesis): needs code_repo; no seed hypotheses; the end of
-#              create-project offers kairo:plan-study
+#              create-project offers kairo:plan-study; step 3 (related
+#              projects) still runs
 template: <teorico | aplicado | producto | ciencia | revision | corpus | ligero | medicion>
 # seed_hypotheses — whether create-project seeds hypotheses from the gaps
 # (revision, corpus, medicion: false). Hypotheses can always be generated later.
@@ -39,8 +40,8 @@ paper_thread: <slug>
 # gives new hypotheses in this project (teorico: true). true means every
 # adjudicating experiment needs the `completo` preregistration tier.
 default_linea_publicacion: false
-# code_repo — aplicado and medicion (the collection scripts live there): absolute path of the project's own git repository,
-# always OUTSIDE the vault. code_remote: none, or the remote URL.
+# code_repo — aplicado and medicion (the collection scripts live there):
+# absolute path of the project's own git repository, always OUTSIDE the vault. code_remote: none, or the remote URL.
 # code_visibility: private by default; public only by the researcher's
 # explicit choice. The repo's pre-push guard blocks vault content.
 code_repo: <path>
