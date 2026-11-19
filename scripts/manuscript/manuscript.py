@@ -7,9 +7,12 @@
     manuscript.py export --vault V --project-dir D --thread T --format latex
         writes Manuscritos/latex-<T>/main.tex (venue's class, from config/venues.toml;
         an unknown venue is `generic`, with a warning) and refs.bib (export_bib.py);
-        needs pandoc, run as `-f markdown-raw_tex-raw_attribute` (a section cannot
-        inject LaTeX; P-ids cross pandoc as KAIROCITE tokens and become \\cite{key});
-        with latexmk it reports the body pages against the venue's limit
+        needs pandoc, run as `-f markdown-raw_tex-raw_attribute` (raw TeX in a section
+        comes out escaped; math, which pandoc writes verbatim, is refused (exit 3) when
+        it holds a command that reads, writes or redefines, or `^^`; P-ids cross pandoc
+        as KAIROCITE<nonce>N<n> tokens and become \\cite{key}); with latexmk (run with
+        -no-shell-escape and openin_any=openout_any=p) it reports the body pages
+        against the venue's limit
 
 ``init`` writes two files in ``<project>/Manuscritos/``:
 
@@ -461,8 +464,26 @@ _TEX_SPECIAL = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{":
                 "~": r"\textasciitilde{}", "^": r"\textasciicircum{}", "\\": r"\textbackslash{}"}
 PANDOC_HINT = "winget install --id JohnMacFarlane.Pandoc"
 PANDOC_FROM = "markdown-raw_tex-raw_attribute"
-# A citation crosses pandoc as an opaque token and becomes \cite{key} in its LaTeX output.
-_TOKEN = re.compile(r"KAIROCITE(\d{4})")
+# A citation crosses pandoc as an opaque token, KAIROCITE<nonce>N<4 digits> with a random
+# per-export nonce (so literal text cannot collide with one), and becomes \cite{key} in
+# its LaTeX output.
+# Pandoc writes math verbatim even with raw TeX off, so after pandoc every math span
+# ($…$, $$…$$, \(…\), \[…\]; verbatim blocks aside) is checked for a command that reads,
+# writes or redefines, and for TeX's ^^ character notation (which can spell any of them).
+_VERBATIM = re.compile(r"\\begin\{verbatim\}.*?\\end\{verbatim\}", re.S)
+_MATH = re.compile(r"(?<!\\)\$\$.*?(?<!\\)\$\$|(?<!\\)\$.*?(?<!\\)\$|\\\(.*?\\\)|\\\[.*?\\\]", re.S)
+_MATH_FORBIDDEN = re.compile(
+    r"\\(?:input|include|openin|read|write|immediate|catcode|csname|def|edef|gdef|let|special"
+    r"|directlua|usepackage|newread|newwrite|jobname|openout)(?![A-Za-z@])|\^\^")
+
+
+def _math_danger(tex: str) -> str | None:
+    """The first forbidden command (or `^^`) inside a math span of pandoc's output."""
+    for m in _MATH.finditer(_VERBATIM.sub("", tex)):
+        bad = _MATH_FORBIDDEN.search(m.group(0))
+        if bad:
+            return bad.group(0)
+    return None
 
 
 def _tex_escape(text: str) -> str:
@@ -504,6 +525,7 @@ def _last_error(log: str) -> str:
 
 
 def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
+    import os  # noqa: PLC0415
     import shutil  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
     pandoc = shutil.which("pandoc")
@@ -543,15 +565,23 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
             return pid
         if pid not in cited:
             cited.append(pid)
-        return f"KAIROCITE{cited.index(pid) + 1:04d}"
+        return f"KAIROCITE{nonce}N{cited.index(pid) + 1:04d}"
 
     def from_token(m: re.Match) -> str:
         i = int(m.group(1)) - 1
         return "\\cite{" + keys[cited[i]] + "}" if 0 <= i < len(cited) else m.group(0)
 
+    import secrets  # noqa: PLC0415
+    nonce = secrets.token_hex(4)
+    token = re.compile(rf"KAIROCITE{nonce}N(\d{{4}})")
     parts = []
     for s in cov["sections"]:
-        tex = _TOKEN.sub(from_token, _pandoc(pandoc, _CITE.sub(to_cite, bodies[s["id"]])))
+        tex = _pandoc(pandoc, _CITE.sub(to_cite, bodies[s["id"]]))
+        danger = _math_danger(tex)
+        if danger:
+            raise Refused(f"la sección {s['id']} tiene `{danger}` dentro de una fórmula: "
+                          "quítalo de la fórmula y repite")
+        tex = token.sub(from_token, tex)
         parts.append(f"\\section{{{_tex_escape(s['title'])}}}\n\n{tex.strip()}\n")
 
     opts = f"[{venue['options']}]" if venue.get("options") else ""
@@ -591,8 +621,10 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
     if latexmk:
         for stale in ("main.log", "main.aux"):
             (out / stale).unlink(missing_ok=True)
-        proc = subprocess.run([latexmk, "-pdf", "-interaction=nonstopmode", "main.tex"], cwd=out,
-                              capture_output=True, text=True)
+        # no shell escape; paranoid file access (no dot files, no `..`, no absolute paths)
+        env = {**os.environ, "openin_any": "p", "openout_any": "p"}
+        proc = subprocess.run([latexmk, "-pdf", "-no-shell-escape", "-interaction=nonstopmode", "main.tex"],
+                              cwd=out, capture_output=True, text=True, env=env)
         log = out / "main.log"
         logtext = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
         if proc.returncode != 0:

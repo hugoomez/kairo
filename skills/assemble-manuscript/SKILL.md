@@ -126,9 +126,18 @@ at the end. The outline, not this skill, decides the sections: each has a
      code or a URL is left as it is.
    - It needs **pandoc** (`winget install --id JohnMacFarlane.Pandoc`; without
      it the export refuses and says so). Pandoc reads the sections with raw
-     TeX off, so a `\command` or a `{=latex}` span written in a section comes
-     out escaped, as text: a section cannot inject LaTeX.
-   - With **latexmk** (a TeX distribution) it also compiles the PDF and
+     TeX and raw attributes off, so a `\command` or a `{=latex}` span written
+     in the text comes out escaped, as text. Math (`$…$`, `$$…$$`) is the
+     exception: pandoc writes it verbatim. So after pandoc the export refuses
+     (exit 3), naming the section, when a formula holds any of `\input`
+     `\include` `\openin` `\read` `\write` `\immediate` `\catcode` `\csname`
+     `\def` `\edef` `\gdef` `\let` `\special` `\directlua` `\usepackage`
+     `\newread` `\newwrite` `\jobname` `\openout`, or TeX's `^^` notation.
+     Other commands in math (e.g. `\alpha`, `\frac`) pass through as LaTeX.
+   - With **latexmk** (a TeX distribution) it also compiles the PDF, run with
+     `-no-shell-escape` and `openin_any=p` / `openout_any=p` (paranoid mode:
+     TeX refuses to read or write dot files, paths through `..` and absolute
+     paths outside `TEXMFOUTPUT`; its own distribution files are still found), and
      reports `pages` (the body: the page where the references start) against
      the venue's `body_pages` limit as `limit` and `over`. Without latexmk,
      `pages` and `over` are `null`.

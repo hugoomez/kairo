@@ -511,14 +511,59 @@ class TestExport(CoverageBase):
         it as opaque tokens and become \\cite in its LaTeX output."""
         self.fake("pandoc", "import sys\n"
                   "open(%r, 'w', encoding='utf-8').write(chr(10).join(sys.argv[1:]))\n"
-                  "sys.stdout.write(sys.stdin.read())\n" % str(self.bin / "argv.txt"))
+                  "s = sys.stdin.read()\n"
+                  "open(%r, 'a', encoding='utf-8').write(s)\n"
+                  "sys.stdout.write(s)\n" % (str(self.bin / "argv.txt"), str(self.bin / "stdin.txt")))
+        self.fill("introduccion", "Texto citado en P-9001 y otra vez P-9001; literal KAIROCITE0001.")
         res = json.loads(self.run_export()[1])
         argv = (self.bin / "argv.txt").read_text(encoding="utf-8").split("\n")
         self.assertIn("markdown-raw_tex-raw_attribute", argv)
+        import re
+        fed = (self.bin / "stdin.txt").read_text(encoding="utf-8")
+        nonces = set(re.findall(r"KAIROCITE([0-9a-f]{8})N0001", fed))
+        self.assertEqual(len(nonces), 1)   # a random per-export nonce, never the bare number
         tex = Path(res["tex"]).read_text(encoding="utf-8")
         self.assertEqual(tex.count("\\cite{"), 2)
-        self.assertNotIn("KAIROCITE", tex)
+        self.assertIn("literal KAIROCITE0001.", tex)   # literal text never collides with a token
+        self.assertNotIn("KAIROCITE" + nonces.pop(), tex)
         self.assertNotIn("{=latex}", tex)
+
+    def test_math_with_a_dangerous_command_refuses_naming_the_section(self):
+        for body in ("Antes \\(\\input{x}\\) despues", "Ver $\\openin1=x$.", "\\[\\csname input\\endcsname{x}\\]",
+                     "$$\\immediate\\write18{x}$$", "\\(x^^5cinput{y}\\)"):
+            self.fake("pandoc", "import sys\nsys.stdin.read()\nsys.stdout.write(%r)\n" % body)
+            rc, _, err = self.run_export()
+            self.assertEqual(rc, 3, body)
+            self.assertIn("introduccion", err)
+        self.fake("pandoc", "import sys\nsys.stdin.read()\n"
+                  "sys.stdout.write(%r)\n" % "\\(x^2 + \\alpha\\) y \\begin{verbatim}\n$\\input{x}$\n\\end{verbatim}\n")
+        rc, _, err = self.run_export()
+        self.assertEqual(rc, 0, err)
+
+    def test_math_input_refused_with_real_pandoc(self):
+        if REAL_PANDOC is None:
+            self.skipTest("pandoc no está instalado")
+        import shutil
+        shutil.copy(REAL_PANDOC, self.bin / Path(REAL_PANDOC).name)
+        self.fill("discusion", "Una formula $\\input{x}$ inventada.")
+        rc, _, err = self.run_export()
+        self.assertEqual(rc, 3)
+        self.assertIn("discusion", err)
+        self.fill("discusion", "Una formula $x^2 + \\alpha$ inventada.")
+        rc, _, err = self.run_export()
+        self.assertEqual(rc, 0, err)
+
+    def test_latexmk_runs_without_shell_escape_and_paranoid_file_access(self):
+        self.pandoc()
+        self.fake("latexmk", "import os, sys\n"
+                  "open('argv.txt', 'w').write(chr(10).join(sys.argv[1:]))\n"
+                  "open('env.txt', 'w').write(os.environ.get('openin_any', '') + ',' + os.environ.get('openout_any', ''))\n"
+                  "open('main.aux', 'w').write('')\n")
+        res = json.loads(self.run_export()[1])
+        out = Path(res["tex"]).parent
+        argv = (out / "argv.txt").read_text().split("\n")
+        self.assertIn("-no-shell-escape", argv)
+        self.assertEqual((out / "env.txt").read_text(), "p,p")
 
     def test_raw_latex_in_a_section_is_escaped_by_real_pandoc(self):
         if REAL_PANDOC is None:
