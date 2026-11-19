@@ -35,7 +35,8 @@ EXIT_OK, EXIT_ERROR, EXIT_FOUND = 0, 1, 3
 # when key body follows the header (after optional Proc-Type:/DEK-Info:/Version:/
 # Comment: lines and a blank line): a first run of >= 16 base64 characters, which need
 # not reach the end of its line (a truncated paste ending in `-`, `…`, `[truncated]`),
-# then any further whole lines of >= 4 base64 characters. Every line may carry the
+# then any further whole lines of >= 4 base64 characters, the last of which may be cut
+# short (end of text, or a non-prose mark such as `…`). Every line may carry the
 # prefix of an indented code block, a YAML `|` value or a blockquote (`[ \t>]*`), and a
 # line break may be a real one or an escaped `\n` inside a raw JSON/JSONL string. The
 # header and that body are redacted, stopping at the first thing that is not body. A
@@ -45,12 +46,16 @@ _NL = r"(?:\r?\n|(?:\\r)?\\n)"  # a real newline, or an escaped `\n` (as check_b
 _PFX = r"[ \t>]*"
 _B64 = r"[A-Za-z0-9+/=]"
 _BODY_LINE = _PFX + _B64 + r"{4,}[ \t]*(?=" + _NL + r'|"|\Z)'
+# the last body line may be truncated: >= 4 base64 characters cut by the end of the text
+# or by a mark that is not prose (`…`, `-`, `[truncated]`; not a space or punctuation)
+_CUT = r"(?=\Z|[^A-Za-z0-9+/=\s.,;:!?'\")\]])"
 _BLOCK_RE = re.compile(
     r"-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?)-----.*?-----END \1-----"
     r"|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[ \t]*" + _NL
     + r"(?:" + _PFX + r"(?:Proc-Type|DEK-Info|Version|Comment):(?:[^\r\n\\]|\\(?![rn]))*"
     + _NL + r")*(?:" + _PFX + _NL + r")?"
     + _PFX + _B64 + r"{16,}(?:[ \t]*" + _NL + _BODY_LINE + r")*"
+    + r"(?:[ \t]*" + _NL + _PFX + _B64 + r"{4,}" + _CUT + r")?"
     r"|PuTTY-User-Key-File-\d+:.*?(?:Private-MAC|Private-Hash): *[0-9a-fA-F]+",
     re.S)
 _AGE_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")

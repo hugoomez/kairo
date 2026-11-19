@@ -529,16 +529,43 @@ class TestExport(CoverageBase):
         self.assertNotIn("{=latex}", tex)
 
     def test_math_with_a_dangerous_command_refuses_naming_the_section(self):
-        for body in ("Antes \\(\\input{x}\\) despues", "Ver $\\openin1=x$.", "\\[\\csname input\\endcsname{x}\\]",
-                     "$$\\immediate\\write18{x}$$", "\\(x^^5cinput{y}\\)"):
+        cases = {"Antes \\(\\input{x}\\) despues": "\\input", "Ver $\\openin1=x$.": "$",
+                 "\\[\\csname input\\endcsname{x}\\]": "\\csname", "\\(x^^5cinput{y}\\)": "^^",
+                 "\\(a \\) \\input{x} \\( b\\)": "\\input",            # the `\)` split
+                 "\\(a \\( b\\)": "\\(", "\\(a\\]": "\\]",
+                 "\\(\\InputIfFileExists{x}{}{}\\)": "\\InputIfFileExists",
+                 "\\(\\newcommand{\\x}{y}\\)": "\\newcommand", "\\(\\IfFileExists{x}{}{}\\)": "\\IfFileExists",
+                 "\\begin{verbatim}\nhola\n\\end{verbatim}\n": "\\begin{verbatim}",
+                 "\\begin{filecontents}{x}\\end{filecontents}": "\\begin{filecontents}"}
+        for body, bad in cases.items():
             self.fake("pandoc", "import sys\nsys.stdin.read()\nsys.stdout.write(%r)\n" % body)
             rc, _, err = self.run_export()
             self.assertEqual(rc, 3, body)
             self.assertIn("introduccion", err)
-        self.fake("pandoc", "import sys\nsys.stdin.read()\n"
-                  "sys.stdout.write(%r)\n" % "\\(x^2 + \\alpha\\) y \\begin{verbatim}\n$\\input{x}$\n\\end{verbatim}\n")
+            self.assertIn("`" + bad + "`", err)
+        ok = ("\\(\\frac{a}{b} \\le \\alpha\\) y \\[x^2 \\, \\{y\\}\\] \\emph{a} \\textbackslash{}input\n"
+              "\\begin{enumerate}\n\\def\\labelenumi{(\\arabic{enumi})}\n\\tightlist\n\\item\n  a\n\\end{enumerate}\n")
+        self.fake("pandoc", "import sys\nsys.stdin.read()\nsys.stdout.write(%r)\n" % ok)
         rc, _, err = self.run_export()
         self.assertEqual(rc, 0, err)
+
+    def test_split_math_and_allowed_math_with_real_pandoc(self):
+        if REAL_PANDOC is None:
+            self.skipTest("pandoc no está instalado")
+        import shutil
+        shutil.copy(REAL_PANDOC, self.bin / Path(REAL_PANDOC).name)
+        for body in ("Una $a \\) \\input{x} \\( b$ inventada.", "Una $\\InputIfFileExists{x}{}{}$.",
+                     "Una $\\newcommand{\\x}{y}$."):
+            self.fill("discusion", body)
+            rc, _, err = self.run_export()
+            self.assertEqual(rc, 3, body)
+            self.assertIn("discusion", err)
+        self.fill("discusion", "Segun P-9001, $\\frac{a}{b} \\le \\alpha$ y $$\\sum_i x_i$$.\n\n1. uno\n2. dos\n")
+        rc, out, err = self.run_export()
+        self.assertEqual(rc, 0, err)
+        tex = Path(json.loads(out)["tex"]).read_text(encoding="utf-8")
+        self.assertIn("\\frac{a}{b}", tex)
+        self.assertEqual(tex.count("\\cite{"), 3)
 
     def test_math_input_refused_with_real_pandoc(self):
         if REAL_PANDOC is None:
@@ -554,16 +581,27 @@ class TestExport(CoverageBase):
         self.assertEqual(rc, 0, err)
 
     def test_latexmk_runs_without_shell_escape_and_paranoid_file_access(self):
+        import os
         self.pandoc()
         self.fake("latexmk", "import os, sys\n"
                   "open('argv.txt', 'w').write(chr(10).join(sys.argv[1:]))\n"
-                  "open('env.txt', 'w').write(os.environ.get('openin_any', '') + ',' + os.environ.get('openout_any', ''))\n"
+                  "open('env.txt', 'w').write(','.join(os.environ.get(k, '-') for k in "
+                  "('openin_any', 'openout_any', 'TEXINPUTS', 'TEXMFHOME', 'BSTINPUTS', 'KAIRO_KEEP')))\n"
                   "open('main.aux', 'w').write('')\n")
-        res = json.loads(self.run_export()[1])
+        saved = {k: os.environ.get(k) for k in ("TEXINPUTS", "TEXMFHOME", "BSTINPUTS", "KAIRO_KEEP")}
+        os.environ.update(TEXINPUTS="evil//", TEXMFHOME="evil", BSTINPUTS="evil", KAIRO_KEEP="si")
+        try:
+            res = json.loads(self.run_export()[1])
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
         out = Path(res["tex"]).parent
         argv = (out / "argv.txt").read_text().split("\n")
         self.assertIn("-no-shell-escape", argv)
-        self.assertEqual((out / "env.txt").read_text(), "p,p")
+        self.assertEqual((out / "env.txt").read_text(), "p,p,-,-,-,si")
 
     def test_raw_latex_in_a_section_is_escaped_by_real_pandoc(self):
         if REAL_PANDOC is None:

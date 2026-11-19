@@ -8,11 +8,15 @@
         writes Manuscritos/latex-<T>/main.tex (venue's class, from config/venues.toml;
         an unknown venue is `generic`, with a warning) and refs.bib (export_bib.py);
         needs pandoc, run as `-f markdown-raw_tex-raw_attribute` (raw TeX in a section
-        comes out escaped; math, which pandoc writes verbatim, is refused (exit 3) when
-        it holds a command that reads, writes or redefines, or `^^`; P-ids cross pandoc
-        as KAIROCITE<nonce>N<n> tokens and become \\cite{key}); with latexmk (run with
-        -no-shell-escape and openin_any=openout_any=p) it reports the body pages
-        against the venue's limit
+        comes out escaped, but math is written verbatim). The guard is an allow-list on
+        pandoc's output: every control sequence must be one pandoc emits for text or a
+        listed math macro, else exit 3 naming the section and the command; also refused:
+        a bare `$`, a nested or stray math delimiter, `^^`, an unlisted environment and
+        any verbatim block. P-ids cross pandoc as KAIROCITE<nonce>N<n> tokens and become
+        \\cite{key} after the check. With latexmk (run with -no-shell-escape, without
+        TEXINPUTS/TEXMF*/BIBINPUTS/BSTINPUTS, with openin_any=openout_any=p, which only
+        TeX Live honours; MiKTeX ignores them) it reports the body pages against the
+        venue's limit
 
 ``init`` writes two files in ``<project>/Manuscritos/``:
 
@@ -467,23 +471,67 @@ PANDOC_FROM = "markdown-raw_tex-raw_attribute"
 # A citation crosses pandoc as an opaque token, KAIROCITE<nonce>N<4 digits> with a random
 # per-export nonce (so literal text cannot collide with one), and becomes \cite{key} in
 # its LaTeX output.
-# Pandoc writes math verbatim even with raw TeX off, so after pandoc every math span
-# ($…$, $$…$$, \(…\), \[…\]; verbatim blocks aside) is checked for a command that reads,
-# writes or redefines, and for TeX's ^^ character notation (which can spell any of them).
-_VERBATIM = re.compile(r"\\begin\{verbatim\}.*?\\end\{verbatim\}", re.S)
-_MATH = re.compile(r"(?<!\\)\$\$.*?(?<!\\)\$\$|(?<!\\)\$.*?(?<!\\)\$|\\\(.*?\\\)|\\\[.*?\\\]", re.S)
-_MATH_FORBIDDEN = re.compile(
-    r"\\(?:input|include|openin|read|write|immediate|catcode|csname|def|edef|gdef|let|special"
-    r"|directlua|usepackage|newread|newwrite|jobname|openout)(?![A-Za-z@])|\^\^")
+# Pandoc writes math verbatim even with raw TeX off, so its output is checked against an
+# ALLOW-list before the citation tokens are replaced: every control sequence must be one
+# pandoc's markdown writer emits for text, or one of a fixed set of math macros. Also
+# refused: a bare `$`, a math opener inside math or a closer outside it, TeX's `^^`
+# notation, a `\begin`/`\end` of an environment not listed, and any verbatim block.
+_PANDOC_CS = frozenset("""
+section subsection subsubsection paragraph subparagraph label hyperref href url footnote
+emph textbf texttt textit textsc textsuperscript textsubscript st underline ldots
+textless textgreater textbar textbackslash textasciitilde textasciicircum textquotesingle
+textquotedbl item tightlist begin end caption tabularnewline toprule midrule bottomrule
+noalign endhead endfirsthead endfoot endlastfoot raggedright raggedleft centering
+arraybackslash linewidth columnwidth tabcolsep real rule strut protect
+""".split())
+_GREEK = ("alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda mu nu"
+          " xi pi varpi rho varrho sigma varsigma tau upsilon phi varphi chi psi omega"
+          " Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega")
+_MATH_CS = frozenset((_GREEK + """
+frac sqrt sum prod int lim log ln exp min max le ge leq geq neq approx sim times cdot pm mp
+infty partial hat bar tilde mathrm mathbf mathit mathcal text left right quad qquad ldots
+cdots in notin subset subseteq cup cap to mid
+""").split())
+# control symbols: the escapes, a line break, a control space and pandoc's `\^{}`
+_SYMBOLS = frozenset([",", ";", "!", "{", "}", "_", "%", "&", "#", "$", "\\", " ", "\n", "^"])
+_ENVS = frozenset("itemize enumerate description quote center longtable minipage"
+                  " aligned cases matrix pmatrix bmatrix".split())
+# exact constructs pandoc writes that use a macro the allow-list does not hold
+_PANDOC_FIXED = re.compile(
+    r"\\def\\labelenum(?:i{1,3}|iv)\{\(?\\(?:arabic|alph|Alph|roman|Roman)\{enum(?:i{1,3}|iv)\}[.)]?\}"
+    r"|\\def\\LTcaptype\{none\} % do not increment counter"
+    r"|\$\\(?:square|boxtimes)\$")
+_CS_TOKEN = re.compile(r"\\(?:[A-Za-z@]+|.)|\$|\^\^", re.S)
+_OPEN = {"\\(": "\\)", "\\[": "\\]"}
 
 
-def _math_danger(tex: str) -> str | None:
-    """The first forbidden command (or `^^`) inside a math span of pandoc's output."""
-    for m in _MATH.finditer(_VERBATIM.sub("", tex)):
-        bad = _MATH_FORBIDDEN.search(m.group(0))
-        if bad:
-            return bad.group(0)
-    return None
+def _tex_not_allowed(tex: str) -> str | None:
+    """The first thing in pandoc's LaTeX output the allow-list does not admit, or None."""
+    text = _PANDOC_FIXED.sub("", tex)
+    closer = None
+    for m in _CS_TOKEN.finditer(text):
+        tok = m.group(0)
+        if tok in ("$", "^^"):
+            return tok
+        if tok in _OPEN:
+            if closer:
+                return tok
+            closer = _OPEN[tok]
+            continue
+        if tok in ("\\)", "\\]"):
+            if tok != closer:
+                return tok
+            closer = None
+            continue
+        name = tok[1:]
+        if name in ("begin", "end"):
+            env = re.match(r"\{([^{}]*)\}", text[m.end():])
+            if not env or env.group(1) not in _ENVS:
+                return tok + (env.group(0) if env else "")
+            continue
+        if name not in _PANDOC_CS and name not in _MATH_CS and name not in _SYMBOLS:
+            return tok
+    return "\\(" if closer else None
 
 
 def _tex_escape(text: str) -> str:
@@ -577,10 +625,11 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
     parts = []
     for s in cov["sections"]:
         tex = _pandoc(pandoc, _CITE.sub(to_cite, bodies[s["id"]]))
-        danger = _math_danger(tex)
-        if danger:
-            raise Refused(f"la sección {s['id']} tiene `{danger}` dentro de una fórmula: "
-                          "quítalo de la fórmula y repite")
+        bad = _tex_not_allowed(tex)
+        if bad:
+            raise Refused(f"la sección {s['id']} usa `{bad.strip()}`, que la exportación no admite "
+                          "(solo texto, fórmulas con las órdenes permitidas y nada de bloques de código): "
+                          "quítalo y repite")
         tex = token.sub(from_token, tex)
         parts.append(f"\\section{{{_tex_escape(s['title'])}}}\n\n{tex.strip()}\n")
 
@@ -621,8 +670,11 @@ def export_latex(vault: Path, project_dir: Path, thread: str) -> dict:
     if latexmk:
         for stale in ("main.log", "main.aux"):
             (out / stale).unlink(missing_ok=True)
-        # no shell escape; paranoid file access (no dot files, no `..`, no absolute paths)
-        env = {**os.environ, "openin_any": "p", "openout_any": "p"}
+        # no shell escape; no search-path overrides; paranoid file access under TeX Live
+        # (MiKTeX ignores openin_any/openout_any: the allow-list above is the guard)
+        env = {k: v for k, v in os.environ.items()
+               if not k.upper().startswith("TEXMF") and k.upper() not in ("TEXINPUTS", "BIBINPUTS", "BSTINPUTS")}
+        env.update(openin_any="p", openout_any="p")
         proc = subprocess.run([latexmk, "-pdf", "-no-shell-escape", "-interaction=nonstopmode", "main.tex"],
                               cwd=out, capture_output=True, text=True, env=env)
         log = out / "main.log"

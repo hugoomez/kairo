@@ -128,16 +128,26 @@ at the end. The outline, not this skill, decides the sections: each has a
      it the export refuses and says so). Pandoc reads the sections with raw
      TeX and raw attributes off, so a `\command` or a `{=latex}` span written
      in the text comes out escaped, as text. Math (`$…$`, `$$…$$`) is the
-     exception: pandoc writes it verbatim. So after pandoc the export refuses
-     (exit 3), naming the section, when a formula holds any of `\input`
-     `\include` `\openin` `\read` `\write` `\immediate` `\catcode` `\csname`
-     `\def` `\edef` `\gdef` `\let` `\special` `\directlua` `\usepackage`
-     `\newread` `\newwrite` `\jobname` `\openout`, or TeX's `^^` notation.
-     Other commands in math (e.g. `\alpha`, `\frac`) pass through as LaTeX.
+     exception: pandoc writes it verbatim. The guard is an **allow-list** on
+     pandoc's output: every control sequence must be one pandoc itself emits
+     for text (sections, emphasis, lists, tables, links, footnotes, escapes) or
+     one of a fixed set of math macros (Greek letters, `\frac` `\sqrt` `\sum`
+     `\prod` `\int` `\lim` `\log` `\ln` `\exp` `\min` `\max` `\le` `\ge` `\leq`
+     `\geq` `\neq` `\approx` `\sim` `\times` `\cdot` `\pm` `\mp` `\infty`
+     `\partial` `\hat` `\bar` `\tilde` `\mathrm` `\mathbf` `\mathit`
+     `\mathcal` `\text` `\left` `\right` `\quad` `\qquad` `\ldots` `\cdots`
+     `\in` `\notin` `\subset` `\subseteq` `\cup` `\cap` `\to` `\mid`, and the
+     escapes `\,` `\;` `\!` `\{` `\}` `\_` `\%` `\&` `\#` `\$` `\\`). Anything
+     else refuses the export (exit 3), naming the section and the command; so
+     do a bare `$`, a math delimiter inside math or a closer outside it, TeX's
+     `^^` notation, an environment that is not a list, quote, table, centre or
+     math array, and any code block (`verbatim`). The `\cite` commands are
+     added after this check.
    - With **latexmk** (a TeX distribution) it also compiles the PDF, run with
-     `-no-shell-escape` and `openin_any=p` / `openout_any=p` (paranoid mode:
-     TeX refuses to read or write dot files, paths through `..` and absolute
-     paths outside `TEXMFOUTPUT`; its own distribution files are still found), and
+     `-no-shell-escape`, with `TEXINPUTS`, `TEXMF*`, `BIBINPUTS` and
+     `BSTINPUTS` removed from its environment, and with `openin_any=p` /
+     `openout_any=p`. Those two bind only under TeX Live; MiKTeX ignores them,
+     so the allow-list above is the guard. It also
      reports `pages` (the body: the page where the references start) against
      the venue's `body_pages` limit as `limit` and `over`. Without latexmk,
      `pages` and `over` are `null`.

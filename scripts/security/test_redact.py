@@ -196,6 +196,22 @@ def test_unterminated_truncated_first_line():
         assert len(findings) == 1 and redact.has_secret(text)
 
 
+def test_unterminated_truncated_last_line():
+    header = DASHES + "BEGIN RSA PRIVATE KEY" + DASHES
+    full = _key_lines(1)[0]
+    last = base64.b64encode(os.urandom(9)).decode()[:10]
+    for tail in ("", "…", "-", "[truncated]", "…\nprosa"):
+        span = header + "\n" + full + "\n" + last
+        text = span + tail
+        out, findings = redact.redact_text(text)
+        assert out == "[REDACTADO private_key sha256:" + sha12(span) + "]" + tail, tail
+        assert len(findings) == 1 and redact.has_secret(text)
+    # prose after the body is not taken as a truncated line
+    text = header + "\n" + full + "\nAqui sigue, la nota.\n"
+    assert redact.redact_text(text)[0] == ("[REDACTADO private_key sha256:" + sha12(header + "\n" + full)
+                                           + "]\nAqui sigue, la nota.\n")
+
+
 def test_header_then_short_word_not_redacted():
     header = DASHES + "BEGIN OPENSSH PRIVATE KEY" + DASHES
     for text in (header + "\nGracias\n", header + "\nGracias", header + "\n> Gracias\n"):
