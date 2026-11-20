@@ -195,6 +195,36 @@ class ExportBib(unittest.TestCase):
         self.assertIn("@misc{doe2031unpublisheda,", whole)                 # P-0203 its twin
         self.assertIn("@misc{doe2031unpublisheda,", alone)                 # same key when exported alone
 
+    def test_grey_literature_is_misc_with_url_and_access_date(self):
+        web = ('---\nid: P-0207\ntitle: "Invented Widget Report"\nauthors: []\nyear: 2030\nvenue: "Widget Corp"\n'
+               'url: "https://example.org/a b/}\\\\input{x}{#f%41"\nsource: web\nsource_type: gris\n'
+               'fetched_at: 2031-02-03\nprojects: [PROJ-201]\n---\n')
+        (self.vault / "Papers" / "P-0207 web.md").write_text(web, encoding="utf-8")
+        _, bib, _ = self.run_cli("--only", "P-0207")
+        self.assertIn("@misc{anon2030invented,", bib)
+        self.assertIn("howpublished = {\\url{https://example.org/a\\%20b/\\%7D\\%5C\\%5Cinput\\%7Bx\\%7D\\%7B"
+                      "\\#f\\%41}}", bib)
+        self.assertIn("note = {Accedido el 2031-02-03}", bib)
+        self.assertIn("organization = {Widget Corp}", bib)
+        self.assertNotIn("urldate", bib)
+        self.assertNotIn("  url = ", bib)
+        _, bib_en, _ = self.run_cli("--only", "P-0207", "--lang", "en")
+        self.assertIn("note = {Accessed 2031-02-03}", bib_en)
+        # a grey note recorded only by source_type, without url: still @misc, no access note
+        (self.vault / "Papers" / "P-0207 web.md").write_text(web.replace("source: web\n", "").replace(
+            'url: "https://example.org/a b/}\\\\input{x}{#f%41"\n', ""), encoding="utf-8")
+        _, bib, _ = self.run_cli("--only", "P-0207")
+        self.assertIn("@misc{anon2030invented,", bib)
+        self.assertIn("howpublished = {Widget Corp}", bib)
+        self.assertNotIn("Accedido", bib)
+
+    def test_bib_url_cannot_close_its_brace(self):
+        for url in ("https://x.org/}\\input{y}", "https://x.org/ä ö", "https://x.org/a^^5c"):
+            enc = eb.bib_url(url)
+            self.assertFalse(set(enc) & set("{}\\ ^") - {"\\"}, enc)
+            self.assertNotIn("}", enc)
+            self.assertFalse([i for i, c in enumerate(enc) if c == "\\" and enc[i + 1] not in "%#"], enc)
+
 
 if __name__ == "__main__":
     unittest.main()

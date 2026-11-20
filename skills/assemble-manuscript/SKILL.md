@@ -101,29 +101,91 @@ at the end. The outline, not this skill, decides the sections: each has a
    **Study design, language and venue.** For a study project, start the
    outline with `manuscript.py init ... --design <design> --lang es|en
    --venue <venue>`: the sections come from the design's
-   `manuscript_sections` in `config/designs.toml` (`medicion` has eight), and
-   the outline header records `design`, `lang` and `venue` (a name from
-   `config/venues.toml`; an unknown one is refused). A section may rest on a
-   study question `Q-XXXX` (`manuscript.py bind --id Q-XXXX`): it counts only
-   when the question is in its design's publishable state (`estimada` for
-   `medicion`) and passes the study gate (`study_status.py gate`); coverage
-   lists what is missing, including the current status. `write-section`
-   drafts in the outline's `lang`; every other rule is unchanged: real
-   citations, nothing past a gate.
+   `manuscript_sections` in `config/designs.toml` (`medicion` has nine: an
+   `abstract` with `placement: front`, and `ethics` / `open-science` as
+   appendices), and the outline header records `design`, `lang` and `venue`
+   (a name from `config/venues.toml`; an unknown one is refused). A section
+   may rest on a study question `Q-XXXX` (`manuscript.py bind --id Q-XXXX`):
+   it counts only when the question is in its design's publishable state
+   (`estimada` for `medicion`) and passes the study gate (`study_status.py
+   gate`); coverage lists what is missing, including the current status.
+   `write-section` drafts in the outline's `lang`; every other rule is
+   unchanged: real citations, nothing past a gate.
+
+   **The paper's own section list.** When the design's list does not fit the
+   paper (one results subsection per question, a venue's required appendix,
+   an acknowledgments section), write a JSON file and pass it to `init
+   --sections <file.json>`, or to `manuscript.py sections --project-dir …
+   --thread … --from <file.json>` for an outline that already exists. It is a
+   list of `{id, title?, kind, placement?, budget_pages?, depends_on?,
+   subsections?}` (or `{"keywords": [...], "sections": [...]}`):
+   - `kind` is `prosa` / `resultado` / `cierre` as above; coverage and the
+     gates work per section and per subsection. A section with
+     `subsections` (one level only, `###` in the manuscript) takes its state
+     from them when nothing is bound to it directly; its own text is
+     optional.
+   - `placement`: `body` (default); `front` — the abstract, one at most,
+     `prosa`; `appendix` — after the bibliography under `\appendix`, outside
+     the body page count (ethics, open science, extra data). A subsection
+     keeps its parent's placement.
+   - `budget_pages`: the pages the section may take; `pages` and
+     `check-venue` report it.
+   - `keywords` go under the abstract (acmart: `\keywords`).
+   - Section ids with a fixed meaning: `acknowledgments` /
+     `agradecimientos` (left out of an anonymous export), `ai-disclosure`
+     (the AI-use disclosure, see Step 4; put it there so the export carries
+     it).
+   `sections` keeps every written body and every bound id, keeps blocks
+   without a section marker (a pasted disclosure, for instance) at the end,
+   and refuses to drop a section that already has text. Unknown titles of
+   ids like `introduction` or `ethics` are filled in the outline's language.
 4. Fresh verification of each drafted section and the AI-use disclosure work
    exactly as below. Commit the manuscript, the coverage view and the
    verification records together.
 5. **Export to LaTeX**, once every section is written:
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/manuscript.py" export
    --vault <vault> --project-dir Projects/<slug> --thread <paper_thread>
-   --format latex`.
-   - It refuses (exit 3) while a `resultado` section is not `respaldada` or
-     any section still holds its placeholder, and names them.
+   --format latex [--anonymous] [--to-latex-source] [--force]`.
+   - It refuses (exit 3) while a `resultado` section (or subsection) is not
+     `respaldada` or any section still holds its placeholder, and names them.
    - It writes `Manuscritos/latex-<paper_thread>/main.tex`, with the venue's
      document class from `config/venues.toml` (an unknown venue is `generic`,
      with a warning), and `refs.bib`, built by `export_bib.py` with only the
-     cited papers. Each `P-XXXX` in the text becomes `\cite{key}`; one in
-     code or a URL is left as it is.
+     cited papers (in the outline's `lang`). Each `P-XXXX` in the text becomes
+     `\cite{key}`; one in code or a URL is left as it is. A grey-literature
+     note (`source_type: gris`, a web page) is a `@misc` with
+     `howpublished = {\url{…}}` and `note = {Accedido el <fecha>}` (`Accessed
+     <date>` in English).
+   - **Layout.** The `front` section becomes `\begin{abstract}` (acmart:
+     before `\maketitle`, as the class requires, followed by a commented
+     placeholder for the CCS concepts the researcher pastes from
+     dl.acm.org/ccs and by `\keywords`; article: after `\maketitle`, with the
+     keywords at its end). Body sections and subsections each get
+     `\label{kairo:sec:<id>}`; `\label{kairo:body-end}` closes the body.
+     Appendix sections go after the bibliography under `\appendix`. A venue
+     that wants its required appendices before the references (USENIX:
+     `required_before_refs`) gets them there, under the title it requires
+     (`Ethical Considerations`, `Open Science`), still outside the body pages.
+   - **Figures** — only registered ones. `Projects/<slug>/Figuras/registro.json`
+     (written by `figures.py`) lists `{id: F-001, path: Figuras/<file>.pdf|.png,
+     sha256, caption, source, script, commit, wide}`. In a section, write
+     `[[figura F-001]]` on its own line; the export writes a `figure`
+     (`figure*` when `wide`) with `\includegraphics`, the escaped caption
+     (acmart: also `\Description`) and `\label{fig:F-001}`, and copies the
+     file into `latex-<thread>/figuras/`. `[[ref F-001]]` in the text becomes
+     `\ref{fig:F-001}`. It refuses (exit 3) an id not in the registry, a
+     missing file, a file outside the project's `Figuras/`, and a file whose
+     sha256 is not the registered one (regenerate and re-register it). Never
+     draw or copy a figure into the manuscript any other way.
+   - **Tables.** A markdown table becomes a booktabs `tabular` in a `table`
+     (pandoc's `longtable` does not work in two columns); `table*` when it
+     has more columns than the venue's `wide_table_cols`, or when a line
+     `[[tabla ancha]]` comes just before it. A table generated by
+     `estimate.py tabla-latex` is included with `[[tabla-latex <file>.tex]]`
+     on its own line: only from `Manuscritos/tablas/`, checked against a
+     strict allow-list of tabular commands (anything else refuses), inlined
+     as it is — never retype the numbers of a generated table. Any other
+     `[[figura …]]` / `[[ref …]]` / `[[tabla …]]` form refuses.
    - It needs **pandoc** (`winget install --id JohnMacFarlane.Pandoc`; without
      it the export refuses and says so). Pandoc reads the sections with raw
      TeX and raw attributes off, so a `\command` or a `{=latex}` span written
@@ -141,21 +203,77 @@ at the end. The outline, not this skill, decides the sections: each has a
      else refuses the export (exit 3), naming the section and the command; so
      do a bare `$`, a math delimiter inside math or a closer outside it, TeX's
      `^^` notation, an environment that is not a list, quote, table, centre or
-     math array, and any code block (`verbatim`). The `\cite` commands are
-     added after this check.
+     math array, and any code block (`verbatim`). The figures, tables,
+     `\ref`, `\cite`, abstract and appendix commands are added after this
+     check, by the exporter, from checked files and validated ids only.
+   - **Anonymous review** (`--anonymous`): acmart gets `[sigconf,review,
+     anonymous]` (the venue's `anonymous_options`), the article classes get
+     no author block, the acknowledgments section is left out (warning), and
+     stdout carries `anonymity`: the anonymity findings of `check-venue`.
    - With **latexmk** (a TeX distribution) it also compiles the PDF, run with
      `-no-shell-escape`, with `TEXINPUTS`, `TEXMF*`, `BIBINPUTS` and
      `BSTINPUTS` removed from its environment, and with `openin_any=p` /
      `openout_any=p`. Those two bind only under TeX Live; MiKTeX ignores them,
-     so the allow-list above is the guard. It also
-     reports `pages` (the body: the page where the references start) against
-     the venue's `body_pages` limit as `limit` and `over`. Without latexmk,
-     `pages` and `over` are `null`.
-   - stdout is JSON `{tex, bib, pages, limit, over, uncited}`. `uncited`
-     lists P-ids with no `Papers/` note, left as plain text. `warning`
-     appears when the venue was unknown, LaTeX failed (`latex_failed: <last
-     error>`) or the page label was not found. Report every warning, and an
-     `over: true`, to the researcher.
+     so the allow-list above is the guard. USENIX's `usenix-2020-09.sty` is
+     not in TeX distributions: the researcher copies it into the latex
+     folder. It reports `pages` (the body: the page `kairo:body-end` is on)
+     against the venue's `body_pages` limit as `limit` and `over`, and
+     `sections_pages`: per section, the pages between its label and the next
+     one (whole pages, ±1), its `budget_pages` and `over`. Without latexmk,
+     `pages` and `over` are `null`. `manuscript.py pages --vault … --project-dir
+     … --thread …` rebuilds and reports the same at any time (`--no-build`
+     reads the last `main.aux`).
+   - stdout is JSON `{tex, bib, pages, limit, over, sections_pages, uncited,
+     figures, anonymous, latex_source}`. `uncited` lists P-ids with no
+     `Papers/` note, left as plain text. `warning` appears when the venue was
+     unknown, LaTeX failed (`latex_failed: <last error>`), the page label was
+     not found, a section was left out in anonymous mode or a referenced
+     figure is not included. Report every warning, and an `over: true`, to
+     the researcher.
+   - **LaTeX as the source.** When the researcher will polish the paper in
+     LaTeX, export with `--to-latex-source`: it writes
+     `latex-<thread>/kairo-source.json` (export time, sha256 of `main.tex`),
+     and from then on `export` refuses to overwrite the folder (exit 3);
+     `--force` overwrites it, keeping a copy `main.<time>.tex.bak`. While
+     LaTeX is the source, run before every submission
+     `manuscript.py sync-check --vault … --project-dir … --thread …` (exit 0
+     clean, 4 problems; JSON): in each `resultado` section bound to a study
+     question, every number of the vault's text that writes one of the
+     question's estimates (its `estimate-json`, as printed or as a
+     percentage) must still be in that section of `main.tex` (`removed`,
+     `changed`; numbers only `main.tex` has are listed as `added`); every
+     `\cite` key must be in `refs.bib` and belong to a `Papers/` note; every
+     `\includegraphics` file must have the sha256 of a registered figure. A
+     changed number is fixed in the vault first (or `main.tex` brought back
+     to it), never by editing the estimate.
+6. **Check the venue** before submitting:
+   `manuscript.py check-venue --vault … --project-dir … --thread …
+   [--venue <name>]` (exit 0 / 4; a JSON list of `{check, severity:
+   problema | aviso, detail}`). It reads `main.tex` when it is the source,
+   else the sections, and checks:
+   - **anonimato** (venues with `double_blind`): no name of the hub's
+     `authors:`, the hub's `code_remote` or a line of
+     `Projects/<slug>/anonimato.txt` (the researcher writes it: own names,
+     lab, own repository URLs) — `problema`; any github / gitlab / bitbucket
+     URL and first-person self-references ("our previous work", "nuestro
+     trabajo previo") — `aviso`: cite your own work in the third person; an
+     acknowledgments section with text.
+   - **paginas**: body pages over the venue's `body_pages` (`problema`), a
+     required appendix over `required_max_pages` (`problema`), a section over
+     its `budget_pages` (`aviso`); without a compiled `main.aux`, an `aviso`.
+   - **apendices**: each id in the venue's `requires` exists, is an appendix
+     and is written. Only USENIX Security requires them (its 2026 CFP:
+     `Ethical Considerations` and `Open Science`, each up to one page, after
+     the body and before the references); ACM CCS (2025 CFP) requires none.
+     The source of each rule is the venue's `cfp` in `config/venues.toml`.
+   - **declaracion_ia**: the AI-use disclosure exists (a written
+     `ai-disclosure` section, or the `## Declaración de uso de IA` heading of
+     Step 4 — then an `aviso` that the export does not carry it), and the
+     submitted text keeps none of its internal parts marked "eliminar antes
+     de enviar". Neither CFP requires a disclosure; Kairo does.
+   Report every `problema` and `aviso` to the researcher; never edit the
+   text to hide a finding (rewording a self-reference into the third person
+   is the researcher's call, made with them).
 
 Never fill a placeholder with "to be completed" prose, and never draft a
 `resultado` section around a claim that has not passed its gate "to show the

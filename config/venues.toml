@@ -1,18 +1,50 @@
 # Congresos a los que apunta un manuscrito. `manuscript.py init --venue <nombre>`
 # solo acepta los de esta lista; `body_pages = 0` es sin límite. `excludes` son
 # las partes que no cuentan para el límite de páginas del cuerpo.
+#
+# Campos opcionales (los leen `manuscript.py export` y `check-venue`):
+#   double_blind          revisión doble ciego: check-venue revisa el anonimato
+#   anonymous_options     opciones de clase para `export --anonymous` (acmart:
+#                         por defecto `options` + review,anonymous)
+#   requires              ids de sección que el congreso exige como apéndice
+#   required_titles       título exigido para cada uno de esos apéndices
+#   required_before_refs  esos apéndices van tras el cuerpo y antes de las
+#                         referencias (fuera del límite de páginas del cuerpo)
+#   required_max_pages    páginas como máximo de cada apéndice exigido
+#   wide_table_cols       una tabla con más columnas ocupa las dos (table*);
+#                         0 = nunca de forma automática
+#   cfp                   de dónde salen estas reglas
 
+# ACM CCS (CFP de 2025, sigsac.org/ccs/CCS2025/call-for-papers): 12 páginas sin
+# bibliografía ni apéndices, doble ciego, plantilla acmart sigconf. No exige
+# apéndices de ética ni de ciencia abierta.
 [acm-sigconf]
 class = "acmart"
 options = "sigconf"
+anonymous_options = "sigconf,review,anonymous"
 body_pages = 12
 excludes = ["references", "appendix"]
+double_blind = true
+requires = []
+wide_table_cols = 4
+cfp = "https://www.sigsac.org/ccs/CCS2025/call-for-papers/"
 
+# USENIX Security (CFP de 2026): 13 páginas de cuerpo; los apéndices «Ethical
+# Considerations» y «Open Science» son obligatorios, van tras el cuerpo y antes
+# de las referencias, ocupan hasta una página cada uno y no cuentan para el
+# límite del cuerpo. Plantilla USENIX sin modificar; doble ciego.
 [usenix]
 class = "article"
 package = "usenix-2020-09"
 body_pages = 13
 excludes = ["references", "appendix"]
+double_blind = true
+requires = ["ethics", "open-science"]
+required_titles = { ethics = "Ethical Considerations", open-science = "Open Science" }
+required_before_refs = true
+required_max_pages = 1
+wide_table_cols = 4
+cfp = "https://www.usenix.org/conference/usenixsecurity26/call-for-papers"
 
 [generic]
 class = "article"
