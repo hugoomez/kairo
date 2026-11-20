@@ -12,6 +12,10 @@ skill, step 7).
 `generated:` is read from Estado-del-arte.md frontmatter; if absent, falls back
 to the file's last git commit time, then its mtime.
 
+A project whose hub says `sota_map: diferido` (the light start: a novelty
+check in Novedad.md, the map built later on request) is never flagged: its map
+is deferred on purpose, and next_steps.py carries the one reminder.
+
 Standard library only. Always exits 0.
 """
 
@@ -60,6 +64,12 @@ def parse_dt(s: str):
     except ValueError:
         return None
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def sota_deferred(hub_fm: dict) -> bool:
+    """`sota_map: diferido` in the hub (an inline `# comment` and quotes aside)."""
+    v = re.split(r"\s+#", str(hub_fm.get("sota_map") or ""), maxsplit=1)[0]
+    return v.strip().strip("\"'").lower() == "diferido"
 
 
 def sota_generated(proj_dir: Path):
@@ -113,8 +123,11 @@ def main() -> int:
         hub = proj_dir / "_hub.md"
         if not hub.is_file():
             continue
-        proj_id = frontmatter(hub.read_text(encoding="utf-8")).get("id")
+        hub_fm = frontmatter(hub.read_text(encoding="utf-8"))
+        proj_id = hub_fm.get("id")
         if not proj_id or proj_id not in target_projects:
+            continue
+        if sota_deferred(hub_fm):
             continue
         sota, gen_dt = sota_generated(proj_dir)
         if sota is None or gen_dt is None:

@@ -15,15 +15,23 @@ type: <ciencia | producto | hibrido>
 #   ligero   — type ciencia, search + screening + abstract-only cards + BibTeX:
 #              no full text, figures, map or hypotheses (minutes, not hours)
 #   medicion — type ciencia, a measurement study (estimate a quantity, not test a
-#              hypothesis): needs code_repo; no seed hypotheses; the end of
-#              create-project offers kairo:plan-study; step 3 (related
-#              projects) still runs
+#              hypothesis): needs code_repo; no seed hypotheses; light start
+#              (sota_map: diferido) unless the researcher wants the map now;
+#              an ethics plan (etica:); the end of create-project offers
+#              kairo:plan-study, pilot first; step 3 (related projects) still runs
 template: <teorico | aplicado | producto | ciencia | revision | corpus | ligero | medicion>
 # seed_hypotheses — whether create-project seeds hypotheses from the gaps
 # (revision, corpus, medicion: false). Hypotheses can always be generated later.
 seed_hypotheses: true
-# sota_map — whether create-project builds Estado-del-arte.md (corpus: false;
-# step 7 can be run alone later).
+# sota_map — whether create-project builds Estado-del-arte.md:
+#   true     — step 7 builds the map at creation;
+#   false    — no map (corpus, ligero); step 7 can be run alone later;
+#   diferido — light start (medicion's default, allowed for any template): only a
+#              novelty check — a focused search for prior work on the same quantity
+#              or question, its few confirmed papers ingested, a short cited
+#              Novedad.md — and no map yet. «Construye el estado del arte» runs
+#              step 7 later and sets this to true. While diferido, the staleness
+#              hook stays quiet and next_steps.py lists one `menor` reminder.
 sota_map: true
 # fulltext — whether ingestion fetches each paper's full text and figures
 # (ligero: false — abstract-only notes; `ingest_paper.py rebuild` adds the text
@@ -48,6 +56,11 @@ default_linea_publicacion: false
 code_repo: <path>
 code_remote: none
 code_visibility: private
+# etica — medicion (and any study on third-party data): vault-relative path of the
+# project's ethics plan, copied at creation from templates/ethics-plan-template.md.
+# The `## Ética` of every measurement and pilot plan points to it. Delete the line
+# when the project has none.
+etica: Projects/<slug>/Etica.md
 # deadline — optional
 deadline: <YYYY-MM-DD>
 # compute_budget — optional (e.g. "500 GPU-h" or a currency figure)

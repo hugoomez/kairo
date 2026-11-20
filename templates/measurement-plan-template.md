@@ -62,4 +62,4 @@ Ejemplo inventado.>
 
 ## Ética
 
-<Datos personales, consentimiento, riesgos y cómo se protegen. Qué material no puede salir del entorno del investigador.>
+<El marco ético del estudio está en el plan ético del proyecto (el campo `etica:` del hub, Projects/<slug>/Etica.md, hecho desde templates/ethics-plan-template.md): partes afectadas, qué se recoge y qué nunca, material sensible, condiciones de uso, comité, divulgación, conservación y publicación. Aquí solo lo que esta pregunta añade o cambia: datos personales, consentimiento, riesgos propios y cómo se protegen; qué material no puede salir del entorno del investigador. Ejemplo inventado: igual que Etica.md; además, la columna `huella` del estimando est-4 nunca se publica, ni siquiera agregada por sitio.>

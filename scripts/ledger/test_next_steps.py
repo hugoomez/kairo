@@ -68,6 +68,36 @@ class NextSteps(unittest.TestCase):
         r = self.run_json()
         self.assertNotIn("_hub.md:compute_budget", {i["target"] for i in self.kinds(r, "hub_sin_valor")})
 
+    def set_hub_field(self, line: str) -> None:
+        hub = self.p / "_hub.md"
+        hub.write_text(hub.read_text(encoding="utf-8").replace("---\n", f"---\n{line}\n", 1), encoding="utf-8")
+
+    def test_sota_map_diferido_one_menor_item(self):
+        self.assertEqual(self.kinds(self.run_json(), "estado_del_arte_diferido"), [])   # no field: nothing
+        self.set_hub_field("sota_map: diferido  # light start")
+        (self.p / "Novedad.md").write_text("---\ntipo: novedad\n---\n\n# Novedad — x\n", encoding="utf-8")
+        items = self.kinds(self.run_json(), "estado_del_arte_diferido")
+        self.assertEqual(len(items), 1)
+        self.assertEqual((items[0]["severity"], items[0]["target"]), ("menor", "_hub.md:sota_map"))
+        self.assertIn("Novedad.md", items[0]["message"])
+        self.assertIn("estado del arte", items[0]["action"])
+        (self.p / "Estado-del-arte.md").write_text("---\ngenerated: 2031-01-01\n---\n", encoding="utf-8")
+        items = self.kinds(self.run_json(), "estado_del_arte_diferido")
+        self.assertEqual(len(items), 1)
+        self.assertIn("sota_map: true", items[0]["action"])
+
+    def test_sota_map_true_or_false_no_item(self):
+        for v in ("true", "false"):
+            shutil.rmtree(self.p)
+            self.p = self.v.project()
+            self.set_hub_field(f"sota_map: {v}")
+            self.assertEqual(self.kinds(self.run_json(), "estado_del_arte_diferido"), [])
+
+    def test_etica_path_is_not_a_placeholder(self):
+        self.set_hub_field("etica: Projects/proyecto-inventado/Etica.md")
+        r = self.run_json()
+        self.assertNotIn("_hub.md:etica", {i["target"] for i in r["items"]})
+
     def test_worth_fields(self):
         v, p = self.v, self.p
         v.hypothesis(p, "H-9001", "Sin evaluar.")
