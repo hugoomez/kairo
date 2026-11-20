@@ -28,7 +28,10 @@ Included (--question Q-XXXX, instead of --note): the question's frontmatter `id`
     holds estimate.py's output in a ```estimate-json block); its `linked_plan`
     (the design's plan folder, same project) with frontmatter id, question,
     frozen_at, frozen_commit and ## Población y marco muestral, ## Inclusión y
-    exclusión, ## Estimandos, ## Clasificadores, ## Intervalos. Never a units
+    exclusión, ## Estimandos, ## Clasificadores, ## Intervalos, plus ## Enmiendas
+    (labelled: append-only amendments after the freeze; every estimand one changes
+    is a declared deviation) and, for a design with `etiqueta` (exploratoria),
+    ## Por qué es exploratoria and a line naming the label. Never a units
     file, and not the plan's ethics section.
 
 Everything else is excluded -- notably ## Revisión del ciclo, ## Hipótesis
@@ -820,7 +823,16 @@ def build(vault: str, note: str, experiments: list[str],
 QUESTION_SECTIONS = ("Pregunta", "Población y marco", "Estimandos", "Resultado")
 PLAN_FM_KEYS = ("id", "question", "frozen_at", "frozen_commit")
 PLAN_SECTIONS = ("Población y marco muestral", "Inclusión y exclusión", "Estimandos",
-                 "Clasificadores", "Intervalos")
+                 "Clasificadores", "Intervalos", "Por qué es exploratoria", "Enmiendas")
+# Only present in an amended plan (Enmiendas) or an exploratory one: an un-amended
+# confirmatory plan's packet is byte-identical to before.
+PLAN_LABELS = {
+    "Enmiendas": ("Enmiendas (registro append-only posterior al congelado: cada entrada da su "
+                  "fecha, quién, datos_vistos, motivo, el commit que la registró y el cambio; los "
+                  "bloques efectivos son los congelados con estas enmiendas aplicadas en orden, y "
+                  "cada estimando que una enmienda cambia o añade es una desviación declarada, no "
+                  "un resultado confirmatorio)"),
+}
 
 
 def build_question(vault: str, qid: str) -> tuple[str, dict]:
@@ -881,8 +893,16 @@ def build_question(vault: str, qid: str) -> tuple[str, dict]:
 
     add(note, "question", f"Pregunta: {qid}", HYP_FM_KEYS, QUESTION_SECTIONS,
         {"Resultado": "Resultado (salida de estimate.py en el bloque estimate-json, y su lectura)"})
-    add(plan, "plan", f"Plan de medición congelado: {plan_id}", PLAN_FM_KEYS, PLAN_SECTIONS,
-        {h: f"{h} (plan congelado)" for h in PLAN_SECTIONS})
+    design = designs.design_for_id(designs.load(), qid)
+    etiqueta = design.get("etiqueta") if design else None
+    if etiqueta:
+        out.extend([f"- Etiqueta del diseño: {etiqueta}. El plan no se congeló antes de los datos: "
+                    f"lo que mide es citable solo como {etiqueta}, nunca como confirmatorio.", ""])
+        add(plan, "plan", f"Plan {etiqueta} (sin congelar): {plan_id}", PLAN_FM_KEYS, PLAN_SECTIONS,
+            {h: PLAN_LABELS.get(h, f"{h} (plan {etiqueta})") for h in PLAN_SECTIONS})
+    else:
+        add(plan, "plan", f"Plan de medición congelado: {plan_id}", PLAN_FM_KEYS, PLAN_SECTIONS,
+            {h: PLAN_LABELS.get(h, f"{h} (plan congelado)") for h in PLAN_SECTIONS})
     if "```estimate-json" not in dict(body_sections(body)).get("Resultado", ""):
         out.extend(["(## Resultado no contiene bloque estimate-json: no hay salida de estimate.py "
                     "que contrastar)", ""])

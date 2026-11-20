@@ -620,7 +620,7 @@ def test_gate_not_applicable_to_hypothesis(vault):
 
 def test_gate_names_match_registry():
     assert set(study_gates.GATES) == {"plan_frozen", "estimates_reproducible", "classifiers_validated",
-                                      "verifier_no_errors", "avisos_cerrados"}
+                                      "verifier_no_errors", "avisos_cerrados", "avisos_enviados"}
 
 
 # ---- build_graph ---------------------------------------------------------

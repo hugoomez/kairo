@@ -60,6 +60,11 @@ state name and gate comes from the design; the gate is study_status.gate:
   piloto_sin_estimar (no estimate-json in `## Resultado`, menor) / piloto_por_cerrar
   (estimated but still `abierta`) / piloto_explorado_sin_estudio (explorada, and the
   project has no live medicion question → plan-study).
+  Exploratory questions (QE-XXXX, design `exploratoria`, citable with the label
+  `exploratorio`, plan never frozen): pregunta_sin_plan / exploratoria_sin_estimar (menor) /
+  exploratoria_por_cerrar (estimated, gate passes, still `abierta`) / gate_pendiente.
+  avisos_sin_cerrar counts a running embargo as open unless every node it concerns has a
+  plan that chose `"avisos": "enviados"`.
   plazo                      hub `deadline`: crítico under 7 days, importante under 21,
                              while a `linea_publicacion` question is not terminal.
   recoleccion_activa (menor) / recoleccion_fallida (importante, `fallida` or
@@ -91,7 +96,7 @@ import project_scan as ps  # noqa: E402
 import study_gates as sg  # noqa: E402
 import study_status as sst  # noqa: E402
 from notes import read_note, section, split_note  # noqa: E402
-from plan_blocks import PlanError, read_plan  # noqa: E402
+from plan_blocks import PlanError, avisos_mode, read_effective  # noqa: E402
 from send_guard import is_flagged, is_model_notes  # noqa: E402
 
 __version__ = "1.1.0"
@@ -322,7 +327,8 @@ STUDY_KINDS = frozenset({
     "plazo", "pregunta_sin_plan", "plan_sin_congelar", "plan_congelado_sin_recoleccion",
     "dataset_registrado_antes_del_congelado", "en_recoleccion_sin_units_dataset", "clasificador_sin_validar",
     "gate_pendiente", "avisos_sin_cerrar", "piloto_sin_plan", "piloto_sin_decision", "piloto_sin_estimar",
-    "piloto_por_cerrar", "piloto_explorado_sin_estudio", "recoleccion_activa", "recoleccion_fallida"})
+    "piloto_por_cerrar", "piloto_explorado_sin_estudio", "recoleccion_activa", "recoleccion_fallida",
+    "exploratoria_sin_estimar", "exploratoria_por_cerrar"})
 PLAN_STUDY = "kairo:plan-study"
 START_COLLECTION = ("El investigador, en la app: Recolecciones → «Empezar la recolección» (pasa la pregunta a "
                     "en_recoleccion; study_status.py rechaza ese paso dentro de una sesión de agente).")
@@ -334,7 +340,9 @@ GATE_ACTIONS = {
                              "o con agreement.py validate.",
     "verifier_no_errors": "kairo:estimate, paso 5 (verificación independiente sobre el paquete --question).",
     "avisos_cerrados": "El investigador cierra los avisos en el panel Avisos o espera al fin del embargo.",
+    "avisos_enviados": "El investigador envía los avisos pendientes y anota su fecha de embargo en el panel Avisos.",
 }
+AVISOS_CHECKS = ("avisos_cerrados", "avisos_enviados")
 
 
 def _blank(v) -> bool:
@@ -343,6 +351,11 @@ def _blank(v) -> bool:
 
 def _is_pilot(design: dict) -> bool:
     return design.get("citable", True) is False
+
+
+def _is_exploratory(design: dict) -> bool:
+    """A citable design whose plan is never frozen (exploratoria): estimated from abierta."""
+    return not _is_pilot(design) and "plan_frozen" not in design["gate"]
 
 
 def _placeholder_text(text: str) -> bool:
@@ -389,8 +402,13 @@ def study_nodes(vault: Path, pdir: Path) -> list[dict]:
                 pp = read_note(plan_path)
                 plan_fm, plan_body = (pp[0], pp[1]) if pp else ({}, "")
             status = ps.scalar(fm, "status") or ""
+            try:
+                mode = avisos_mode(read_effective(plan_path)) if plan_path is not None else "cerrados"
+            except PlanError:
+                mode = "cerrados"
             out.append({
                 "id": nid, "design_name": dname, "design": design, "pilot": _is_pilot(design),
+                "exploratory": _is_exploratory(design), "avisos_mode": mode,
                 "path": p, "fm": fm, "status": status,
                 "terminal": status in design["terminal"],
                 "linea_publicacion": str(fm.get("linea_publicacion") or "").strip().lower() in ("true", "sí", "si", "yes"),
@@ -412,7 +430,7 @@ def _classifiers(n: dict) -> tuple[list[dict], str]:
     if n["plan_path"] is None:
         return [], ""
     try:
-        return read_plan(n["plan_path"])["classifiers"], ""
+        return read_effective(n["plan_path"])["classifiers"], ""
     except PlanError as e:
         return [], str(e)
 
@@ -508,7 +526,7 @@ def _gate_items(n: dict, g: dict, skip_classifiers: set[str], skip_avisos: bool,
             if line == sg.DATA_BEFORE_FREEZE:
                 data_first = True
                 continue
-            if row["name"] == "avisos_cerrados" and skip_avisos:
+            if row["name"] in AVISOS_CHECKS and skip_avisos:
                 continue
             if any(line.startswith(f"clasificador {c}: falta ") for c in skip_classifiers):
                 continue
@@ -538,9 +556,13 @@ def study(vault: Path, pdir: Path, pid: str, today: date, cols: list[dict]) -> t
     gates: dict[str, dict] = {}
     measure = [n for n in nodes if not n["pilot"]]
     live_measure = [n for n in measure if n["status"] != "descartada"]
-    collecting = [n for n in measure if n["status"] not in ("abierta", "") and not n["terminal"]]
+    collecting = [n for n in measure if not n["terminal"] and (
+        n["status"] not in ("abierta", "") or (n["exploratory"] and n["has_result"]))]
     avisos, avisos_problem = sg.count_avisos(pdir, today)
-    open_avisos = (avisos["total"] - avisos["cerrados"]) if avisos else 0
+    # `enviados` (the plan's choice) lets a running embargo pass; one `cerrados` node rules
+    only_sent = bool(collecting) and all(n["avisos_mode"] == "enviados" for n in collecting)
+    open_keys = ("pendiente", "sin_fecha", "desconocido") + (() if only_sent else ("embargo",))
+    open_avisos = sum(avisos[k] for k in open_keys) if avisos else 0
     skip_avisos = False
     if collecting and (avisos_problem or open_avisos):
         sev = "importante" if any(_leads_to_publishable(n) for n in collecting) else "menor"
@@ -548,11 +570,12 @@ def study(vault: Path, pdir: Path, pid: str, today: date, cols: list[dict]) -> t
             parts = [f"{avisos[k]} {lbl}" for k, lbl in (
                 ("pendiente", "pendiente(s)"), ("sin_fecha", "enviado(s) sin fecha de embargo"),
                 ("embargo", "enviado(s) con el embargo sin vencer"), ("desconocido", "con estado desconocido"))
-                if avisos[k]]
-            msg = f"Avisos sin cerrar: {', '.join(parts)} (de {avisos['total']})."
+                if avisos[k] and k in open_keys]
+            msg = f"Avisos sin {'enviar' if only_sent else 'cerrar'}: {', '.join(parts)} (de {avisos['total']})."
         else:
             msg = f"Avisos: {avisos_problem}."
-        items.append(item("avisos_sin_cerrar", sev, "Avisos/registro.json", msg, GATE_ACTIONS["avisos_cerrados"]
+        action = GATE_ACTIONS["avisos_enviados" if only_sent else "avisos_cerrados"]
+        items.append(item("avisos_sin_cerrar", sev, "Avisos/registro.json", msg, action
                           + " El agente nunca lee Avisos/.", [n["id"] for n in collecting]))
         skip_avisos = True
 
@@ -593,6 +616,32 @@ def study(vault: Path, pdir: Path, pid: str, today: date, cols: list[dict]) -> t
                                       f"## Decisión de {n['plan_id']} al investigador.", [nid]))
                 else:
                     items += _gate_items(n, g, set(), skip_avisos)[0]
+            continue
+
+        if n["exploratory"]:  # citable with its label, never frozen: estimated from abierta
+            d = n["design"]
+            if n["plan_path"] is None:
+                items.append(item("pregunta_sin_plan", "importante", nid,
+                                  f"{nid} está abierta y no tiene plan{': ' + n['plan_problem'] if n['plan_problem'] else ''}.",
+                                  f"{PLAN_STUDY} («Una pregunta exploratoria»): redacta su plan "
+                                  f"{d['plan_prefix']}-XXXX y enlázalo en linked_plan.", [nid]))
+                continue
+            if not n["has_result"]:
+                items.append(item("exploratoria_sin_estimar", "menor", nid,
+                                  f"La pregunta exploratoria {nid} ({st}) no tiene estimaciones en ## Resultado.",
+                                  f"kairo:estimate sobre {nid} cuando su dataset esté registrado.", [nid]))
+                continue
+            if _leads_to_publishable(n):
+                g = sst.gate(vault, nid)
+                gates[nid] = g
+                if g["ok"]:
+                    items.append(item("exploratoria_por_cerrar", "importante", nid,
+                                      f"La pregunta exploratoria {nid} tiene estimaciones y su puerta se cumple, "
+                                      f"pero sigue «{st}».",
+                                      f"kairo:estimate: aplicar --to {d['publishable']}; sus cifras se citan con la "
+                                      f"etiqueta «{d.get('etiqueta', 'exploratorio')}».", [nid]))
+                else:
+                    items += _gate_items(n, g, set(), skip_avisos, skip_units=not n["units_dataset"])[0]
             continue
 
         # a study question

@@ -13,6 +13,15 @@ puede comprobar (sin git, git o un script fallan o tardan más de TIMEOUT s), fa
   - la versión del plan en `frozen_commit` (`git show`) tiene los mismos Estimandos,
     Clasificadores e Intervalos que el fichero actual («el plan cambió después de
     congelarlo: <sección>»);
+  - enmiendas (`## Enmiendas`, las escribe `freeze_plan.py amend`; plan_blocks): un plan
+    congelado solo cambia añadiendo entradas. Cada entrada En nombra el `commit` que la
+    registró; ese commit existe, es antecesor de HEAD, es posterior a `frozen_commit` y a
+    la entrada anterior, contiene En igual que ahora (sin contar su línea `- commit:`) y su
+    padre no la contiene («la enmienda En cambió después de registrarla»). Ninguna entrada
+    que aparezca en un commit posterior a `frozen_commit` puede faltar ahora («se borró»).
+    Una enmienda que declara `datos_vistos: no` registrada cuando el dataset de unidades
+    ya estaba en el registro falla. Los bloques efectivos (plan + enmiendas) deben ser
+    válidos;
   - congelar antes de los datos: el primer commit en que `Datos/registro.json` del proyecto
     contiene el dataset `units_dataset` del nodo (por nombre, o por la sha256 que el registro
     actual le da: renombrarlo no oculta un registro anterior del mismo fichero) no es
@@ -46,6 +55,16 @@ puede comprobar (sin git, git o un script fallan o tardan más de TIMEOUT s), fa
   `sin_respuesta`, o `enviado` con `embargo_hasta` (fecha ISO) anterior a hoy. Sin registro,
   falla con «sin registro de avisos»; `[]` pasa. Solo se informa de cuántos avisos y por qué,
   nunca de a quién.
+- `avisos_enviados`: como `avisos_cerrados`, pero un `enviado` con el embargo sin vencer
+  pasa; `pendiente`, `enviado` sin fecha de embargo o un estado desconocido fallan. Solo se
+  justifica cuando la publicación da únicamente agregados (nada que identifique a quien se
+  avisó). La elige el plan, no el diseño: `resolve_check` cambia `avisos_cerrados` por
+  `avisos_enviados` cuando los bloques efectivos del plan enlazado dicen
+  `"avisos": "enviados"` en `## Intervalos` (un bloque congelado: solo cambia por enmienda).
+  Un plan ilegible deja `avisos_cerrados`, la más estricta.
+
+`plan_info(node_path, fm)` resume, para la salida de la puerta, las enmiendas del plan y su
+elección de avisos.
 
 Ningún mensaje lleva filas ni valores de celdas de los ficheros de datos. Standard library only.
 """
@@ -67,7 +86,18 @@ if str(HERE) not in sys.path:
 import designs as _designs  # noqa: E402
 import verifications as vf  # noqa: E402
 from notes import read_note, section  # noqa: E402
-from plan_blocks import PlanError, read_plan, read_plan_text  # noqa: E402
+from notes import split_note  # noqa: E402
+from plan_blocks import (  # noqa: E402
+    PENDING,
+    PlanError,
+    amendment_contents,
+    avisos_mode,
+    read_amendments,
+    read_effective,
+    read_effective_text,
+    read_plan,
+    read_plan_text,
+)
 
 ANALYSIS = HERE.parent / "analysis"
 if str(ANALYSIS) not in sys.path:
@@ -217,33 +247,68 @@ def _frozen_in_git(plan_path: Path, pid: str, sha: str, node_path: Path, fm: dic
                     for key, label in PLAN_PARTS if frozen[key] != current[key]]
         except PlanError as e:
             out.append(f"plan {pid} ilegible (congelado o actual): {e}")
-    units = str(fm.get("units_dataset") or "").strip()
-    if _blank(units):
-        return out + ["sin units_dataset"]
+    firsts, data_lines = _units_registration(top, sha, node_path, fm)
+    return out + _amendments_in_git(top, rel, pid, sha, plan_path, firsts) + data_lines
+
+
+def _units_spec(node_path: Path) -> tuple[dict | None, str | None]:
+    """The question's units tables (estimate.parse_units_spec: a name, or a map table -> name)."""
+    if str(ANALYSIS) not in sys.path:
+        sys.path.insert(0, str(ANALYSIS))
+    import estimate  # noqa: PLC0415
+    try:
+        spec = estimate.units_map_from_question(node_path)
+    except ValueError as e:
+        return None, f"units_dataset mal escrito: {e}"
+    if not spec or not estimate.units_datasets(spec):
+        return None, None
+    return spec, None
+
+
+def _units_registration(top: Path, sha: str, node_path: Path, fm: dict) -> tuple[list[str], list[str]]:
+    """(first commits registering the data the freeze must precede, what plan_frozen reports).
+
+    Every units table of the question is checked. A table with lineage (lineage.py) is checked
+    through its roots (the raw collections), which must be registered after the freeze; the
+    derived table itself may be registered or re-derived later. A table with no lineage must
+    itself follow the freeze."""
+    spec, bad = _units_spec(node_path)
+    if bad:
+        return [], [bad]
+    if spec is None:
+        return [], ["sin units_dataset"]
+    import estimate  # noqa: PLC0415  (on sys.path through _units_spec)
     reg = Path(node_path).parents[1] / "Datos" / "registro.json"
     try:
         reg_rel = reg.resolve().relative_to(top).as_posix()
     except ValueError:
-        return out + ["Datos/registro.json está fuera del repositorio del vault"]
-    first = _first_registration(top, reg_rel, units, _current_sha(reg, units))
-    if first is None:
-        return out + [f"el dataset {units!r} no está registrado en ningún commit del vault: "
-                      "haz commit de Datos/registro.json (después de congelar el plan)"]
-    lineage = _units_lineage(reg, units)
-    if lineage is None:                       # no lineage: the units dataset itself must follow the freeze
-        return out + _registered_before(top, first, sha)
-    roots, problems = lineage
-    if problems:
-        return out + [f"linaje de {units!r}: {p}" for p in problems]
-    checks: list[str] = []
-    for name, root_sha in roots:
-        rfirst = _first_registration(top, reg_rel, name, root_sha)
-        if rfirst is None:
-            out.append(f"el dataset {name!r} (origen de {units!r}) no está registrado en ningún commit del vault: "
+        return [], ["Datos/registro.json está fuera del repositorio del vault"]
+    firsts: list[str] = []
+    out: list[str] = []
+    for units in estimate.units_datasets(spec):
+        first = _first_registration(top, reg_rel, units, _current_sha(reg, units))
+        if first is None:
+            out.append(f"el dataset {units!r} no está registrado en ningún commit del vault: "
                        "haz commit de Datos/registro.json (después de congelar el plan)")
             continue
-        checks += [c for c in _registered_before(top, rfirst, sha) if c not in checks]
-    return out + checks
+        lineage = _units_lineage(reg, units)
+        if lineage is None:                   # no lineage: the units dataset itself must follow the freeze
+            firsts.append(first)
+            out += [c for c in _registered_before(top, first, sha) if c not in out]
+            continue
+        roots, problems = lineage
+        if problems:
+            out += [f"linaje de {units!r}: {p}" for p in problems]
+            continue
+        for name, root_sha in roots:
+            rfirst = _first_registration(top, reg_rel, name, root_sha)
+            if rfirst is None:
+                out.append(f"el dataset {name!r} (origen de {units!r}) no está registrado en ningún commit "
+                           "del vault: haz commit de Datos/registro.json (después de congelar el plan)")
+                continue
+            firsts.append(rfirst)
+            out += [c for c in _registered_before(top, rfirst, sha) if c not in out]
+    return firsts, out
 
 
 def _registered_before(top: Path, first: str, frozen: str) -> list[str]:
@@ -269,6 +334,79 @@ def _units_lineage(reg: Path, units: str) -> tuple[list[tuple[str, str | None]],
         return None
     roots, problems = lineage.lineage_roots(data, units)
     return [(str(r.get("name")), str(r.get("sha256") or "").strip() or None) for r in roots], problems
+
+
+def _is_ancestor(top: Path, a: str, b: str) -> bool:
+    r = _git(["merge-base", "--is-ancestor", a, b], top)
+    if r.returncode not in (0, 1):
+        raise _Fail("git merge-base falló; no se pueden comprobar las enmiendas")
+    return r.returncode == 0
+
+
+def _contents_at(top: Path, rev: str, rel: str) -> dict[str, str]:
+    shown = _git(["show", f"{rev}:{rel}"], top)
+    return amendment_contents(shown.stdout) if shown.returncode == 0 else {}
+
+
+def _amendments_in_git(top: Path, rel: str, pid: str, sha: str, plan_path: Path,
+                       first_regs: list[str]) -> list[str]:
+    """Append-only amendments: each entry unchanged since the commit that recorded it, in
+    order after the freeze, none removed, and `datos_vistos: no` only before the data."""
+    try:
+        text = plan_path.read_text(encoding="utf-8-sig")
+        read_effective_text(text)  # the effective blocks are valid
+        parts = split_note(text)
+        entries = read_amendments(parts[1] if parts else text)
+    except (OSError, UnicodeDecodeError) as e:
+        return [f"plan {pid}: no se pudo leer ({e})"]
+    except PlanError as e:
+        return [f"plan {pid}: enmiendas inválidas: {e}"]
+    log = _git(["log", "--format=%H", f"{sha}..HEAD", "--", rel], top)
+    if log.returncode != 0:
+        return [f"plan {pid}: git log falló; no se pueden comprobar las enmiendas"]
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in log.stdout.split():
+        seen |= set(_contents_at(top, c, rel))
+    now = {a["id"] for a in entries}
+    out += [f"la enmienda {g} del plan {pid} se borró: las enmiendas no se borran ni se reescriben"
+            for g in sorted(seen - now)]
+    prev = sha
+    for a in entries:
+        eid, c = a["id"], a["commit"]
+        if c == PENDING:
+            out.append(f"enmienda {eid} de {pid}: sin commit registrado (pendiente); termínala con "
+                       f"freeze_plan.py amend --reanudar")
+            continue
+        if _git(["cat-file", "-e", f"{c}^{{commit}}"], top).returncode != 0:
+            out.append(f"enmienda {eid} de {pid}: su commit {c} no existe en el repositorio del vault")
+            continue
+        try:
+            if not _is_ancestor(top, c, "HEAD"):
+                out.append(f"enmienda {eid} de {pid}: su commit {c[:10]} no es antecesor de HEAD")
+                continue
+            same = (_git(["rev-parse", f"{c}^{{commit}}"], top).stdout.strip()
+                    == _git(["rev-parse", f"{prev}^{{commit}}"], top).stdout.strip())
+            if same or not _is_ancestor(top, prev, c):
+                out.append(f"enmienda {eid} de {pid}: su commit {c[:10]} no es posterior al congelado "
+                           "y a la enmienda anterior")
+                continue
+            if _contents_at(top, c, rel).get(eid) != a["content"]:
+                out.append(f"la enmienda {eid} de {pid} cambió después de registrarla en {c[:10]} "
+                           "(o no está en ese commit): una enmienda no se edita, se añade otra")
+                continue
+            if eid in _contents_at(top, f"{c}^", rel):
+                out.append(f"enmienda {eid} de {pid}: ya estaba antes de {c[:10]}; ese no es el commit "
+                           "que la registró")
+                continue
+            if a["datos_vistos"] == "no" and any(_is_ancestor(top, f, c) for f in first_regs):
+                out.append(f"enmienda {eid} de {pid}: declara datos_vistos: no, pero el dataset de unidades "
+                           "ya estaba registrado cuando se registró la enmienda")
+        except _Fail as e:
+            out.append(f"plan {pid}: {e}")
+            break
+        prev = c
+    return out
 
 
 def plan_frozen(vault: Path, node_path: Path, fm: dict) -> list[str]:
@@ -327,15 +465,19 @@ def estimates_reproducible(vault: Path, node_path: Path, fm: dict) -> list[str]:
     path, pid, miss = _plan_path(node_path, fm)
     if path is None:
         return miss
-    units = str(fm.get("units_dataset") or "").strip()
-    if _blank(units):
+    spec, bad = _units_spec(node_path)
+    if bad:
+        return [bad]
+    if spec is None:
         return ["units_dataset vacío: anota en la pregunta el dataset de unidades con el que se estimó"]
+    import estimate  # noqa: PLC0415  (on sys.path through _units_spec)
+    units = ", ".join(estimate.units_datasets(spec))
     stored, err = _stored_estimate(node_path)
     if err:
         return [err]
     try:
-        r = _run([sys.executable, str(ESTIMATE), "--vault", str(vault), "--plan", pid, "--units", units],
-                 "estimate.py")
+        r = _run([sys.executable, str(ESTIMATE), "--vault", str(vault), "--plan", pid,
+                  *estimate.units_argv(spec)], "estimate.py")
     except _Fail as e:
         return [str(e)]
     try:
@@ -420,7 +562,7 @@ def classifiers_validated(vault: Path, node_path: Path, fm: dict) -> list[str]:
     if path is None:
         return miss
     try:
-        plan = read_plan(path)
+        plan = read_effective(path)  # the classifiers as amended
     except PlanError as e:
         return [f"plan {pid} inválido: {e}"]
     proj = Path(node_path).parents[1]
@@ -545,10 +687,63 @@ def avisos_cerrados(vault: Path, node_path: Path, fm: dict) -> list[str]:
             "envíalos, espera al fin del embargo o ciérralos"]
 
 
+def avisos_enviados(vault: Path, node_path: Path, fm: dict) -> list[str]:
+    """Every notice sent: an `enviado` still under embargo passes. Counts only."""
+    counts, problem = count_avisos(Path(node_path).parents[1])
+    if problem:
+        return [problem]
+    parts = [txt for key, txt in (
+        ("pendiente", f"{counts['pendiente']} pendiente(s)"),
+        ("sin_fecha", f"{counts['sin_fecha']} enviado(s) sin fecha de embargo"),
+        ("desconocido", f"{counts['desconocido']} con estado desconocido"),
+    ) if counts[key]]
+    if not parts:
+        return []
+    return [f"avisos sin enviar en Avisos/registro.json: {', '.join(parts)}; "
+            "envíalos y anota su fecha de embargo"]
+
+
 GATES = {
     "plan_frozen": plan_frozen,
     "estimates_reproducible": estimates_reproducible,
     "classifiers_validated": classifiers_validated,
     "verifier_no_errors": verifier_no_errors,
     "avisos_cerrados": avisos_cerrados,
+    "avisos_enviados": avisos_enviados,
 }
+
+# A design's check the linked plan may swap for another (the plan's choice is a frozen block).
+PLAN_CHOSEN = {"avisos_cerrados": {"enviados": "avisos_enviados"}}
+
+
+def _effective_plan(node_path: Path, fm: dict) -> dict | None:
+    try:
+        path, _, _ = _plan_path(node_path, fm)
+        return read_effective(path) if path is not None else None
+    except (PlanError, OSError, ValueError):
+        return None
+
+
+def resolve_check(name: str, node_path: Path, fm: dict) -> str:
+    """The check that runs for the design's `name` on this node: the plan's choice when the
+    design's check is plan-configurable (PLAN_CHOSEN), else `name`. An unreadable plan keeps
+    `name` (the stricter one)."""
+    alt = PLAN_CHOSEN.get(name)
+    if not alt:
+        return name
+    plan = _effective_plan(node_path, fm)
+    return alt.get(avisos_mode(plan), name) if plan is not None else name
+
+
+def plan_info(node_path: Path, fm: dict) -> dict:
+    """What the gate output says about the linked plan: {"enmiendas": [...], "avisos": mode}
+    ({} when there is no readable plan). Each amendment: id, fecha, por, datos_vistos, motivo,
+    commit and what it changed (plan_blocks summary)."""
+    plan = _effective_plan(node_path, fm)
+    if plan is None:
+        return {}
+    summary = {s["id"]: s for s in plan["summary"]}
+    ams = [{k: a[k] for k in ("id", "fecha", "por", "datos_vistos", "motivo", "commit")}
+           | {k: v for k, v in summary.get(a["id"], {}).items() if k not in ("id", "datos_vistos")}
+           for a in plan["amendments"]]
+    return {"enmiendas": ams, "avisos": avisos_mode(plan)}

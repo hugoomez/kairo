@@ -40,6 +40,9 @@ class Design(TypedDict):
     manuscript_sections: list[dict]
     # optional, default true: false = exploratory (a pilot); the manuscript refuses it
     citable: bool
+    # optional: a label every manuscript use of the design must carry (e.g. "exploratorio");
+    # only for a citable design
+    etiqueta: str
 
 
 def _read(plugin_root: Path) -> dict:
@@ -116,6 +119,12 @@ def problems(plugin_root: Path = PLUGIN_ROOT) -> list[str]:
             out.append(f"{name}: un diseño citable necesita manuscript_sections")
         elif not citable and d["manuscript_sections"]:
             out.append(f"{name}: un diseño no citable no tiene manuscript_sections (déjalo en [])")
+        if "etiqueta" in d:
+            et = d["etiqueta"]
+            if not isinstance(et, str) or not et.strip():
+                out.append(f"{name}: etiqueta debe ser un texto no vacío")
+            elif citable is False:
+                out.append(f"{name}: etiqueta solo tiene sentido en un diseño citable")
         if not (Path(plugin_root) / d["plan_template"]).is_file():
             out.append(f"{name}: plan_template {d['plan_template']} no existe")
     return out

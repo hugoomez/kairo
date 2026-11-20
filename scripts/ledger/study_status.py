@@ -25,7 +25,12 @@ else in the note changes.
 researcher-only pair.
 
 `gate(vault, nid) -> {"applies", "ok", "missing", "checks"}` (checks: one {name, ok, missing} row per design check, in order): the design's checks (study_gates.GATES)
-on the node. `applies` is False for an id no design claims (H-, C-, …).
+on the node. `applies` is False for an id no design claims (H-, C-, …). A check the plan may
+choose a variant of (study_gates.resolve_check: `avisos_cerrados` → `avisos_enviados` when
+the plan says `"avisos": "enviados"`) runs, and is named in its row, as the variant. Two keys
+are added only when they apply: `etiqueta` (the design's label, e.g. `exploratorio`) and
+`enmiendas` (the linked plan's amendments, study_gates.plan_info), so whoever reads the gate
+sees that a number is exploratory or rests on a declared deviation.
 
 Exit codes: 0 ok · 3 refused · 1 error. Standard library only.
 """
@@ -44,7 +49,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import designs as _designs  # noqa: E402
-from study_gates import GATES, find_node  # noqa: E402
+from study_gates import GATES, find_node, plan_info, resolve_check  # noqa: E402
 from notes import read_note  # noqa: E402
 from verifications import (  # noqa: E402
     InputError,
@@ -92,6 +97,10 @@ def gate(vault: Path, nid: str) -> dict:
     missing: list[str] = []
     checks: list[dict] = []
     for name in design["gate"]:
+        try:
+            name = resolve_check(name, path, fm)  # the plan may choose a variant (avisos_enviados)
+        except Exception:  # noqa: BLE001  keep the design's (stricter) check
+            pass
         check = GATES.get(name)
         if check is None:
             lines = [f"{name}: comprobación inexistente (corre designs.py check)"]
@@ -102,7 +111,16 @@ def gate(vault: Path, nid: str) -> dict:
                 lines = [f"{name}: error al comprobar ({type(exc).__name__}: {exc})"]
         missing += lines
         checks.append({"name": name, "ok": not lines, "missing": lines})
-    return {"applies": True, "ok": not missing, "missing": missing, "checks": checks}
+    out = {"applies": True, "ok": not missing, "missing": missing, "checks": checks}
+    if design.get("etiqueta"):
+        out["etiqueta"] = design["etiqueta"]
+    try:
+        info = plan_info(path, fm)
+    except Exception:  # noqa: BLE001  informative only; the checks above decide
+        info = {}
+    if info.get("enmiendas"):
+        out["enmiendas"] = info["enmiendas"]
+    return out
 
 
 def _status(path: Path) -> str:

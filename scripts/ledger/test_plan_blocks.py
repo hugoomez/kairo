@@ -10,6 +10,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 
+import plan_blocks  # noqa: E402
 from plan_blocks import PlanError, read_plan  # noqa: E402
 
 TEMPLATE = ROOT / "templates" / "measurement-plan-template.md"
@@ -216,3 +217,40 @@ def test_new_types_defaults(tmp_path):
         _est(id="s", type="supervivencia", event="ev", by="tool")]))
     d, ru, s = r["estimands"]
     assert ru["min_groups"] == 2 and s["at"] == [] and d["cluster"] == "org"
+
+
+def test_amendment_on_a_plan_with_families_keeps_the_family():
+    body = """## Estimandos
+
+```json
+{"estimands": [
+  {"id": "d1", "type": "diferencia", "column": "x", "group": "g", "a": "f1", "b": "f2", "filter": {}, "cluster": null},
+  {"id": "d2", "type": "diferencia", "column": "y", "group": "g", "a": "f1", "b": "f2", "filter": {}, "cluster": null},
+  {"id": "d3", "type": "diferencia", "column": "z", "group": "g", "a": "f1", "b": "f2", "filter": {}, "cluster": null}
+],
+ "families": [{"id": "fam", "estimands": ["d1", "d2", "d3"], "method": "holm"}]}
+```
+
+## Clasificadores
+
+```json
+{"classifiers": []}
+```
+
+## Intervalos
+
+```json
+{"ci": 0.95, "bootstrap": 200, "seed": 1}
+```
+"""
+    base = plan_blocks.blocks_of_body(body)
+    changed = dict(base["estimands"][1])
+    changed.pop("family")
+    changed["filter"] = {"k": "v"}
+    entries = [{"id": "E1", "datos_vistos": "no", "delta": {"estimands": [changed], "retire_estimands": ["d3"]}}]
+    eff = plan_blocks.apply_amendments(base, entries)
+    fams = {e["id"]: e.get("family") for e in eff["estimands"]}
+    assert set(fams) == {"d1", "d2"}
+    assert fams["d1"]["id"] == fams["d2"]["id"] == "fam"
+    assert fams["d2"]["estimands"] == ["d1", "d2"]
+    assert eff["deviations"]["d2"][0]["enmienda"] == "E1"

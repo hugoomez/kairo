@@ -8,6 +8,10 @@
 Prints {"plan", "units_sha256", "estimates": [{"id","type","value","lo","hi","n","method", …}]}.
 With named tables (`--units-for`) it adds "tables": {tabla: {"dataset", "sha256"}}; with no
 estimand on the default table there is no `units_sha256` (and `--units` is refused).
+The plan's EFFECTIVE blocks are used (plan_blocks.read_effective: its own blocks plus
+`## Enmiendas` in order). Only for an amended plan, each estimate an amendment changed or
+added carries `desviacion`: [{"enmienda", "datos_vistos"}], and the output adds `enmiendas`
+(one summary per amendment); an un-amended plan's output is byte-identical to before.
 Exit 0 ok, 3 refused (JSON {"error": ...}), 1 usage/unexpected error.
 
 Types: proporcion (Wilson, or cluster bootstrap), conteo, mediana (bootstrap), diferencia
@@ -58,7 +62,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ledger"))
 
-from plan_blocks import _TABLE, DEFAULT_TABLE, PlanError, read_plan  # noqa: E402
+from plan_blocks import _TABLE, DEFAULT_TABLE, PlanError, read_effective, read_plan  # noqa: E402
 
 TRUTHY = {"1", "true", "sí", "si", "yes"}
 CURVE_MIN_AT_RISK = 5   # a KM step is printed only if its risk set holds at least this many units
@@ -767,7 +771,7 @@ def run(vault: Path, plan_id: str, units: str | None, units_for: dict[str, str] 
     plan_path = _find_plan(vault, plan_id)
     proj = plan_path.parents[1]
     try:
-        plan = read_plan(plan_path)
+        plan = read_effective(plan_path)
     except PlanError as e:
         raise Refused(f"plan inválido: {e}") from None
     needed = {e.get("units") for e in plan["estimands"]}
@@ -812,6 +816,11 @@ def run(vault: Path, plan_id: str, units: str | None, units_for: dict[str, str] 
     if units_for:
         out["tables"] = {t: {"dataset": units_for[t], "sha256": tables[t][2]} for t in sorted(units_for)}
     out["estimates"] = estimates
+    if plan["amendments"]:  # an un-amended plan's output stays byte-identical
+        for est in estimates:
+            if est["id"] in plan["deviations"]:
+                est["desviacion"] = plan["deviations"][est["id"]]
+        out["enmiendas"] = plan["summary"]
     return out
 
 
