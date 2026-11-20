@@ -265,6 +265,17 @@ design `piloto`:
 - The pilot does not appear yet in the interface's «Preguntas» view (it
   lists `Q-` notes only).
 
+Draw each annotation sample from a registered dataset, by its `name`, with
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/security/draw_sample.py" --vault <vault> --project <slug> --dataset <name> --n <N> --seed <S> --out <absolute path outside the vault>.jsonl`
+(add `--stratify-by <column> --per-stratum <K>` for a stratified sample;
+`--filter COL=VAL` and `--glob` narrow the frame). The draw is reproducible
+(same arguments and dataset sha256, same bytes), refused when the dataset
+changed since it was registered, and redacted (items that cannot be cleaned
+are dropped and counted); stratified items carry `_stratum` and `_weight`
+to weight precision and recall back to the frame. Repository URLs stay
+readable because the annotator must open them. The interface imports the
+file into `Datos/anotacion/`; the command prints counts only.
+
 Then open the study question (`Q-XXXX`, `medicion`) and its plan as above,
 naming the pilot in `## Población y marco muestral` of the plan.
 

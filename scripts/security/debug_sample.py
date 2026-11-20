@@ -89,7 +89,7 @@ def _dataset(vault: Path, slug: str, name: str) -> dict:
     path = Path(p)
     if d["kind"] == "dir" and not path.is_dir() or d["kind"] == "file" and not path.is_file():
         raise Refused(f"no se encuentra el contenido del dataset {name!r}")
-    return {"kind": d["kind"], "path": path}
+    return {"kind": d["kind"], "path": path, "sha256": d.get("sha256")}
 
 
 def _inside(a: Path, b: Path) -> bool:
