@@ -62,7 +62,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ledger"))
 
-from plan_blocks import _TABLE, DEFAULT_TABLE, PlanError, read_effective, read_plan  # noqa: E402
+from plan_blocks import _TABLE, DEFAULT_TABLE, PlanError, read_effective  # noqa: E402
 
 TRUTHY = {"1", "true", "sí", "si", "yes"}
 CURVE_MIN_AT_RISK = 5   # a KM step is printed only if its risk set holds at least this many units

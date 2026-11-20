@@ -861,6 +861,142 @@ and every project's `Avisos/` folder, are kept away from every agent by
   `debug_sample.py`, repository identity stays readable (`--pseudonymise-repos`
   to hide it) so the annotator can open the public repository.
 
+**Three labels, all citable.** A number in the paper is *confirmatory* (frozen
+plan before the data), a *declared deviation* (a dated amendment with its
+reason), or *exploratory* (decided after seeing the data). None can pass for
+another:
+
+- **Amendments.** `freeze_plan.py amend --vault V --plan M-XXXX --by WHO
+  --motivo "…" --datos-vistos si|no --from <change.json | edited plan>` appends
+  an entry to the plan's `## Enmiendas` (append-only, one commit each, checked
+  in git by the gate: an edited or removed entry fails it, and so does
+  `datos_vistos: no` recorded after the data were registered).
+  `plan_blocks.py efectivo` shows the effective blocks. `estimate.py` uses them
+  and marks each touched estimate `desviacion: [{enmienda, datos_vistos}]`.
+- **Exploratory questions.** Design `exploratoria` (`QE-XXXX`, plan `ME-XXXX`,
+  folder `Exploratorias/`): no freeze, its data may be registered before it,
+  gate = reproducible + classifiers + verifier + notices. The manuscript binds
+  it only to a section whose title says «exploratorio/exploratory», and refuses
+  a body that does not say it.
+- **Notices gate.** The plan's `## Intervalos` may set `"avisos": "enviados"`
+  (every notice sent, embargo still running is fine) instead of the default
+  `"cerrados"`. Justified only when the paper reports aggregates only. It is a
+  frozen block, so it changes only by amendment.
+
+**Plans and estimates.**
+
+- An estimand may name its units table (`"units": "repos"`). The question then
+  maps tables to datasets (`units_dataset: {default: a, repos: b}`), and
+  `estimate.py --units A --units-for repos=B`.
+- `"variants": [{"id", "filter"}]` adds sensitivity analyses.
+- New types `tabla` (cross-tab), `interseccion` (A∧B∧C plus every
+  combination), `tendencia` (Cochran–Armitage) and `cuantiles`. `supervivencia`
+  takes `"curve": true` (Kaplan–Meier steps, any step with fewer than 5 at risk
+  suppressed). Plan-level `"families"` adjust `diferencia` p-values and
+  intervals (Holm or Bonferroni).
+- `estimate.py tabla-latex --json F --id X` prints a booktabs table, so numbers
+  are never retyped.
+- An un-amended plan's output is byte-identical to before.
+
+**Data lineage and pipeline.**
+
+- `scripts/ledger/lineage.py register-derived | show | verify` records
+  `derived_from`, `script`, `commit` and `params` on a registry entry. When the
+  units table has lineage, the gate's data-before-freeze rule applies to its
+  roots (the raw collection), so a table re-derived after fixing a parser
+  stays valid.
+- `scripts/study/pipeline.py run | status` runs the stages of a
+  `pipeline.toml` in the code repository (clean tree only, argv, no shell).
+  Each stage's output is registered with lineage and the run is logged in
+  `Datos/pipeline-runs.jsonl`. A stage's `<output>.log` is guarded like its
+  data.
+
+**Collection and parsers.**
+
+- `Collection.fetch_history(repo, paths, max_bytes_budget=…)` makes a partial
+  bare clone and keeps every historical version of the given paths that looks
+  encrypted. Plaintext versions are classified and recorded by metadata only
+  (`keep_plaintext=True` to keep them). It is resumable and works within a
+  disk budget. The token goes through environment-only git config, never argv
+  or disk.
+- `manifest.json` / `manifest.md` give snapshot dates, per-query times,
+  coverage per shard and truncated shards, ready for a Methodology section.
+- `kairo_collect.parsereport.ParseReport`: parsers report ok / fail (with a
+  value-free structural skeleton) / unknown per file. `parse_summary.py` gives
+  coverage by tool, format and error class.
+  `debug_sample.py --from-report NAME --error-class C` samples only the files
+  that failed that way. Register the parse report as a sensitive dataset: it
+  holds real paths.
+- `kairo_collect.sensitive`: HMAC fingerprints with a salt read from
+  `KAIRO_FINGERPRINT_SALT_FILE`. Matching a found private key to a public one
+  needs an explicit `DerivationOptIn(fn, decision=…)` that records the ethical
+  decision; `scrub()` lets only fingerprints out.
+- `repo_flags` / `demo_score` give fork, archived, template, owner type, and
+  tutorial/demo signals as a score with reasons. It is never a decision:
+  validate it as a classifier.
+
+**Validation, figures and numbers.**
+
+- `agreement.py validate … --weights-from <muestra.jsonl>` gives weighted
+  precision and recall for stratified validation samples (rare positives):
+  stratified ratio estimator with a Korn–Graubard effective-size Wilson
+  interval. The study gate recomputes it with the same weights file.
+  `score_buckets.py` adds a score bucket to stratify on.
+- `scripts/manuscript/figures.py register | check | list | extract-json`:
+  figures (pdf/png) tied to the sha256 of their question's `estimate-json`. A
+  figure whose source changed is `obsoleta`.
+- `numbers_check.py`: every number in a section bound to a question must come
+  from its estimate-json or plan. Untraced numbers in a results section exit 4.
+  Exceptions go in `Manuscritos/numeros-permitidos.txt` with a reason.
+
+**Manuscript for security venues.**
+
+- Paper-specific sections: `manuscript.py sections --from f.json` (or
+  `init --sections`), with subsections, `placement: front | body | appendix`
+  and `budget_pages`.
+- `export` writes the abstract, registered figures (`[[figura F-001]]`,
+  `[[ref F-001]]`), wide tables (`table*`), generated tables
+  (`[[tabla-latex <file>]]` from `Manuscritos/tablas/`), and appendices after
+  the bibliography. `--anonymous` gives acmart `review,anonymous` and no
+  authors.
+- `pages` reports pages per section.
+- `export --to-latex-source` makes the LaTeX the source of truth: later
+  exports refuse to overwrite it without `--force`. `sync-check` verifies that
+  numbers, citations and figures in `main.tex` still match the vault.
+- `check-venue` checks:
+  - anonymity (hub `authors:` / `autores:`, `anonimato.txt`);
+  - the page limit;
+  - the appendices the venue requires;
+  - the AI-use disclosure.
+- Grey literature exports as `@misc` with an access date.
+- USENIX needs `usenix-2020-09.sty` copied next to `main.tex`.
+
+**Notices, ethics and open science.**
+
+- `scripts/study/notices.py template | draft | vendor` drafts notices by
+  mail-merge from a findings dataset, so no model sees recipients or findings.
+  `draft` and `vendor` are the researcher's commands: they refuse inside agent
+  sessions, write to a folder outside the vault, and add pending `AV-NNN`
+  entries. Nothing is ever sent automatically. Templates live in
+  `Plantillas-avisos/`, which an agent may help write; `Avisos/` stays
+  guarded.
+- `scripts/code_repo/no_decrypt_check.py --repo R` finds decryption calls
+  (sops/age/kubeseal/dotenvx/agenix/git-crypt and libraries) in the code
+  repository. repo-steward runs it when the hub says `no_descifrar: true`.
+- `scripts/study/artifact.py build | check` packages the code, the plans with
+  their amendments, the aggregates and the registered figures for the
+  open-science artifact, then scans for leaks: dataset files, secrets,
+  repository URLs and, with `--anonymous`, author names.
+
+**Literature.**
+
+- lit-watch also guards open study questions: the novelty-judge asks whether
+  a new abstract measures the same quantity in an overlapping population.
+- `ingest_paper.py add --url … --doc --tool NAME` and
+  `docs_corpus.py refresh | list` keep a versioned corpus of tool
+  documentation (`source_type: documentacion`). Old versions are kept in
+  `Papers/_fuentes/<id>/historial/`.
+
 ---
 
 ## Optional companion: Smart Connections (semantic vault search)
