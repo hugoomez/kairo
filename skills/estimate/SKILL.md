@@ -27,11 +27,28 @@ you. For `medicion` the gate checks:
 
 | Check | What it needs |
 |---|---|
-| `plan_frozen` | the plan is unchanged since `frozen_commit`; the units dataset was registered in a later commit |
+| `plan_frozen` | the plan's frozen blocks are unchanged since `frozen_commit`; every amendment in `## Enmiendas` is unchanged since the commit that recorded it and none was removed; the units dataset was registered in a later commit |
 | `estimates_reproducible` | re-running `estimate.py` gives exactly the `estimate-json` block of `## Resultado` |
-| `classifiers_validated` | each classifier's `Datos/anotacion/<sample>/validacion-<name>.json` reproduces and reaches the plan's floors |
+| `classifiers_validated` | each classifier of the effective plan has a `Datos/anotacion/<sample>/validacion-<name>.json` that reproduces and reaches the plan's floors |
 | `verifier_no_errors` | the latest fresh verification is `no_errors_found`, on the packet `verifier_packet.py --question` builds now |
 | `avisos_cerrados` | every notice in `Avisos/registro.json` is closed or past its embargo |
+| `avisos_enviados` (instead of `avisos_cerrados` when the plan's `## Intervalos` says `"avisos": "enviados"`) | every notice is sent; a running embargo is fine, `pendiente` or a sent notice without embargo date is not |
+
+`estimate.py` reads the plan's **effective** blocks: the frozen ones with the
+amendments of `## Enmiendas` applied in order. An estimate an amendment changed
+or added carries `"desviacion": [{"enmienda", "datos_vistos"}]`, and the
+output has `enmiendas`; `study_status.py gate` lists the amendments too. Those
+numbers are **declared deviations**, not confirmatory results: say so in the
+`## Resultado` table and in the report.
+
+**An exploratory question** (`QE-XXXX`, design `exploratoria`, in
+`Projects/<slug>/Exploratorias/`, plan `ME-XXXX` never frozen) is estimated
+from `abierta`, like a pilot, but it is citable: its gate is
+`estimates_reproducible`, `classifiers_validated`, `verifier_no_errors` and
+the notices check its plan chooses. Do steps 2–6 as below and apply `--to
+estimada`. Its numbers are always **exploratory**: the gate output carries
+`"etiqueta": "exploratorio"`; write «exploratorio» in the `## Resultado`
+reading and in the report.
 
 ## What you do — and what you never do
 
@@ -80,7 +97,7 @@ the go/no-go yourself.
   inside an agent session. Tell them to start it in the interface
   (Recolecciones → «Empezar la recolección»), and stop.
 - `abierta`: the plan is not frozen. Say so, point to `kairo:plan-study`, and
-  stop.
+  stop — unless it is an exploratory question (QE), estimated from `abierta`.
 - A terminal state: stop.
 
 ### 2. `units_dataset`
@@ -116,7 +133,9 @@ earlier result) with:
    `groups` (`by`) gets one more row per group (`est-1 · <group>`). A
    `diferencia` row names its two groups; a `reutilizacion` row is followed
    by its `histogram`; a `supervivencia` with `median_reached: false` shows
-   «no alcanzada» as its value, and its `survival_at` as `S(t)` rows;
+   «no alcanzada» as its value, and its `survival_at` as `S(t)` rows. Add a
+   column `etiqueta`: «confirmatorio», «desviación E1 (datos vistos: sí)» for
+   an estimate with `desviacion`, or «exploratorio» for a QE;
 2. one plain sentence per estimand: what it measures, from the plan's
    `## Estimandos`, with its interval. Draw no conclusions beyond that;
 3. the block, with `estimate.py`'s stdout **exactly**, nothing added:
@@ -155,8 +174,8 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/verifications.py" append \
 - `errors_found`: show each finding. If it points at `## Resultado`, re-run
   step 3 and rewrite step 4 from the new output; never edit the numbers. If
   it points at the plan, the plan is frozen: tell the researcher. A real flaw
-  in the plan means a new plan for a new question, and that is their
-  decision. Do not go on to step 6 until a new verification is
+  in the plan is fixed by an amendment (labelled a declared deviation) or a
+  new question, and that is their decision. Do not go on to step 6 until a new verification is
   `no_errors_found`.
 - `cannot_assess`: report what the verifier said is missing. The gate does not
   pass.
@@ -185,13 +204,17 @@ each with its fix:
 | `sin units_dataset` / `units_dataset vacío` | step 2 |
 | `no está registrado en ningún commit del vault` | commit `Projects/<slug>/Datos/registro.json` alone (`git commit -m … -- <path>`), with the researcher's OK, then re-run the gate |
 | `los datos se registraron antes de congelar el plan` | Not fixable for this plan: the data were in the vault before the freeze. The researcher decides (a new question and plan) |
-| `el plan cambió después de congelarlo: …` | the researcher puts back the named sections exactly as they were at `frozen_commit` (keeping the frozen frontmatter); a real change needs a new plan |
+| `el plan cambió después de congelarlo: …` | the researcher puts back the named sections exactly as they were at `frozen_commit` (keeping the frozen frontmatter); a real change is an amendment (`kairo:plan-study`, «Enmendar un plan congelado») |
+| `la enmienda En … cambió después de registrarla` / `se borró` / `ya estaba antes de` / `no es posterior` | an amendment was edited, removed or re-pointed: the researcher restores it as it was at its commit (`git show <commit>:<plan>`); a correction is a new amendment |
+| `enmienda En …: sin commit registrado (pendiente)` | `freeze_plan.py amend --vault <vault> --plan M-XXXX --reanudar` |
+| `enmienda En …: declara datos_vistos: no, pero …` | the amendment was recorded after the units were registered. Not fixable by editing it: the researcher records a new amendment with `--datos-vistos si` restating the change |
 | `el bloque estimate-json … no coincide` / `no tiene bloque` | steps 3–4 again, with no hand edits |
 | `estimate.py se niega: …` | as in step 3 |
 | `clasificador <n>: falta …validacion-<n>.json` / `…cambió después de validar` / `no coincide` | the researcher validates the classifier in the interface (Anotar → Validar clasificador), or runs `agreement.py validate` |
 | `clasificador <n>: precision_lo/recall_lo … < …` | the classifier does not reach the plan's floor. The plan does not change: improve the classifier and validate it again, or the researcher decides |
 | `verificación: …` / `otro paquete` / `sin sha256` | step 5 again (anything in the packet changed since) |
 | `sin registro de avisos` / `avisos sin cerrar …` | the researcher closes the notices in the Avisos panel, or waits for the embargo date. Report only the counts the gate gave |
+| `avisos sin enviar …` (plan with `"avisos": "enviados"`) | the researcher sends the pending notices and records their embargo date in the Avisos panel |
 
 ### 7. Commit and report
 
@@ -199,7 +222,8 @@ Commit the question note alone:
 `git add <path> && git commit -m "Q-XXXX: estimación" -- <path>`.
 Never `git add -A`. Report:
 
-- the estimates, one line each with its interval;
+- the estimates, one line each with its interval and its label
+  (confirmatorio / desviación En / exploratorio);
 - the verifier verdict;
 - the state now (`estimada`, or the state it stayed in);
 - if the gate failed, the list from step 6.

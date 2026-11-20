@@ -119,6 +119,7 @@ def brief(vault: Path, project: str, today: date | None = None, collections: Pat
     pdir = ctx["pdir"]
     nodes = [{
         "id": n["id"], "diseno": n["design_name"], "piloto": n["pilot"], "status": n["status"],
+        "etiqueta": n["design"].get("etiqueta"),
         "terminal": n["terminal"], "linea_publicacion": n["linea_publicacion"],
         "plan": n["plan_id"] or None, "plan_congelado": n["plan_frozen"] if n["plan_id"] else None,
         "units_dataset": bool(n["units_dataset"]), "resultado": n["has_result"],
@@ -160,7 +161,8 @@ def text(b: dict) -> str:
         if n["linea_publicacion"]:
             bits.append("publicación")
         if n["plan"]:
-            bits.append(f"plan {n['plan']}" + ("" if n["piloto"] else (" congelado" if n["plan_congelado"] else " borrador")))
+            bits.append(f"plan {n['plan']}" + ("" if n["piloto"] else f" ({n['etiqueta']})" if n.get("etiqueta")
+                                               else (" congelado" if n["plan_congelado"] else " borrador")))
         else:
             bits.append("sin plan")
         if n["resultado"]:

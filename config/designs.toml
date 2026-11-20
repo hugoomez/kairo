@@ -23,6 +23,10 @@ researcher_only = [["abierta", "descartada"], ["plan_congelado", "descartada"], 
                    ["en_recoleccion", "sin_respuesta"]]
 # Estado que exige el manuscrito.
 publishable = "estimada"
+# avisos_cerrados es configurable por plan: con `"avisos": "enviados"` en el bloque de
+# ## Intervalos del plan, la puerta aplica avisos_enviados (study_gates.resolve_check).
+# Un cambio del plan congelado va por enmienda (freeze_plan.py amend), y cada estimando que
+# cambia queda etiquetado como desviación declarada.
 gate = ["plan_frozen", "estimates_reproducible", "classifiers_validated", "verifier_no_errors", "avisos_cerrados"]
 plan_prefix = "M"
 plan_folder = "Mediciones"
@@ -61,3 +65,37 @@ plan_folder = "Pilotos"
 plan_template = "templates/pilot-plan-template.md"
 citable = false
 manuscript_sections = []
+
+# Exploratoria: una medición que no se congeló antes de los datos (sus datos pueden estar
+# registrados antes que su plan, incluso ser las unidades de una pregunta confirmatoria).
+# Es citable, pero siempre con su etiqueta: el manuscrito escribe «exploratorio» junto a
+# cada sección y cifra que se apoya en ella, y solo la vincula a una sección cuyo título
+# lo dice (manuscript.py). Nunca pasa por confirmatoria: no tiene plan_congelado ni
+# plan_frozen. «Todo se puede hacer; lo que cambia es la etiqueta.»
+[exploratoria]
+prefix = "QE"
+folder = "Exploratorias"
+statuses = ["abierta", "estimada", "descartada"]
+terminal = ["estimada", "descartada"]
+transitions = [
+  ["abierta", "estimada"],
+  ["abierta", "descartada"],
+]
+researcher_only = [["abierta", "descartada"]]
+publishable = "estimada"
+gate = ["estimates_reproducible", "classifiers_validated", "verifier_no_errors", "avisos_cerrados"]
+plan_prefix = "ME"
+plan_folder = "Exploratorias"
+plan_template = "templates/exploratory-plan-template.md"
+citable = true
+etiqueta = "exploratorio"
+manuscript_sections = [
+  { id = "introduction", kind = "prosa" },
+  { id = "background", kind = "prosa" },
+  { id = "methodology", kind = "prosa" },
+  { id = "ethics", kind = "prosa" },
+  { id = "exploratory-results", kind = "resultado" },
+  { id = "discussion", kind = "cierre" },
+  { id = "related-work", kind = "prosa" },
+  { id = "open-science", kind = "prosa" },
+]

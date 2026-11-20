@@ -9,8 +9,12 @@ description: >-
   with its design (default `medicion`), drafts the measurement plan M-XXXX with
   the researcher, asking for whatever is unclear instead of guessing, offers a
   devil's-advocate critique of the plan, and freezes it (frozen_at,
-  frozen_commit, `plan_congelado`) with scripts/ledger/freeze_plan.py. Never
-  reads data, never registers the units dataset, never estimates.
+  frozen_commit, `plan_congelado`) with scripts/ledger/freeze_plan.py. Also
+  amends a frozen plan ("enmienda el plan M-0002", "cambia un estimando del
+  plan congelado") with `freeze_plan.py amend`, and opens an exploratory
+  question (QE-XXXX, design `exploratoria`, citable only labelled
+  «exploratorio») when the data were already seen. Never reads data, never
+  registers the units dataset, never estimates.
 ---
 
 # plan-study — a study question and its frozen plan
@@ -34,6 +38,18 @@ Estimandos, Clasificadores and Intervalos as the current file, and the units
 dataset must be registered in `Datos/registro.json` in a commit that comes
 **after** `frozen_commit`. A measurement gate laxer than the hypothesis gate is
 a failure even if everything runs.
+
+**Everything can be done; what changes is the label.** A result is one of three
+things, each citable, each labelled, none able to pass for another:
+
+- **confirmatory** — from a plan frozen before the data, unchanged;
+- **declared deviation** — an estimand changed or added by an amendment of the
+  frozen plan (`freeze_plan.py amend`, section «Enmendar un plan congelado»):
+  `estimate.py` labels it `desviacion` (amendment id, `datos_vistos`), and the
+  gate, the verifier packet and the manuscript coverage show the amendment;
+- **exploratory** — a question of design `exploratoria` (QE-XXXX, section «Una
+  pregunta exploratoria»): its plan is never frozen and its data may already be
+  in the vault; the manuscript writes «exploratorio» next to it.
 
 This skill writes two notes and freezes one of them. It runs nothing else.
 
@@ -140,6 +156,13 @@ when you can, then follow up. Typical questions:
   An empty list if there are none.
 - **Intervals**: the level (`ci`), the `bootstrap` resamples, and a fixed
   `seed`.
+- **Notices** (`avisos` in the `## Intervalos` block): `"cerrados"` (the
+  default, key absent: `estimada` needs every notice closed or past its
+  embargo) or `"enviados"` (every notice sent is enough, even with the embargo
+  still running; the gate then runs `avisos_enviados`). Propose `enviados` only
+  when the publication reports aggregates only — nothing that identifies whom
+  was notified or what was found in their material — and say so to the
+  researcher. It is frozen with the rest: changing it later is an amendment.
 - **Ethics**: what personal or third-party material the data may hold, the
   consent involved, and the risks. Ask whether the units dataset will be
   registered `sensitive: true`. Note that the dataset must then be redacted at
@@ -223,7 +246,8 @@ frozen fields by hand.
 
 When `avisos_creado` is true, tell the researcher, verbatim: «sin avisos
 registrados todavía; añade los que correspondan antes de estimar». The gate of
-`estimada` needs every notice closed (`avisos_cerrados`). They manage notices
+`estimada` needs every notice closed (`avisos_cerrados`), or only sent when
+the plan chose `"avisos": "enviados"` (`avisos_enviados`). They manage notices
 in the interface's Avisos panel. You never read or write that registry.
 
 ### 6. Report
@@ -255,8 +279,90 @@ Report:
     (`Datos/anotacion/<sample>/`, `agreement.py validate`).
   - Then run `kairo:estimate`.
 
-The plan is now immutable. A change of mind means a new plan for a new
-question, never an edit: the gate compares the plan with its frozen version.
+The plan's frozen blocks are now immutable: the gate compares them with their
+frozen version. A change of mind is never an edit; it is an amendment (next
+section), which labels what it changes.
+
+## Enmendar un plan congelado
+
+A frozen plan can change, but only by appending an amendment. Its frozen
+blocks stay as they were; the amendment records what changed, when, who
+decided, why, and whether the data had been seen. Every estimand it changes or
+adds is then a **declared deviation**, labelled as such wherever its number
+appears. Nothing is hidden and nothing passes for confirmatory.
+
+1. Agree the change with the researcher. Ask, never assume:
+   - the reason, in one line;
+   - **whether any data or result had been seen** (`--datos-vistos si|no`,
+     required, no default). If unsure, it is `si`. The gate checks it: an
+     amendment that says `no` but was recorded when the units dataset was
+     already registered fails.
+2. Write the change to a file outside the vault, in either form:
+   - a JSON change: `{"estimands": [<whole estimand objects, new or replacing
+     the same id>], "retire_estimands": ["<id>"], "classifiers": [...],
+     "retire_classifiers": ["<name>"], "intervals": {"<key>": <value>}}` (only
+     the keys you need);
+   - or a copy of the plan with the blocks as they should now be; the script
+     computes the change.
+3. Run, with the researcher's go-ahead:
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/freeze_plan.py" amend --vault <vault> \
+     --plan M-XXXX --by <who decided> --motivo "<one line>" --datos-vistos si|no --from <file>
+   ```
+
+   It appends entry `E1`, `E2`, … to `## Enmiendas` (date UTC, by, datos_vistos,
+   motive, the change, `commit: pendiente`), commits the plan alone, writes that
+   commit's sha into the entry and commits the plan alone again. Agents may run
+   it; `--by` names the person who decided.
+4. Check the effective plan:
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/plan_blocks.py" efectivo Projects/<slug>/<plan_folder>/M-XXXX.md`.
+
+Refused (exit 3, nothing written): the plan is not frozen (edit it directly),
+its design is not frozen (an exploratory plan is just edited), the question is
+terminal, the plan has uncommitted changes, the change changes nothing or makes
+the plan invalid, or an earlier amendment did not finish. Exit 1 is a git error
+(a hook): fix what it names and run
+`freeze_plan.py amend --vault <vault> --plan M-XXXX --reanudar`, which finishes
+the last amendment with the same commit.
+
+Never edit or delete an entry of `## Enmiendas`, not even its date or
+`datos_vistos`: the gate checks each entry against the commit that recorded it,
+and that nothing recorded after the freeze has disappeared. A wrong amendment
+is corrected by another amendment.
+
+What changes downstream: `estimate.py` uses the effective blocks; each
+estimate an amendment touched carries `"desviacion": [{"enmienda": "E1",
+"datos_vistos": "si"}]` and the output adds `enmiendas` (an un-amended plan's
+output is unchanged). A change of `ci`, `bootstrap` or `seed` touches every
+estimand. The gate output (`study_status.py gate`) lists the amendments, and
+the verifier packet carries `## Enmiendas` labelled as declared deviations.
+Re-run `kairo:estimate` after an amendment: the old `estimate-json` block no
+longer reproduces. The units dataset must still have been registered after
+`frozen_commit`; an amendment never changes that.
+
+## Una pregunta exploratoria
+
+When the data were already seen, or the question came up while reading a
+result, it cannot be confirmatory. Open it as design `exploratoria`:
+
+- the question `Projects/<slug>/Exploratorias/QE-XXXX.md`
+  (`question-template.md`, `design: exploratoria`) and its plan
+  `Projects/<slug>/Exploratorias/ME-XXXX.md`
+  (`templates/exploratory-plan-template.md`), with `linked_plan` set by hand.
+  Write `## Por qué es exploratoria`: what was seen before the plan;
+- the plan is never frozen (`freeze_plan.py` refuses it) and may be edited;
+- its dataset may be registered before its plan, and may be the units
+  dataset of a confirmatory question;
+- `kairo:estimate` takes it from `abierta` to `estimada`; its gate is
+  `estimates_reproducible`, `classifiers_validated`, `verifier_no_errors` and
+  the notices check the plan chooses;
+- it is **citable, always labelled**: `manuscript.py bind` accepts a QE only
+  in a section whose title contains «exploratori» / «exploratory» (the
+  `exploratoria` manuscript design has «Resultados exploratorios»; in a
+  `medicion` manuscript, add such a section to the outline), `write-section`
+  refuses a body of that section that does not say «exploratorio» /
+  «exploratory», and the coverage view writes «exploratorio» next to it.
 
 ## A pilot before the study
 
@@ -331,9 +437,12 @@ a dataset, and it does not replace annotation.
 - **Looking at the data to write the plan.** That breaks exactly what the
   freeze exists to prove. Column names come from the researcher.
 - **Registering, or committing, the units dataset before the freeze**, or
-  together with it. The gate fails, and the plan cannot be re-frozen.
+  together with it. The gate fails, and the plan cannot be re-frozen. If the
+  data are already there, the question is exploratory (QE).
 - **Editing the plan after the freeze** ("only a typo in a filter"). It
-  voids the gate.
+  voids the gate. Amend it with `freeze_plan.py amend` instead.
+- **`--datos-vistos no` by default.** It is the researcher's statement; when
+  in doubt it is `si`.
 - **Committing with `git add -A`** around the freeze. `freeze_plan.py`
   commits only the plan and the question, on purpose.
 - **Creating `Avisos/registro.json` by hand.** The guard refuses it, and

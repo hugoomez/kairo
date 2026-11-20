@@ -4,6 +4,10 @@
     estimate.py tamano --p P --half-width H [--ci 0.95]   units needed for a Wilson ±H at P
 
 Prints {"plan", "units_sha256", "estimates": [{"id","type","value","lo","hi","n","method", …}]}.
+The plan's EFFECTIVE blocks are used (plan_blocks.read_effective: its own blocks plus
+`## Enmiendas` in order). Only for an amended plan, each estimate an amendment changed or
+added carries `desviacion`: [{"enmienda", "datos_vistos"}], and the output adds `enmiendas`
+(one summary per amendment); an un-amended plan's output is byte-identical to before.
 Exit 0 ok, 3 refused (JSON {"error": ...}), 1 usage/unexpected error.
 
 Types: proporcion (Wilson, or cluster bootstrap), conteo, mediana (bootstrap), diferencia
@@ -34,7 +38,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ledger"))
 
-from plan_blocks import PlanError, read_plan  # noqa: E402
+from plan_blocks import PlanError, read_effective  # noqa: E402
 
 TRUTHY = {"1", "true", "sí", "si", "yes"}
 
@@ -388,7 +392,7 @@ def run(vault: Path, plan_id: str, units: str) -> dict:
     plan_path = _find_plan(vault, plan_id)
     proj = plan_path.parents[1]
     try:
-        plan = read_plan(plan_path)
+        plan = read_effective(plan_path)
     except PlanError as e:
         raise Refused(f"plan inválido: {e}") from None
     try:
@@ -433,7 +437,13 @@ def run(vault: Path, plan_id: str, units: str) -> dict:
             if miss:
                 raise Refused(f"el estimando {e['id']} usa el cluster {cl!r}, pero {miss} filas no lo tienen")
     estimates = [compute(e, rows, plan["intervals"]) for e in plan["estimands"]]
-    return {"plan": plan_id, "units_sha256": actual, "estimates": estimates}
+    out = {"plan": plan_id, "units_sha256": actual, "estimates": estimates}
+    if plan["amendments"]:  # an un-amended plan's output stays byte-identical
+        for est in estimates:
+            if est["id"] in plan["deviations"]:
+                est["desviacion"] = plan["deviations"][est["id"]]
+        out["enmiendas"] = plan["summary"]
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

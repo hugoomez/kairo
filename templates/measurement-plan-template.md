@@ -54,7 +54,7 @@ Ejemplo inventado.>
 
 ## Intervalos
 
-<Nivel del intervalo, remuestreos del bootstrap y semilla fija.>
+<Nivel del intervalo, remuestreos del bootstrap y semilla fija. `avisos` (opcional): "cerrados" (por defecto: la puerta de estimada exige cada aviso cerrado o con el embargo vencido) o "enviados" (basta con que todos estén enviados, aunque el embargo siga). "enviados" solo se justifica si la publicación da únicamente agregados, nada que identifique a quien se avisó. Se congela con el resto: cambiarlo después es una enmienda. Tras el congelado, ningún bloque se edita: un cambio se añade con `freeze_plan.py amend`, que escribe una sección `## Enmiendas` al final (no la escribas a mano).>
 
 ```json
 {"ci": 0.95, "bootstrap": 2000, "seed": 12345}

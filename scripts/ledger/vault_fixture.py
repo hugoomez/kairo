@@ -1,11 +1,15 @@
 """Builds a small invented vault in a temp dir, for the tests of similar_work.py,
-next_steps.py and scripts/estimate/hypothesis_cost.py.
+next_steps.py and scripts/estimate/hypothesis_cost.py; `StudyVault` builds an invented
+study (questions, plans, a units dataset, notices) in a real git repo, for the tests of
+plan amendments, exploratory questions and the notices gate.
 
-Invented ids (PROJ-900, H-9001…, E-9001…, P-9001…) and invented text only."""
+Invented ids (PROJ-900, H-9001…, E-9001…, P-9001…, Q-9101…) and invented text only."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 HUB = """---
@@ -143,6 +147,149 @@ class Vault:
             if line.startswith("id:"):
                 return line.split(":", 1)[1].strip()
         return "PROJ-900"
+
+
+STUDY_QUESTION = """---
+id: {qid}
+project: PROJ-901
+design: {design}
+status: {status}
+updated: 2031-01-01
+linea_publicacion: true
+linked_plan: {plan}
+units_dataset: {units}
+{verif}history: []
+---
+
+# {qid} — Pregunta inventada
+
+## Pregunta
+
+¿Qué proporción de las unidades inventadas tiene la marca X?
+
+## Población y marco
+
+Unidades inventadas.
+
+## Estimandos
+
+Una proporción.
+
+## Resultado
+
+{resultado}
+"""
+
+STUDY_PLAN = """---
+id: {pid}
+project: PROJ-901
+question: {qid}
+status: borrador
+frozen_at: <YYYY-MM-DDTHH:MM:SSZ>
+frozen_commit: <git-sha>
+---
+
+# {pid} — Plan inventado
+
+## Población y marco muestral
+
+Unidades inventadas.
+
+## Estimandos
+
+```json
+{estimands}
+```
+
+## Clasificadores
+
+```json
+{{"classifiers": []}}
+```
+
+## Intervalos
+
+```json
+{intervals}
+```
+
+## Ética
+
+Nada sensible: datos inventados.
+"""
+
+STUDY_UNITS = "uid,marca,grupo\nu1,1,a\nu2,0,a\nu3,1,b\nu4,1,b\nu5,0,a\nu6,1,b\nu7,0,b\nu8,1,a\n"
+STUDY_ESTIMANDS = [{"id": "est-1", "type": "proporcion", "column": "marca", "filter": {}, "cluster": None}]
+STUDY_INTERVALS = {"ci": 0.95, "bootstrap": 200, "seed": 11}
+
+
+class StudyVault:
+    """An invented study project (`Projects/demo`, PROJ-901) in a real git repo."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.proj = root / "Projects" / "demo"
+        for d in ("Preguntas", "Mediciones", "Exploratorias", "Datos", "Avisos"):
+            (self.proj / d).mkdir(parents=True, exist_ok=True)
+        (self.proj / "_hub.md").write_text("---\nid: PROJ-901\nname: Demo inventado\ntype: ciencia\n---\n",
+                                           encoding="utf-8")
+        (self.proj / "Datos" / "registro.json").write_text("[]", encoding="utf-8")
+        self.git("init", "-q")
+        self.commit("hub")
+
+    def git(self, *args) -> str:
+        r = subprocess.run(["git", "-c", "user.name=tester", "-c", "user.email=t@example.invalid", *args],
+                           cwd=self.root, capture_output=True, text=True, check=True)
+        return r.stdout.strip()
+
+    def commit(self, msg: str, *paths: str) -> str:
+        """Commit everything (or only `paths`, relative to the vault)."""
+        if paths:
+            self.git("add", "--", *paths)
+            self.git("commit", "-q", "-m", msg, "--", *paths)
+        else:
+            self.git("add", "-A")
+            self.git("commit", "-q", "-m", msg)
+        return self.git("rev-parse", "HEAD")
+
+    def register_units(self, name: str = "unidades-demo", text: str = STUDY_UNITS) -> str:
+        """Writes Datos/u.csv and adds `name` to Datos/registro.json (not committed)."""
+        (self.proj / "Datos" / "u.csv").write_text(text, encoding="utf-8", newline="")
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        reg_path = self.proj / "Datos" / "registro.json"
+        reg = [d for d in json.loads(reg_path.read_text(encoding="utf-8")) if d.get("name") != name]
+        reg.append({"name": name, "kind": "file", "path": "Datos/u.csv", "sha256": sha})
+        reg_path.write_text(json.dumps(reg), encoding="utf-8")
+        return sha
+
+    def notices(self, *items) -> None:
+        rows = []
+        for i, it in enumerate(items, 1):
+            it = {"estado": it} if isinstance(it, str) else it
+            rows.append({"id": f"AV-{i}", "destinatario": "nadie", "canal": "correo", "enviado": "",
+                         "embargo_hasta": "", "respuesta": "", **it})
+        (self.proj / "Avisos" / "registro.json").write_text(json.dumps(rows), encoding="utf-8")
+
+    def question(self, qid: str = "Q-9101", design: str = "medicion", status: str = "abierta", plan: str = "",
+                 units: str = "", resultado: str = "<vacío>", verif: str = "", folder: str | None = None,
+                 extra_body: str = "") -> Path:
+        folder = folder or ("Exploratorias" if qid.startswith("QE-") else "Preguntas")
+        p = self.proj / folder / f"{qid}.md"
+        p.write_text(STUDY_QUESTION.format(qid=qid, design=design, status=status, plan=plan, units=units,
+                                           resultado=resultado, verif=verif) + extra_body, encoding="utf-8")
+        return p
+
+    def plan(self, pid: str = "M-9102", qid: str = "Q-9101", estimands=None, intervals=None,
+             folder: str | None = None) -> Path:
+        folder = folder or ("Exploratorias" if pid.startswith("ME-") else "Mediciones")
+        p = self.proj / folder / f"{pid}.md"
+        p.write_text(STUDY_PLAN.format(
+            pid=pid, qid=qid, estimands=json.dumps({"estimands": estimands or STUDY_ESTIMANDS}),
+            intervals=json.dumps(intervals or STUDY_INTERVALS)), encoding="utf-8")
+        return p
+
+    def rel(self, path: Path) -> str:
+        return path.relative_to(self.root).as_posix()
 
 
 def mapa_example(generado="2031-03-01T00:00:00Z", nuestros=None, papers=("P-9001",), sin_extraer=(),

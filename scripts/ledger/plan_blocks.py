@@ -1,12 +1,38 @@
 """Read the machine-read JSON blocks of a measurement plan (M-XXXX).
 
-    plan_blocks.py show <path>   prints the plan blocks as JSON; exit 3 with {"error": ...}
+    plan_blocks.py show <path>       the plan's own blocks as JSON (as frozen); exit 3 with {"error": ...}
+    plan_blocks.py efectivo <path>   the EFFECTIVE blocks (own blocks + `## Enmiendas` in order),
+                                     with the amendments, the per-estimand deviations and a summary
 
 Each of `## Estimandos`, `## Clasificadores`, `## Intervalos` holds a fenced json block;
-the first one under the heading is read. Standard library only.
+the first one under the heading is read. `## Intervalos` may carry `"avisos": "cerrados" |
+"enviados"` (absent = cerrados): which notices check the study gate applies (`avisos_cerrados`
+or `avisos_enviados`); being a frozen block, it changes only by amendment.
+
+`## Enmiendas` (optional; only `freeze_plan.py amend` writes it, append-only) holds one entry
+per amendment of a frozen plan:
+
+    ### E1
+
+    - fecha: 2031-02-03T10:00:00Z
+    - por: <who>
+    - datos_vistos: si | no
+    - motivo: <one line>
+    - commit: <sha of the commit that recorded it> | pendiente
+
+    ```json
+    {"estimands": [...], "retire_estimands": [...], "classifiers": [...],
+     "retire_classifiers": [...], "intervals": {...}}
+    ```
+
+The json is a change, not a copy: `estimands` / `classifiers` replace the entry with the same
+`id` / `name` or add it, `retire_*` remove one, `intervals` overrides the keys it names. Every
+estimand an amendment changes or adds (all of them when ci, bootstrap or seed change) is a
+declared deviation of that amendment (`deviations`). Standard library only.
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -21,7 +47,17 @@ import notes  # noqa: E402
 TYPES = ("proporcion", "conteo", "mediana", "diferencia", "reutilizacion", "supervivencia")
 CLUSTER_TYPES = ("proporcion", "diferencia")
 BY_TYPES = ("proporcion", "conteo", "mediana", "supervivencia")
+AVISOS = ("cerrados", "enviados")
+AMENDMENTS = "Enmiendas"
+AMEND_KEYS = ("estimands", "retire_estimands", "classifiers", "retire_classifiers", "intervals")
+ENTRY_FIELDS = ("fecha", "por", "datos_vistos", "motivo", "commit")
+PENDING = "pendiente"
+SAMPLE_KEYS = ("ci", "bootstrap", "seed")   # an intervals change in these alters every estimate
 _FENCE = re.compile(r"```json[ \t]*\n(.*?)\n[ \t]*```", re.S)
+_ENTRY = re.compile(r"^###[ \t]+(\S+)[ \t]*$", re.M)
+_FIELD = re.compile(r"^-[ \t]+([a-z_]+):[ \t]*(.*?)[ \t]*$", re.M)
+_COMMIT_LINE = re.compile(r"^-[ \t]+commit:.*$", re.M)
+_SHA = re.compile(r"^[0-9a-f]{7,64}$")
 
 
 class PlanError(ValueError):
@@ -160,7 +196,14 @@ def _intervals(data) -> dict:
             raise PlanError(f"{h}: {k} debe ser un entero")
     if data["bootstrap"] < 1:
         raise PlanError(f"{h}: bootstrap debe ser al menos 1")
+    if "avisos" in data and data["avisos"] not in AVISOS:
+        raise PlanError(f"{h}: avisos debe ser uno de {', '.join(AVISOS)} (sin la clave: cerrados)")
     return data
+
+
+def avisos_mode(plan: dict) -> str:
+    """Which notices check the plan chose: `cerrados` (default) or `enviados`."""
+    return str((plan.get("intervals") or {}).get("avisos") or "cerrados")
 
 
 def read_plan(path: Path) -> dict:
@@ -171,29 +214,227 @@ def read_plan(path: Path) -> dict:
     return read_plan_text(text)
 
 
-def read_plan_text(text: str) -> dict:
-    """read_plan on the note's text (e.g. a version from `git show`)."""
+def _parts(text: str) -> tuple[dict, str]:
     parts = notes.split_note(text)
     if parts is None:
         raise PlanError("el plan no tiene frontmatter")
     fm_lines, body = parts
-    fm = notes.parse_frontmatter(fm_lines)
+    return notes.parse_frontmatter(fm_lines), body
+
+
+def blocks_of_body(body: str) -> dict:
+    """The three blocks of a plan body (no frontmatter needed)."""
     return {
-        "frozen_at": fm.get("frozen_at", ""),
-        "frozen_commit": fm.get("frozen_commit", ""),
         "estimands": _estimands(_block(body, "Estimandos")),
         "classifiers": _classifiers(_block(body, "Clasificadores")),
         "intervals": _intervals(_block(body, "Intervalos")),
     }
 
 
+def read_plan_text(text: str) -> dict:
+    """read_plan on the note's text (e.g. a version from `git show`): the plan's own blocks,
+    never its amendments."""
+    fm, body = _parts(text)
+    return {"frozen_at": fm.get("frozen_at", ""), "frozen_commit": fm.get("frozen_commit", ""),
+            **blocks_of_body(body)}
+
+
+# ---- amendments ------------------------------------------------------------
+
+def _optional_section(body: str, heading: str) -> str | None:
+    m = re.search(rf"^##[ \t]+{re.escape(heading)}[ \t]*$", body, re.M)
+    if not m:
+        return None
+    rest = body[m.end():]
+    nxt = re.search(r"^##[ \t]", rest, re.M)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def entry_content(text: str) -> str:
+    """An amendment entry as compared in git: without its `- commit:` line (written after the
+    commit that recorded it), line endings and trailing blanks normalised."""
+    text = _COMMIT_LINE.sub("", text.replace("\r\n", "\n"))
+    return "\n".join(ln.rstrip() for ln in text.split("\n") if ln.strip())
+
+
+def _entry_texts(body: str) -> list[tuple[str, str]]:
+    sec = _optional_section(body, AMENDMENTS)
+    if sec is None:
+        return []
+    heads = list(_ENTRY.finditer(sec))
+    return [(m.group(1), sec[m.start(): heads[i + 1].start() if i + 1 < len(heads) else len(sec)])
+            for i, m in enumerate(heads)]
+
+
+def amendment_contents(text: str) -> dict[str, str]:
+    """{entry id: entry_content} of a note's `## Enmiendas`, validating nothing (for old
+    versions from `git show`)."""
+    parts = notes.split_note(text)
+    return {eid: entry_content(t) for eid, t in _entry_texts(parts[1] if parts else text)}
+
+
+def _delta(eid: str, data) -> dict:
+    h = f"{AMENDMENTS}: {eid}"
+    if not isinstance(data, dict) or not data:
+        raise PlanError(f"{h}: el bloque json debe ser un objeto con al menos una de {', '.join(AMEND_KEYS)}")
+    extra = sorted(set(data) - set(AMEND_KEYS))
+    if extra:
+        raise PlanError(f"{h}: claves desconocidas {', '.join(extra)} (admitidas: {', '.join(AMEND_KEYS)})")
+    for k in ("estimands", "classifiers"):
+        if k in data and (not isinstance(data[k], list) or not all(isinstance(x, dict) for x in data[k])):
+            raise PlanError(f"{h}: {k} debe ser una lista de objetos")
+    for k in ("retire_estimands", "retire_classifiers"):
+        if k in data and (not isinstance(data[k], list) or not all(isinstance(x, str) and x for x in data[k])):
+            raise PlanError(f"{h}: {k} debe ser una lista de ids (texto)")
+    if "intervals" in data and (not isinstance(data["intervals"], dict) or not data["intervals"]):
+        raise PlanError(f"{h}: intervals debe ser un objeto con las claves que cambian")
+    return data
+
+
+def read_amendments(body: str) -> list[dict]:
+    """The entries of `## Enmiendas`, in order: {id, fecha, por, datos_vistos, motivo, commit,
+    delta, content}. Ids must run E1, E2, …; [] when the section is absent."""
+    out: list[dict] = []
+    for i, (eid, text) in enumerate(_entry_texts(body)):
+        if eid != f"E{i + 1}":
+            raise PlanError(f"{AMENDMENTS}: se esperaba la entrada E{i + 1} y aparece {eid!r} "
+                            "(las enmiendas se numeran E1, E2, … y nunca se borran)")
+        fields = {k: v for k, v in _FIELD.findall(text)}
+        miss = [k for k in ENTRY_FIELDS if not fields.get(k)]
+        if miss:
+            raise PlanError(f"{AMENDMENTS}: a {eid} le falta {', '.join(miss)}")
+        if fields["datos_vistos"] not in ("si", "no"):
+            raise PlanError(f"{AMENDMENTS}: {eid}: datos_vistos debe ser si o no")
+        if fields["commit"] != PENDING and not _SHA.match(fields["commit"]):
+            raise PlanError(f"{AMENDMENTS}: {eid}: commit debe ser un sha o {PENDING}")
+        fence = _FENCE.search(text)
+        if not fence:
+            raise PlanError(f"{AMENDMENTS}: {eid}: falta el bloque ```json con el cambio")
+        try:
+            data = json.loads(fence.group(1))
+        except json.JSONDecodeError as e:
+            raise PlanError(f"{AMENDMENTS}: {eid}: JSON inválido ({e})") from e
+        out.append({"id": eid, **{k: fields[k] for k in ENTRY_FIELDS},
+                    "delta": _delta(eid, data), "content": entry_content(text)})
+    return out
+
+
+def _upsert(items: list[dict], new: list[dict], key: str) -> list[str]:
+    done = []
+    for x in new:
+        k = x.get(key)
+        idx = next((i for i, y in enumerate(items) if y.get(key) == k), None)
+        if idx is None:
+            items.append(copy.deepcopy(x))
+        else:
+            items[idx] = copy.deepcopy(x)
+        done.append(str(k))
+    return done
+
+
+def apply_amendments(base: dict, entries: list[dict]) -> dict:
+    """The effective blocks: `base` (estimands, classifiers, intervals) with `entries` applied
+    in order. Returns {estimands, classifiers, intervals, deviations, summary}: deviations maps
+    an estimand id to [{enmienda, datos_vistos}] for each amendment that changed or added it."""
+    est = copy.deepcopy(base["estimands"])
+    cls = copy.deepcopy(base["classifiers"])
+    ivl = copy.deepcopy(base["intervals"])
+    deviations: dict[str, list[dict]] = {}
+    summary: list[dict] = []
+    for a in entries:
+        d, eid = a["delta"], a["id"]
+        retired = []
+        for rid in d.get("retire_estimands", []):
+            if not any(e["id"] == rid for e in est):
+                raise PlanError(f"{AMENDMENTS}: {eid} retira el estimando {rid!r}, que no existe")
+            est = [e for e in est if e["id"] != rid]
+            retired.append(rid)
+        changed = _upsert(est, d.get("estimands", []), "id")
+        retired_cls = []
+        for name in d.get("retire_classifiers", []):
+            if not any(c["name"] == name for c in cls):
+                raise PlanError(f"{AMENDMENTS}: {eid} retira el clasificador {name!r}, que no existe")
+            cls = [c for c in cls if c["name"] != name]
+            retired_cls.append(name)
+        changed_cls = _upsert(cls, d.get("classifiers", []), "name")
+        ivl_changed = False
+        if "intervals" in d:
+            new = {**ivl, **d["intervals"]}
+            ivl_changed = new != ivl
+            if any(new.get(k) != ivl.get(k) for k in SAMPLE_KEYS):
+                changed += [e["id"] for e in est]
+            ivl = new
+        try:
+            _estimands({"estimands": est})
+            _classifiers({"classifiers": cls})
+            _intervals(ivl)
+        except PlanError as e:
+            raise PlanError(f"{AMENDMENTS}: con {eid} el plan no es válido: {e}") from None
+        changed = list(dict.fromkeys(changed))
+        for i in changed:
+            deviations.setdefault(i, []).append({"enmienda": eid, "datos_vistos": a["datos_vistos"]})
+        summary.append({"id": eid, "datos_vistos": a["datos_vistos"], "estimandos_cambiados": changed,
+                        "estimandos_retirados": retired,
+                        "clasificadores_cambiados": changed_cls + retired_cls,
+                        "intervalos_cambiados": ivl_changed})
+    return {"estimands": est, "classifiers": cls, "intervals": ivl, "deviations": deviations,
+            "summary": summary}
+
+
+def read_effective_text(text: str) -> dict:
+    """The plan's own blocks with its amendments applied: {frozen_at, frozen_commit, estimands,
+    classifiers, intervals, amendments, deviations, summary}. Without `## Enmiendas` the blocks
+    are exactly read_plan_text's."""
+    fm, body = _parts(text)
+    base = blocks_of_body(body)
+    entries = read_amendments(body)
+    eff = apply_amendments(base, entries)
+    return {"frozen_at": fm.get("frozen_at", ""), "frozen_commit": fm.get("frozen_commit", ""),
+            "estimands": eff["estimands"], "classifiers": eff["classifiers"], "intervals": eff["intervals"],
+            "amendments": [{k: v for k, v in a.items() if k != "content"} for a in entries],
+            "deviations": eff["deviations"], "summary": eff["summary"]}
+
+
+def read_effective(path: Path) -> dict:
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as e:
+        raise PlanError(f"no se pudo leer {path}: {e}") from e
+    return read_effective_text(text)
+
+
+def diff_blocks(current: dict, new: dict) -> dict:
+    """The amendment delta that turns the effective blocks `current` into `new` (both as from
+    blocks_of_body / read_effective): changed or added entries, retired ones, changed interval
+    keys. {} when nothing changes. Order changes alone are not a change."""
+    out: dict = {}
+    for key, ident, retire in (("estimands", "id", "retire_estimands"),
+                               ("classifiers", "name", "retire_classifiers")):
+        cur = {x[ident]: x for x in current[key]}
+        nw = {x[ident]: x for x in new[key]}
+        gone = [i for i in cur if i not in nw]
+        upd = [x for i, x in nw.items() if cur.get(i) != x]
+        if gone:
+            out[retire] = gone
+        if upd:
+            out[key] = upd
+    ivl_cur, ivl_new = current["intervals"], new["intervals"]
+    ch = {k: v for k, v in ivl_new.items() if ivl_cur.get(k) != v}
+    if "avisos" in ivl_cur and "avisos" not in ivl_new and ivl_cur["avisos"] != "cerrados":
+        ch["avisos"] = "cerrados"
+    if ch:
+        out["intervals"] = ch
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 2 or argv[0] != "show":
-        print(json.dumps({"error": "uso: plan_blocks.py show <ruta>"}))
+    if len(argv) != 2 or argv[0] not in ("show", "efectivo"):
+        print(json.dumps({"error": "uso: plan_blocks.py show|efectivo <ruta>"}))
         return 1
     try:
-        print(json.dumps(read_plan(Path(argv[1])), ensure_ascii=False, indent=2))
+        data = read_plan(Path(argv[1])) if argv[0] == "show" else read_effective(Path(argv[1]))
+        print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0
     except PlanError as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))

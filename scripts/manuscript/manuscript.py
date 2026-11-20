@@ -51,6 +51,15 @@ it keeping that shape (or use ``bind``).
   A blocked section is never ``ready``, so ``write-section`` refuses it;
 * ``pendiente``  — anything else.
 
+Labelled designs. A study design with ``etiqueta`` in config/designs.toml (today
+``exploratoria``, QE-XXXX, label ``exploratorio``) is citable only with its label,
+checked mechanically: ``bind`` refuses it unless the section's title contains one of
+the label's words (``exploratori`` or ``exploratory``, case-insensitive — e.g.
+«Resultados exploratorios»); ``write-section`` refuses a body of a section bound to
+it unless the body contains one of those words too; ``coverage`` writes the label
+next to the dependency («QE-0004 ✓ «exploratorio»»). A question whose plan was
+amended shows «desviación E1 (datos_vistos: si)» the same way.
+
 Exit codes: 0 ok · 3 refused · 1 error. Standard library only.
 """
 
@@ -65,7 +74,9 @@ from pathlib import Path
 
 __version__ = "1.2.0"
 KINDS = ("prosa", "resultado", "cierre")
-_ID = re.compile(r"^(C|H|Q)-\d{4}$")
+_ID = re.compile(r"^(C|H|Q|QE)-\d{4}$")
+# The words that state a design's label in a section title and body (lower-case substrings).
+LABEL_WORDS = {"exploratorio": ("exploratori", "exploratory")}
 LANGS = ("es", "en")
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 _THREAD = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
@@ -85,6 +96,7 @@ TITLES = {
     "methodology": ("Metodología", "Methodology"),
     "ethics": ("Ética", "Ethics"),
     "results": ("Resultados", "Results"),
+    "exploratory-results": ("Resultados exploratorios", "Exploratory results"),
     "discussion": ("Discusión", "Discussion"),
     "related-work": ("Trabajo relacionado", "Related work"),
     "open-science": ("Ciencia abierta", "Open science"),
@@ -167,7 +179,7 @@ def parse_outline(path: Path) -> tuple[dict, list[dict], str]:
             raise Refused(f"section {s['id']}: kind must be one of {KINDS}")
         for d in s["depends_on"]:
             if not _ID.match(d):
-                raise Refused(f"section {s['id']}: depends_on {d!r} is not a C-XXXX / H-XXXX / Q-XXXX id")
+                raise Refused(f"section {s['id']}: depends_on {d!r} is not a C-XXXX / H-XXXX / Q-XXXX / QE-XXXX id")
     return meta, sections, m.group(2)
 
 
@@ -229,17 +241,39 @@ def init(project_dir: Path, thread: str, title: str, venue: str | None,
     return outline, manuscript
 
 
+def _study_design(note_id: str) -> dict | None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ledger"))
+    import designs as _designs  # noqa: PLC0415
+    return _designs.design_for_id(_designs.load(), note_id)
+
+
+def label_words(etiqueta: str) -> tuple[str, ...]:
+    return LABEL_WORDS.get(etiqueta, (etiqueta.lower(),))
+
+
+def states_label(text: str, etiqueta: str) -> bool:
+    """Whether `text` states the label (one of its words, case-insensitive)."""
+    low = (text or "").lower()
+    return any(w in low for w in label_words(etiqueta))
+
+
 def bind(project_dir: Path, thread: str, section: str, note_id: str) -> list[str]:
     if not _ID.match(note_id):
-        raise Refused("id must be C-XXXX, H-XXXX or Q-XXXX")
+        raise Refused("id must be C-XXXX, H-XXXX, Q-XXXX or QE-XXXX")
     outline, _ = paths(project_dir, thread)
     meta, sections, body = parse_outline(outline)
     target = next((s for s in sections if s["id"] == section), None)
     if target is None:
         raise Refused(f"no section {section} in the outline")
-    folder = {"C": "Claims", "H": "Hipotesis", "Q": "Preguntas"}[note_id[0]]
+    design = _study_design(note_id) if note_id.startswith("Q") else None
+    folder = design["folder"] if design else {"C": "Claims", "H": "Hipotesis", "Q": "Preguntas"}[note_id[0]]
     if not any((project_dir / folder).glob(f"{note_id}*.md")):
         raise Refused(f"{note_id} not found in {folder}/")
+    etiqueta = (design or {}).get("etiqueta")
+    if etiqueta and not states_label(target.get("title", ""), etiqueta):
+        raise Refused(f"{note_id} is {etiqueta}: bind it only to a section whose title says so "
+                      f"(one of: {', '.join(label_words(etiqueta))}), e.g. «Resultados exploratorios»; "
+                      f"section {section} is titled {target.get('title')!r}")
     if note_id not in target["depends_on"]:
         target["depends_on"].append(note_id)
     outline.write_text(render_outline(meta, sections, body), encoding="utf-8", newline="\n")
@@ -278,7 +312,14 @@ def _question_state(vault: Path, dep: str) -> dict:
     missing = list(g["missing"])
     if status != design["publishable"]:
         missing.append(f"estado «{status}», no {design['publishable']}")
-    return {"id": dep, "ok": g["ok"] and status == design["publishable"], "status": status, "missing": missing}
+    out = {"id": dep, "ok": g["ok"] and status == design["publishable"], "status": status, "missing": missing}
+    labels = [g["etiqueta"]] if g.get("etiqueta") else []
+    labels += [f"desviación {a['id']} (datos_vistos: {a['datos_vistos']})" for a in g.get("enmiendas") or []]
+    if g.get("etiqueta"):
+        out["etiqueta"] = g["etiqueta"]
+    if labels:
+        out["labels"] = labels
+    return out
 
 
 def dep_state(vault: Path, dep: str) -> dict:
@@ -432,7 +473,8 @@ def render_coverage(cov: dict) -> str:
              "> Vista derivada: la regenera `manuscript.py coverage`. No editar a mano.", "",
              "| sección | tipo | estado | respaldo | ¿lista? | ¿redactada? |", "|---|---|---|---|---|---|"]
     for s in cov["sections"]:
-        backing = "; ".join(f"{d['id']} {'✓' if d['ok'] else '✗'}" for d in s["deps"]) or "—"
+        backing = "; ".join(f"{d['id']} {'✓' if d['ok'] else '✗'}"
+                            + "".join(f" «{lb}»" for lb in d.get("labels") or []) for d in s["deps"]) or "—"
         lines.append(f"| {s['title']} | {s['kind']} | {s['state']} | {backing} | "
                      f"{'sí' if s['ready'] else 'no'} | {'sí' if s['drafted'] else 'no'} |")
     lines.append("")
@@ -460,6 +502,11 @@ def write_section(vault: Path, project_dir: Path, thread: str, section: str, tex
         raise Refused(f"section {section} is not ready: {s['why']}")
     if not text.strip():
         raise Refused("empty section text")
+    for d in s["deps"]:
+        et = d.get("etiqueta")
+        if et and not states_label(text, et):
+            raise Refused(f"section {section} rests on {d['id']}, which is {et}: the text must say so "
+                          f"(one of: {', '.join(label_words(et))})")
     _, manuscript = paths(project_dir, thread)
     raw = manuscript.read_text(encoding="utf-8").replace("\r\n", "\n")
     marker = f"<!-- kairo:section {section} -->"
