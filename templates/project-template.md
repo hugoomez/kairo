@@ -61,6 +61,14 @@ code_visibility: private
 # The `## Ética` of every measurement and pilot plan points to it. Delete the line
 # when the project has none.
 etica: Projects/<slug>/Etica.md
+# no_descifrar — medicion on encrypted or secret material: true when the ethics plan
+# promises that nothing is ever decrypted and no found key is ever used. repo-steward
+# then runs scripts/code_repo/no_decrypt_check.py on code_repo (exit 4 = a call that
+# decrypts) and reports it in _repo-health.md. Delete the line when it does not apply.
+no_descifrar: true
+# autores — optional: names, e-mails and handles of the authors, for the leak scan of
+# `scripts/study/artifact.py build --anonymous` (also KAIRO_AUTHORS, `;`-separated).
+# autores: [<Nombre Apellido>, <handle>]
 # deadline — optional
 deadline: <YYYY-MM-DD>
 # compute_budget — optional (e.g. "500 GPU-h" or a currency figure)

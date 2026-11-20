@@ -226,6 +226,16 @@ registrados todavía; añade los que correspondan antes de estimar». The gate o
 `estimada` needs every notice closed (`avisos_cerrados`). They manage notices
 in the interface's Avisos panel. You never read or write that registry.
 
+You may help write the wording of the notices: a template in
+`Projects/<slug>/Plantillas-avisos/<name>.md` (outside `Avisos/`), with
+placeholders and no real data — start it with `python
+"${CLAUDE_PLUGIN_ROOT}/scripts/study/notices.py" template --vault <vault>
+--project <slug> --name <name> [--kind vendor] --new` and run the same command
+without `--new` after every edit until it exits 0. Rendering the drafts
+(`notices.py draft` / `vendor`) is the researcher's command, run in their own
+terminal: it reads the findings and writes `Avisos/`, and refuses inside an
+agent session. Nothing is ever sent by a script.
+
 ### 6. Report
 
 Report:
