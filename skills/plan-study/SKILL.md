@@ -145,6 +145,25 @@ when you can, then follow up. Typical questions:
   registered `sensitive: true`. Note that the dataset must then be redacted at
   the source, by the collection script, with `scripts/security/redact.py`.
 
+  **The project's ethics plan.** A `medicion` project has
+  `Projects/<slug>/Etica.md` (hub field `etica:`, from
+  `templates/ethics-plan-template.md`): affected parties, Menlo principles,
+  what is collected and what never, sensitive material, terms of use, ethics
+  committee, disclosure, retention and publication. Read it before drafting
+  `## Ética`, and write in the plan only what this question or pilot adds or
+  changes. If `Etica.md` still has placeholders, or `comite` is
+  `pendiente`/`solicitado`, say so to the researcher before the freeze; never
+  fill it or change its `status`/`comite` yourself. If the hub has
+  `sota_map: diferido`, `Novedad.md` is the project's only literature check:
+  cite it where the question's motivation needs prior measurements, and
+  propose a pilot first.
+
+  **The environment.** Before the researcher registers a sensitive dataset,
+  run `python "${CLAUDE_PLUGIN_ROOT}/scripts/study/doctor.py" --vault <vault>
+  --project <slug>` and show any `critico` item (dataset inside a git tree or
+  a synced folder, `GITHUB_TOKEN`/`GH_TOKEN` in the environment, …) with its
+  fix. Exit 4 means at least one `critico`.
+
 Write the answers into the plan's sections and JSON blocks, exactly in the
 template's shape. Then check the blocks:
 
