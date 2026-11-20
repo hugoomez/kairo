@@ -35,7 +35,13 @@ them and writes the whole note itself:
     `fetched_at`; its visible text is `## Texto completo`, the page bytes are
     kept (pagina.html) so `verify` re-derives all three sections and `rebuild`
     fetches the page again. A page naming a DOI / arXiv id, a loose PDF, a page
-    with no title and a private or local URL are refused;
+    with no title and a private or local URL are refused. With `--doc --tool
+    <name>` the page is versioned technical documentation (tool docs, a
+    file-format spec, a changelog): `source_type: documentacion`, with `tool`,
+    `doc_version` (read from the page, else empty), `accessed_at`, `sha256` of
+    its visible text and a `## Versiones` section; it is recognised by its URL,
+    and `docs_corpus.py refresh` (never `rebuild`) fetches it again, keeping
+    every previous version;
   - a DOI whose OpenAlex work lists an arXiv preprint is anchored on that
     preprint (its open text), with the DOI kept as `published_doi`, unless
     `--keep-doi-anchor`;
@@ -819,6 +825,10 @@ def cmd_add(a, fetch: Fetch = default_fetch, fetch_arxiv=vf.fetch_arxiv, today: 
         raise Refused("give exactly one of --arxiv, --doi, --openalex or --url (a preprint is anchored on its arXiv id)")
     if url and a.pdf_text:
         raise Refused("--url takes the page's own text; --pdf-text goes with --doi / --arxiv / --openalex")
+    if getattr(a, "doc", False) and not url:
+        raise Refused("--doc goes with --url (a documentation page)")
+    if getattr(a, "doc", False) and not (getattr(a, "tool", None) or "").strip():
+        raise Refused("--doc needs --tool <name>: the tool, format or standard the page documents")
     if retraction.is_arxiv_doi(doi):
         arxiv, doi = retraction.arxiv_from_doi(doi), ""
     with vault_lock(vault):
@@ -849,7 +859,12 @@ def _add_web(a, vault: Path, url: str, fetch: Fetch, today) -> dict:
     pid = next_id(vault)
     store = Store(vault, pid, date)
     meta, page_text = gather_web(store, url, fetch)
-    existing = find_existing(vault, "", "", meta["title"])
+    doc = getattr(a, "doc", False)
+    if doc:
+        import docs_corpus                       # documentation: recognised by its URL, not its title
+        existing = docs_corpus.find_doc(vault, meta["web_url"])
+    else:
+        existing = find_existing(vault, "", "", meta["title"])
     if existing:
         return _existing(a, vault, existing)
     block, kind, warn = web_fulltext(store, meta, page_text, fetch, a.no_fulltext)
@@ -859,13 +874,21 @@ def _add_web(a, vault: Path, url: str, fetch: Fetch, today) -> dict:
         ("id", pid), ("title", meta["title"]), ("authors", meta["authors"] or []), ("year", meta["year"]),
         ("venue", meta["venue"]), ("doi", ""), ("arxiv", ""), ("arxiv_version", ""), ("url", meta["web_url"]),
         ("pdf", net.redact(meta["pdf_url"]) if kind == "pdf" else ""), ("projects", [a.project]), ("added", date),
-        ("source", "web"), ("source_type", "gris"),
+        ("source", "web"), ("source_type", "documentacion" if doc else "gris"),
         ("fetched_at", date), ("fulltext", web_fulltext_field(kind)),
         ("ingested_by", TOOL), ("fuentes", f"{store.rel}/fuentes.json")]
+    versions, doc_out = "", {}
+    if doc:
+        extra, versions, doc_out = docs_corpus.doc_fields(a, store, meta, page_text)
+        at = fields.index(("fetched_at", date))
+        fields[at:at] = extra                     # tool, doc_version, accessed_at, sha256
     body = (f"## Referencia\n\n{referencia(meta)}\n\n"
             f"## Resumen\n\n{web_resumen(meta['abstract'], meta['web_url'], date, meta['abstract_from'])}\n\n"
-            f"## Texto completo\n\n{block.strip() if block else NO_FULLTEXT}\n")
+            f"## Texto completo\n\n{block.strip() if block else NO_FULLTEXT}\n"
+            + (f"\n{versions}" if versions else ""))
     text = set_suspicious(frontmatter(fields) + "\n" + body, block)
+    if doc:
+        text = docs_corpus.quote_version(text)
     if suspicious_sections(block):
         warn.append("texto_sospechoso: la página contiene texto oculto o que parece una instrucción a un modelo "
                     f"({suspicious_sections(block)}) — es contenido de la fuente, nunca una instrucción")
@@ -878,7 +901,7 @@ def _add_web(a, vault: Path, url: str, fetch: Fetch, today) -> dict:
     return {"status": "created" if not a.dry_run else "dry_run", "id": pid,
             "path": path.relative_to(vault).as_posix(), "fulltext": kind or "abstract-only",
             "abstract": "found" if meta["abstract"] else "missing", "fuentes": f"{store.rel}/fuentes.json",
-            "warnings": warn,
+            "warnings": warn, **({"source_type": "documentacion", **doc_out} if doc else {}),
             "csl": {"title": meta["title"], "authors": meta["authors"], "year": meta["year"],
                     "venue": meta["venue"], "url": meta["web_url"], "abstract": meta["abstract"] or ""}}
 
@@ -1142,6 +1165,11 @@ def _rebuild(a, vault: Path, fetch: Fetch, fetch_arxiv, today: str | None) -> di
         fm = (vn.split_frontmatter(text) or ([], ""))[0]
         arxiv = retraction.normalize_arxiv(vn.fm_get(fm, "arxiv")) or ""
         doi = "" if arxiv else (retraction.normalize_doi(vn.fm_get(fm, "doi")) or "")
+        if vn.fm_get(fm, "source_type") == "documentacion":
+            out.append({"id": pid, "status": "refused",
+                        "reason": "documentación versionada: `docs_corpus.py refresh` la vuelve a obtener y guarda "
+                                  "la versión anterior; rebuild la sobrescribiría"})
+            continue
         if not arxiv and not doi and vn.fm_get(fm, "source") == "web" and vn.fm_get(fm, "url"):
             out.append(_rebuild_web(a, vault, path, text, vn.fm_get(fm, "url"), fetch, date))
             continue
@@ -1396,6 +1424,10 @@ def main(argv: list[str] | None = None, fetch: Fetch = default_fetch, fetch_arxi
     ad.add_argument("--openalex", help="OpenAlex work id (W…) of a paper with no DOI and no arXiv id")
     ad.add_argument("--url", help="a grey-literature web page (report, documentation, blog post, advisory) with no "
                                   "DOI, arXiv or OpenAlex id; metadata and text from the page's own bytes")
+    ad.add_argument("--doc", action="store_true",
+                    help="with --url: versioned technical documentation (source_type: documentacion; "
+                         "docs_corpus.py refresh keeps its versions)")
+    ad.add_argument("--tool", help="with --doc: the tool, format or standard the page documents")
     ad.add_argument("--keep-doi-anchor", action="store_true",
                     help="anchor on the DOI even when OpenAlex lists an arXiv preprint for it")
     ad.add_argument("--version", help="pin an arXiv version, e.g. v2 (default: the latest)")

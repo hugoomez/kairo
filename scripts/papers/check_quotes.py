@@ -141,8 +141,16 @@ def list_papers(vault: str, project: str | None) -> list[dict]:
         fm, body = split_frontmatter(read_text(str(p)))
         if project and project not in projects_of(fm):
             continue
-        out.append({"id": fm_scalar(fm, "id") or p.stem.split(" ")[0], "title": fm_scalar(fm, "title"),
-                    "path": p.relative_to(vault).as_posix(), "fulltext": has_fulltext(body)})
+        item = {"id": fm_scalar(fm, "id") or p.stem.split(" ")[0], "title": fm_scalar(fm, "title"),
+                "path": p.relative_to(vault).as_posix(), "fulltext": has_fulltext(body)}
+        kind = fm_scalar(fm, "source_type")
+        if kind:
+            # grey literature and versioned documentation are cited like any paper; a
+            # documentation page says which version of it the answer quotes
+            item["source_type"] = kind
+            if kind == "documentacion":
+                item.update({k: fm_scalar(fm, k) or "" for k in ("tool", "doc_version", "accessed_at")})
+        out.append(item)
     return out
 
 

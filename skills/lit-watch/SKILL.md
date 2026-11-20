@@ -1,6 +1,6 @@
 ---
 name: lit-watch
-description: Use for the periodic literature watch of one Kairo project ("vigila la literatura", "¿hay papers nuevos?", "lit watch"), or to ingest the papers the researcher picked from a watch. Re-runs the project's own recorded queries restricted to papers since the last watch (scripts/watch/lit_watch.py), writes a one-line triage reason for each strong candidate, and checks whether a new paper threatens the novelty of an existing hypothesis. A threat is a model's judgement recorded in the hypothesis's Revisión de vigencia with a verbatim sentence of the abstract. It never changes a status, and it ingests nothing unless the researcher chose the paper or the hub says paper_ingestion: autonomo.
+description: Use for the periodic literature watch of one Kairo project ("vigila la literatura", "¿hay papers nuevos?", "lit watch"), or to ingest the papers the researcher picked from a watch. Re-runs the project's own recorded queries restricted to papers since the last watch (scripts/watch/lit_watch.py), writes a one-line triage reason for each strong candidate, and checks whether a new paper threatens the novelty of an existing hypothesis or open study question (already measured: same quantity, overlapping population). A threat is a model's judgement recorded in the hypothesis's or question's Revisión de vigencia with a verbatim sentence of the abstract. It never changes a status, and it ingests nothing unless the researcher chose the paper or the hub says paper_ingestion: autonomo.
 ---
 
 # lit-watch — what is new, and does it matter to a hypothesis
@@ -43,8 +43,16 @@ run also leaves a page to read, `_vigilancia/vigilancia-<date>.md` (strong
 candidates by title, what they cite, lost / truncated / relevance-ranked
 coverage), so a scheduled watch is useful before any model has triaged it.
 
+**Study questions too.** A measurement study's novelty is a question, not a
+claim: «has anyone already measured X in population Y?». The watch matches
+the project's open study questions as well — `Preguntas/Q-*.md` and, when the
+folder exists, `Exploratorias/QE-*.md`; not a `descartada` or `sin_respuesta`
+one, and never a pilot (`Pilotos/QP-*`) — by the words of their
+`## Pregunta` and `## Población y marco` only, and a threat to a question is
+recorded in the question's own `## Revisión de vigencia` (step 3).
+
 **A novelty threat is not evidence.** It is your judgement that a new paper
-may already report the hypothesis's claim.
+may already report the hypothesis's claim (or the question's measurement).
 - It never moves `status`, `confidence`, `verifications` or any flag.
 - It is recorded with the abstract's own words: the script refuses a
   sentence that is not verbatim in the abstract.
@@ -251,6 +259,31 @@ python <plugin>/scripts/watch/lit_watch.py threat --vault <vault> --project-dir 
 If the script refuses the sentence because it is not verbatim, copy it again
 from the abstract. Never paraphrase it to make it pass.
 
+**Study questions.** Each candidate also carries `novelty_preguntas`, the same
+prefilter run against the open study questions (its own list, at most 3 per
+candidate; the delta counts them in `novelty_question_candidates`). Treat each
+(question, candidate) pair like a hypothesis pair, with `--question Q-XXXX`
+(or `QE-XXXX`) in place of `--hypothesis`:
+
+1. `lit_watch.py judge-packet … --key <key> --question Q-XXXX` stores a packet
+   marked «Tipo: pregunta» holding only the question's `## Pregunta` and
+   `## Población y marco` — never its plan, estimands, data or results — and
+   the candidate's title and abstract. Dispatch one `novelty-judge` on its path,
+   in the same turn as the hypothesis pairs.
+2. The judge answers whether the abstract **reports a measurement of the same
+   quantity in an overlapping population**, in its question block
+   (`kind: pregunta`, `threat`, `same_quantity`, `population_overlap`,
+   `sentence`, `severity`, `judgement`).
+3. Record only `threat: true` answers with
+   `lit_watch.py threat … --question Q-XXXX --sentence "<exact words>" --severity … --judgement "<one line>" --model <id> --packet-sha256 <sha256>`.
+   The same verbatim check applies. The line goes into the question's own
+   `## Revisión de vigencia` (created at the end of the note if missing), and
+   the run records the threat with `question` and `kind: pregunta`. A
+   `descartada` or `sin_respuesta` question is refused. It never changes the
+   question's `status` (only `study_status.py` writes it).
+4. The researcher decides with
+   `lit_watch.py threat-decide … --question Q-XXXX --decision no_afecta|revisar --reason "…" --by <name>`.
+
 ### 4. Commit and report
 
 First check the run is complete:
@@ -268,14 +301,15 @@ incomplete run.
   (it adds your triage lines, the threats with their quoted sentences and any
   decision to `vigilancia-<date>.md`).
 - Commit the run file, its `.md` page, `_hub.md` (`last_watch`) and any
-  hypothesis that got a Revisión de vigencia line, together:
+  hypothesis or study question that got a Revisión de vigencia line, together:
   `Vigilancia de literatura <PROJ>: <n> nuevos, <m> alertas`.
 - Report in a few lines:
   - the window;
   - candidates, strong and triaged; `carried` (backlog from earlier watches) and
     `strong_not_triaged` — when that is above 0, say how many strong papers wait
     for the next watch, and offer to triage them now with a larger `--top`;
-  - each threat, as severity + hypothesis + paper + the quoted sentence;
+  - each threat, as severity + hypothesis or question + paper + the quoted
+    sentence;
   - the lost and truncated queries (and that the window stays open).
 - Name the page (`vigilancia-<date>.md`) and end with: "Las alertas son juicios
   de un modelo; decide tú (en esa página, o en la bandeja de la interfaz si la usas)."
@@ -300,11 +334,13 @@ staleness check itself (and re-indexes Smart Connections) and prints
 
 ## Rules
 
-- Never change a hypothesis's `status`, `confidence` or frontmatter. The only
-  write to a hypothesis is the script's Revisión de vigencia line.
+- Never change a hypothesis's or a study question's `status`, `confidence` or
+  frontmatter. The only write to either is the script's Revisión de vigencia
+  line.
 - Never ingest a paper in watch mode.
 - Never read `send: never` notes, the model-written reading notes under
-  Papers/, or a hypothesis's reasoning sections.
+  Papers/, a hypothesis's reasoning sections, or a study question's plan,
+  data or results.
 - Never read a candidate's title or abstract yourself (run file, page, or any
   command): the screener writes the triage lines from its packet and the
   novelty-judge decides threats from its own; you pass paths and record their
