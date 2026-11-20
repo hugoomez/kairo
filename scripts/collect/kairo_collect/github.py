@@ -354,11 +354,26 @@ class Client:
             return base64.b64decode(d.get("content") or "")
         return (d.get("content") or "").encode("utf-8")
 
+    def readme_present(self, full_name: str) -> bool | None:
+        """Whether the repository has a README (GET /repos/{repo}/readme: 200 yes, 404 no);
+        None when the repository itself is gone (451, 403 blocked)."""
+        try:
+            self.get(f"/repos/{full_name}/readme", tag="readme")
+            return True
+        except GitHubError as e:
+            if e.status == 404:
+                return False
+            if e.status in (403, 451):
+                return None
+            raise
+
 
 def repo_facts(d: dict) -> dict:
     owner = d.get("owner") or {}
     lic = d.get("license") or {}
-    return {"full_name": d.get("full_name"), "id": d.get("id"), "fork": d.get("fork"),
+    return {"full_name": d.get("full_name"), "id": d.get("id"), "name": d.get("name"),
+            "description": d.get("description"), "topics": list(d.get("topics") or []),
+            "clone_url": d.get("clone_url"), "fork": d.get("fork"),
             "archived": d.get("archived"), "is_template": d.get("is_template"),
             "disabled": d.get("disabled"), "owner_type": owner.get("type"),
             "stargazers_count": d.get("stargazers_count"), "forks_count": d.get("forks_count"),

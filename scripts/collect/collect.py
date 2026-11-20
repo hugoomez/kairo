@@ -5,6 +5,7 @@
     collect.py search --queries q.json [--out DIR] [--max-items N] every page of every shard, resumable
     collect.py replay [--out DIR]                                  rebuild items from raw/, no network
     collect.py status [--out DIR]                                  progress + counts
+    collect.py manifest [--out DIR]                                rebuild manifest.md from manifest.json
 
 --out defaults to KAIRO_COLLECTION_OUT; --collection-id to KAIRO_COLLECTION_ID.
 The token is read from KAIRO_GITHUB_TOKEN_FILE (default ~/.kairo/github-token)
@@ -29,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from kairo_collect import GitHubError, TokenRefused, load_token  # noqa: E402
-from kairo_collect.collection import Collection, replay, status  # noqa: E402
+from kairo_collect.collection import Collection, replay, status, write_manifest_md  # noqa: E402
 
 EXIT_OK, EXIT_ERROR, EXIT_REFUSED = 0, 1, 3
 
@@ -42,7 +43,7 @@ def _emit(obj) -> None:
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="collect.py", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("count", "search", "replay", "status"):
+    for name in ("count", "search", "replay", "status", "manifest"):
         p = sub.add_parser(name)
         p.add_argument("--out", default=os.environ.get("KAIRO_COLLECTION_OUT"))
         if name in ("count", "search"):
@@ -68,6 +69,9 @@ def main(argv: list[str] | None = None, env: dict | None = None, **inject) -> in
             return EXIT_OK
         if args.cmd == "status":
             _emit(status(args.out))
+            return EXIT_OK
+        if args.cmd == "manifest":
+            _emit(write_manifest_md(args.out))
             return EXIT_OK
         token = load_token(env)
         with Collection(args.out, token=token, collection_id=args.collection_id,

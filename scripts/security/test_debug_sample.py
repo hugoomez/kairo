@@ -189,3 +189,74 @@ def test_data_guard_allows_the_sampler_and_blocks_direct_reads(env):
     assert data_guard.decide(ev2, env["vault"])
     ev3 = {"tool_name": "Read", "tool_input": {"file_path": str(target)}, "cwd": str(env["vault"])}
     assert data_guard.decide(ev3, env["vault"])
+
+
+# ---- --from-report ------------------------------------------------------------
+
+def _parse_report(env, tmp_path) -> Path:
+    """A parse report as kairo_collect.parsereport writes it (invented items), registered as a
+    sensitive `file` dataset named `informe`."""
+    recs = [
+        {"item": "acme-inventada/repo-a/k8s/app.enc.yaml", "status": "fail", "error_class": "missing_mac"},
+        {"item": "acme-inventada/repo-b/secret.yaml", "status": "fail", "error_class": "missing_mac"},
+        {"item": "acme-inventada/repo-b/.env", "status": "fail", "error_class": "bad_line"},
+        {"item": "acme-inventada/repo-a/sealed.yaml", "status": "fail", "error_class": "missing_mac"},
+        {"item": "acme-inventada/repo-a/sealed.yaml", "status": "ok", "error_class": None},     # last wins
+        {"item": "acme-inventada/no-existe.yaml", "status": "fail", "error_class": "missing_mac"},
+        {"item": "../fuera.yaml", "status": "fail", "error_class": "missing_mac"},
+        {"item": "/abs/x.yaml", "status": "fail", "error_class": "missing_mac"},
+    ]
+    rep = tmp_path / "fuera" / "parse" / "parse-report.jsonl"
+    _write(rep, "".join(json.dumps(r) + "\n" for r in recs) + "{cortada")
+    _write(tmp_path / "fuera" / "fuera.yaml", "password: no-debe-salir\n")
+    entries = env["entries"] + [{"name": "informe", "path": str(rep), "kind": "file", "sha256": "0" * 64,
+                                 "sensitive": True}]
+    env["reg"].write_text(json.dumps(entries), encoding="utf-8")
+    data_guard._MEMO.clear()
+    return rep
+
+
+def test_from_report_draws_only_the_failed_class(env, tmp_path):
+    rep = _parse_report(env, tmp_path)
+    m = ds.sample(env["vault"], "demo", "repos", 10, 3, None, False, from_report="informe", error_class="missing_mac")
+    assert m["disponibles"] == 2 and m["conservados"] == 2
+    assert m["informe"] == {"clase_de_error": "missing_mac", "fallos_de_la_clase": 5, "no_encontrados": 3}
+    out = env["out"] / "repos__fallo-missing_mac"
+    names = {p.name for p in out.rglob("*") if p.is_file()}
+    assert names == {"app.enc.yaml", "secret.yaml", "manifest.json"}
+    text = _all_text(out)
+    for s in [*env["secrets"], "no-debe-salir", "no-existe"]:
+        assert s not in text
+    m2 = ds.sample(env["vault"], "demo", "repos", 10, 3, None, False, from_report=str(rep), error_class="bad_line")
+    assert m2["conservados"] == 1 and (env["out"] / "repos__fallo-bad_line").is_dir()
+    assert "CLAVE" not in json.dumps(m2) and "acme" not in json.dumps(m2)
+
+
+@pytest.mark.parametrize("kw, why", [
+    ({"from_report": "informe"}, "van juntos"),
+    ({"from_report": "informe", "error_class": "con espacios"}, "identificador"),
+    ({"from_report": "relativo/parse-report.jsonl", "error_class": "x"}, "ruta absoluta"),
+    ({"from_report": "repos", "error_class": "x"}, "tipo file"),
+])
+def test_from_report_refusals(env, tmp_path, kw, why):
+    _parse_report(env, tmp_path)
+    with pytest.raises(ds.Refused, match=why):
+        ds.sample(env["vault"], "demo", "repos", 3, 1, None, False, **kw)
+    with pytest.raises(ds.Refused, match="tipo dir"):
+        ds.sample(env["vault"], "demo", "unidades", 3, 1, None, False, from_report="informe", error_class="x")
+
+
+def test_from_report_cli_and_guard(env, tmp_path):
+    _parse_report(env, tmp_path)
+    args = ["--vault", str(env["vault"]), "--project", "demo", "--dataset", "repos", "--n", "5", "--seed", "1",
+            "--from-report", "informe", "--error-class", "missing_mac"]
+    r = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True)
+    assert r.returncode == 0, r.stdout
+    out = r.stdout.decode("utf-8")
+    assert json.loads(out)["informe"]["fallos_de_la_clase"] == 5 and "acme" not in out
+    cmd = f'python "{SCRIPT}" ' + " ".join(f'"{a}"' for a in args)
+    ev = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(env["vault"])}
+    assert data_guard.decide(ev, env["vault"]) is None
+    rep = tmp_path / "fuera" / "parse" / "parse-report.jsonl"
+    ev2 = {"tool_name": "Read", "tool_input": {"file_path": str(rep)}, "cwd": str(env["vault"])}
+    assert data_guard.decide(ev2, env["vault"])

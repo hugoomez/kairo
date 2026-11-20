@@ -7,9 +7,15 @@ Output folder (``KAIRO_COLLECTION_OUT`` or ``--out``)::
     progress.json       what the Kairo app displays (progress.py)
     manifest.json       the snapshot's record: start / end UTC, API version sent
                         and selected, authenticated or not, queries, shard plan,
-                        counts, waits, tool version, the caller repo's commit.
-                        No item content.
+                        counts, waits, tool version, the caller repo's commit,
+                        snapshot_started_at / snapshot_ended_at, each query's
+                        executed_at, the population statement (manifest.py) and
+                        history counts. No item content.
+    manifest.md         manifest.json summarised for people (counts only, manifest.py)
     shard_plan.json     the plan per query (shard.py), deterministic
+    history/<owner>__<repo>/   fetch_history (history.py): repo.git (the blobless
+                        clone, deleted when the repository is done) and blobs/<sha>
+                        (only versions that look encrypted, unless keep_plaintext)
     items.jsonl         after `search`: one line per item {repo, path, sha, name,
                         html_url, queries}, sorted by (repo, path, sha)
     samples/            what the researcher writes for people (redacted)
@@ -31,9 +37,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import TOOL, TOOL_VERSION
+from . import history as hist
+from . import manifest as manifest_mod
 from .archive import RawArchive, atomic_write_bytes, atomic_write_json, utc_iso, write_for_humans
 from .github import API_VERSION, Client
 from .progress import Progress
+from .repometa import demo_score, repo_flags
 from .shard import CAP, CODE_SIZE_MAX, REPO_SIZE_MAX, SPLIT_QUALIFIERS, plan_query
 from .state import State
 from .token import Token, load_token
@@ -156,6 +165,9 @@ class Collection:
                              min_interval=min_interval, max_retries=max_retries, backoff_cap=backoff_cap,
                              rng=rng, on_wait=self.progress.waiting, **kw)
         self.collection_id = collection_id
+        api_host = urlsplit(self.client.base_url).netloc.lower()
+        # the host git may send the token to (history clones): the API's own site
+        self.git = hist.GitRunner(tok, token_hosts=("github.com",) if api_host == "api.github.com" else (api_host,))
         self.caller_repo = caller_repo if caller_repo is not None else os.getcwd()
         self.redact_raw = redact_raw
         self._mode: str | None = None
@@ -208,6 +220,7 @@ class Collection:
         self.progress.update(phase="planning", done=0, total=len(specs), unit="queries")
         for i, s in enumerate(specs):
             if self.state.query_plan(s["name"]) is None:
+                self.state.touch_query(s["name"], utc_iso(self.clock()))
                 plan = plan_query(s["q"], lambda q, k=s["kind"]: self._count(k, q),
                                   size_split=s["size_split"], size_max=s["size_max"],
                                   splitters=list(s["split"].items()))
@@ -279,6 +292,7 @@ class Collection:
                 page += 1
                 self.state.save_page(sh["query"], sh["id"], page, resp.sha256, items, nxt,
                                      d.get("total_count"), bool(d.get("incomplete_results")))
+                self.state.touch_query(sh["query"], utc_iso(self.clock()))
                 done += 1
                 self.progress.update(done=done, total=max(total, done))
                 url = nxt
@@ -314,6 +328,142 @@ class Collection:
     def blob(self, full_name: str, sha: str) -> bytes | None:
         return self.client.blob(full_name, sha)
 
+    # -- repository flags (repometa.py) -------------------------------------------------
+    def repo_flags(self, full_name: str) -> dict | None:
+        meta = self.repo_metadata(full_name)
+        return None if meta is None else repo_flags(meta)
+
+    def readme_present(self, full_name: str) -> bool | None:
+        return self.client.readme_present(full_name)
+
+    def demo_signals(self, full_name: str, check_readme: bool = True) -> dict | None:
+        """repometa.demo_score for a repository (metadata cached; README presence asked
+        once more per call when `check_readme`). A score and reasons, never a decision."""
+        meta = self.repo_metadata(full_name)
+        if meta is None:
+            return None
+        if "topics" not in meta:              # facts cached by an older version: ask again
+            meta = self.repo_metadata(full_name, refresh=True) or meta
+        return demo_score(meta, readme=self.readme_present(full_name) if check_readme else None)
+
+    # -- history of chosen paths (history.py) -------------------------------------------
+    def fetch_history(self, repo_full_name: str, paths, *, out_dir=None, max_bytes_budget: int,
+                      keep_plaintext: bool = False, keep_clone: bool = False, on_blob=None) -> dict:
+        """Every historical version of `paths` in one repository; see history.py.
+
+        Returns {"repo", "status": done | budget | not_found | error, "versions",
+        "deletions", "extracted", "kept", "unencrypted", "bytes_used", "budget", "message"}.
+        Resumable and idempotent: a finished repository asks nothing again (unless new
+        paths are given); an interrupted one continues where it stopped."""
+        repo = repo_full_name
+        dirname = hist.repo_dirname(repo)
+        wanted = hist.check_paths(paths)
+        if not isinstance(max_bytes_budget, int) or max_bytes_budget <= 0:
+            raise ValueError("max_bytes_budget debe ser un entero positivo (bytes)")
+        root = Path(out_dir) if out_dir is not None else self.out / "history"
+        rdir = root / dirname
+        gitdir, blobs = rdir / "repo.git", rdir / "blobs"
+        now = lambda: utc_iso(self.clock())  # noqa: E731
+        prev = self.state.history_repo(repo)
+        all_paths = sorted(set(wanted) | set(prev["paths"] if prev else []))
+        new_paths = bool(prev) and not set(wanted) <= set(prev["paths"])
+        if prev and prev["status"] == "done" and not new_paths:
+            return self._history_result(repo, "done", root, max_bytes_budget, prev.get("message"))
+        self._mode = self._mode or "history"
+        self.progress.update(phase="history", done=0, total=None, unit="blobs", message=f"historia de {dirname}")
+
+        def stop(status: str, message: str | None = None) -> dict:
+            self.state.save_history_repo(repo, status=status, message=message, bytes=hist.dir_size(rdir),
+                                         updated_at=now(), paths=all_paths, dir=str(rdir))
+            if status == "budget":
+                self.progress.update(message=message, force=True)
+            return self._history_result(repo, status, root, max_bytes_budget, message)
+
+        used_other = hist.dir_size(root) - hist.dir_size(rdir)
+        used = lambda: used_other + hist.dir_size(rdir)  # noqa: E731
+        if used() >= max_bytes_budget:
+            return stop("budget", f"presupuesto de disco agotado ({used()} ≥ {max_bytes_budget} bytes) antes de clonar")
+        meta = self.repo_metadata(repo)
+        if meta is not None and not meta.get("clone_url"):
+            meta = self.repo_metadata(repo, refresh=True)
+        if meta is None:
+            return stop("not_found", "el repositorio no existe o no es accesible")
+        try:
+            url = hist.check_clone_url(meta.get("clone_url"))
+        except hist.HistoryError as e:
+            return stop("error", str(e))
+        self.state.save_history_repo(repo, clone_url=url, dir=str(rdir), paths=all_paths, status="running",
+                                     updated_at=now())
+        try:
+            if gitdir.is_dir():
+                try:
+                    self.git(["--git-dir", str(gitdir), "rev-parse", "--git-dir"], url)
+                except hist.HistoryError:
+                    hist.remove_tree(gitdir)          # a clone cut half-way: start it again
+            if not gitdir.is_dir():
+                rdir.mkdir(parents=True, exist_ok=True)
+                self.git(["clone", "--bare", "--filter=blob:none", "--quiet", "--", url, str(gitdir)], url)
+                self.state.save_history_repo(repo, cloned_at=now())
+            # the log is local, cheap and idempotent (INSERT OR IGNORE): read it on every run
+            log = self.git(["--git-dir", str(gitdir), "log", "--all", "-m", "--no-renames", "--raw",
+                            "--no-abbrev", "-z", "--format=format:%x01%H %aI", "--", *all_paths], url)
+            self.state.add_history(repo, hist.parse_log(log, set(all_paths)))
+            self.state.save_history_repo(repo, status="logged", updated_at=now())
+            pending = self.state.history(repo, pending=True)
+            total = len({r["blob_sha"] for r in pending})
+            done = 0
+            self.progress.update(done=0, total=total)
+            for r in pending:
+                sha = r["blob_sha"]
+                if self.state.blob_done(repo, sha):
+                    continue                     # the same blob at another commit or path
+                if used() >= max_bytes_budget:
+                    return stop("budget", f"presupuesto de disco agotado ({used()} ≥ {max_bytes_budget} bytes); "
+                                          f"faltan {total - done} blobs; al relanzar con más presupuesto sigue")
+                if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", sha):
+                    continue
+                data = self.git(["--git-dir", str(gitdir), "cat-file", "blob", sha], url)
+                if on_blob is not None:
+                    on_blob(r["path"], r["commit_sha"], data)
+                marks = hist.looks_encrypted(data)
+                keep = marks["encrypted"] or keep_plaintext
+                if keep:
+                    dest = blobs / sha
+                    if not dest.is_file():
+                        atomic_write_bytes(dest, data)
+                self.state.mark_blob(repo, sha, len(data), keep, marks["encrypted"],
+                                     {k: v for k, v in marks.items() if k != "encrypted"},
+                                     hist.keys_fingerprint(data))
+                del data
+                done += 1
+                self.progress.update(done=done)
+        except hist.HistoryError as e:
+            return stop("error", str(e))
+        if not keep_clone:
+            hist.remove_tree(gitdir)
+        return stop("done")
+
+    def _history_result(self, repo: str, status: str, root: Path, budget: int, message: str | None) -> dict:
+        rows = self.state.history(repo)
+        return {"repo": repo, "status": status,
+                "versions": sum(1 for r in rows if r["blob_sha"]),
+                "deletions": sum(1 for r in rows if not r["blob_sha"]),
+                "extracted": sum(1 for r in rows if r["extracted"]),
+                "kept": len({r["blob_sha"] for r in rows if r["kept"]}),
+                "unencrypted": sum(1 for r in rows if r["extracted"] and not r["encrypted"]),
+                "bytes_used": hist.dir_size(root), "budget": budget, "message": message}
+
+    def history_versions(self, repo_full_name: str, path: str | None = None) -> list[dict]:
+        """The recorded versions (metadata, markers, key-name fingerprint; never content)."""
+        return self.state.history(repo_full_name, path)
+
+    def plaintext_twins(self, repo_full_name: str, path: str) -> dict:
+        """history.plaintext_twins over the recorded versions of one path (no bytes read)."""
+        return hist.plaintext_twins(
+            {"commit": r["commit_sha"], "author_date": r["author_date"], "blob_sha": r["blob_sha"],
+             "encrypted": r["encrypted"], "keys_fp": r["keys_fp"]}
+            for r in self.state.history(repo_full_name, path) if r["extracted"] or not r["blob_sha"])
+
     def write_sample(self, rel: str, obj, redact: bool = True) -> Path:
         """A sample for people under <out>/samples/, redacted with redact.py by default."""
         base = (self.out / "samples").resolve()
@@ -326,17 +476,24 @@ class Collection:
     def manifest(self, end: str | None) -> dict:
         runs = self.state.get_meta("runs", [])
         qs = self.state.queries()
+        execs = self.state.query_exec()
+        first = self.state.get_meta("first_start")
+        none = {"started_at": None, "ended_at": None}
         return {"schema": MANIFEST_SCHEMA, "tool": TOOL, "tool_version": TOOL_VERSION,
                 "collection_id": self.collection_id or self.state.get_meta("collection_id"),
-                "snapshot_start_utc": self.state.get_meta("first_start"), "snapshot_end_utc": end,
+                "snapshot_start_utc": first, "snapshot_end_utc": end,
+                "snapshot_started_at": first, "snapshot_ended_at": end,
                 "runs": runs,
                 "api": {"base_url": self.client.base_url, "api_version_header": self.client.api_version,
                         "api_version_selected": self.client.api_version_selected,
                         "authenticated": self.client.authenticated},
                 "raw_redacted": self.redact_raw,
-                "queries": [{k: q[k] for k in ("name", "q", "kind", "split", "size_split", "size_max")} for q in qs],
+                "queries": [{**{k: q[k] for k in ("name", "q", "kind", "split", "size_split", "size_max")},
+                             "executed_at": execs.get(q["name"], none)} for q in qs],
                 "shard_plan": {q["name"]: q["plan"] for q in qs if q["plan"]},
+                "population": manifest_mod.population(self.state),
                 "counts": {**self.state.counts(), "per_query": self._summary(qs)},
+                "history": self.state.history_counts(),
                 "caller": git_info(self.caller_repo),
                 "raw": {"index": "raw/index.jsonl", "responses": len(self.archive.entries())}}
 
@@ -348,7 +505,9 @@ class Collection:
                      "waits_s": {k: round(v, 1) for k, v in self.client.waits.seconds.items()},
                      "stopped": self._stopped})
         self.state.set_meta("runs", runs)
-        atomic_write_json(self.out / "manifest.json", self.manifest(end if phase == "done" else None))
+        man = self.manifest(end if phase == "done" else None)
+        atomic_write_json(self.out / "manifest.json", man)
+        atomic_write_bytes(self.out / "manifest.md", manifest_mod.markdown(man).encode("utf-8"))
         if message is None and self._stopped == "max_items":
             message = "parada al llegar a --max-items; al relanzarla sigue"
         self.progress.waiting(None)
@@ -421,6 +580,17 @@ def replay(out) -> dict:
         summary["matches_items_jsonl"] = orig.read_bytes() == (out / "replay" / "items.jsonl").read_bytes()
     atomic_write_json(out / "replay" / "summary.json", summary)
     return summary
+
+
+def write_manifest_md(out) -> dict:
+    """Rebuild <out>/manifest.md from <out>/manifest.json (no network, no state)."""
+    out = Path(out)
+    src = out / "manifest.json"
+    if not src.is_file():
+        raise FileNotFoundError(f"no hay manifest.json en {out}")
+    man = json.loads(src.read_text(encoding="utf-8"))
+    atomic_write_bytes(out / "manifest.md", manifest_mod.markdown(man).encode("utf-8"))
+    return {"ok": True, "mode": "manifest", "written": "manifest.md"}
 
 
 def status(out) -> dict:
