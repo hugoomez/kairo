@@ -95,8 +95,10 @@ class Base(unittest.TestCase):
                                                            encoding="utf-8")
         (self.pdir / "Figuras" / "fig1.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>\n",
                                                         encoding="utf-8")
+        (self.pdir / "Figuras" / "F-003-inventada.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
         (self.pdir / "Figuras" / "registro.json").write_text(json.dumps([
             {"id": "F-1", "path": "fig1.svg", "titulo": "Figura inventada"},
+            {"id": "F-003", "path": "Figuras/F-003-inventada.png", "caption": "como la escribe figures.py"},
             {"id": "F-2", "path": "../Datos/x.svg"}]), encoding="utf-8")
         (self.pdir / "Avisos" / "registro.json").write_text("[]", encoding="utf-8")
         self.data = self.tmp / "datos"
@@ -148,7 +150,7 @@ class BuildTests(Base):
         self.assertTrue(data["publicable"])
         self.assertEqual(data["planes"], ["M-0001"])
         self.assertEqual(data["agregados"], ["Q-0001"])
-        self.assertEqual(data["figuras"], 1)
+        self.assertEqual(data["figuras"], 2)
         self.assertTrue(any("fig" in w or "figura" in w for w in data["avisos"]))
         o = self.out
         self.assertTrue((o / "codigo" / "collect.py").is_file())
@@ -161,7 +163,9 @@ class BuildTests(Base):
         self.assertFalse((o / "agregados" / "Q-0002.json").exists())
         self.assertTrue((o / "figuras" / "fig1.svg").is_file())
         figs = json.loads((o / "figuras" / "registro.json").read_text(encoding="utf-8"))
-        self.assertEqual(figs, [{"id": "F-1", "titulo": "Figura inventada", "path": "fig1.svg"}])
+        self.assertEqual(figs, [{"id": "F-1", "titulo": "Figura inventada", "path": "fig1.svg"},
+                                {"id": "F-003", "caption": "como la escribe figures.py", "path": "F-003-inventada.png"}])
+        self.assertTrue((o / "figuras" / "F-003-inventada.png").is_file())
         self.assertIn("fixtures_corpus.py", (o / "fixtures" / "GENERAR.md").read_text(encoding="utf-8"))
         readme = (o / "README.md").read_text(encoding="utf-8")
         head = git(self.repo, "rev-parse", "HEAD")

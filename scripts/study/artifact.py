@@ -495,7 +495,8 @@ def figures(pdir: Path, dest: Path, warnings: list[str]) -> int:
         if raw is None or Path(raw).is_absolute():
             warnings.append("una figura sin ruta relativa a Figuras/; no se incluye")
             continue
-        src = _resolve(fig / raw)
+        # figures.py writes `Figuras/<file>` (project-relative); a bare name is relative to Figuras/
+        src = _resolve(pdir / raw if Path(raw).parts[:1] == ("Figuras",) else fig / raw)
         rel_parts = [s.casefold() for s in Path(raw).parts]
         if (not inside(src, _resolve(pdir)) or not src.is_file() or "avisos" in rel_parts or "datos" in rel_parts
                 or inside(src, _resolve(pdir / "Datos")) or inside(src, _resolve(pdir / "Avisos"))):
