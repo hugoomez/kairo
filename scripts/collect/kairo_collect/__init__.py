@@ -11,8 +11,12 @@ KAIRO_COLLECTION_OUT) puts ``<plugin>/scripts/collect`` on ``sys.path`` and::
 Modules: token (where the token may live), github (the client: rate limits,
 ETags, paging, archive), shard (the 1,000-result cap), state (sqlite, resume),
 archive (raw bodies + index), progress (progress.json, the app's contract),
-collection (the whole run, manifest, replay, status). The CLI is
-scripts/collect/collect.py. Standard library only.
+collection (the whole run, manifest, replay, status), manifest (population
+statement, manifest.md), history (fetch_history: blobless clone, every version of
+chosen paths, plaintext twins), repometa (repo_flags, demo_score), parsereport
+(the parsers' report and skeleton()), sensitive (salted fingerprints, scrub). The
+CLIs are scripts/collect/collect.py and scripts/collect/parse_summary.py.
+Standard library only.
 """
 TOOL = "kairo-collect"
 TOOL_VERSION = "1.0.0"

@@ -11,6 +11,10 @@ Tables
     item_queries(repo, path, sha, query)
     etags(url, etag, sha256)                 conditional-request cache
     repos(full_name, facts)                  repository metadata already fetched
+    query_exec(name, started_at, ended_at)   when each query was first probed / last paged
+    history_repos(repo, clone_url, dir, paths, status, message, bytes, cloned_at, updated_at)
+    history(repo, path, commit_sha, author_date, blob_sha ('' = deleted), change, size,
+            extracted, kept, encrypted, markers, keys_fp)   history.py; never content
 
 Every page is committed with its items and the shard's next URL in one
 transaction, so an interruption loses at most the page in flight and a rerun
@@ -39,7 +43,15 @@ CREATE TABLE IF NOT EXISTS item_queries(repo TEXT, path TEXT, sha TEXT, query TE
     PRIMARY KEY(repo, path, sha, query));
 CREATE TABLE IF NOT EXISTS etags(url TEXT PRIMARY KEY, etag TEXT, sha256 TEXT);
 CREATE TABLE IF NOT EXISTS repos(full_name TEXT PRIMARY KEY, facts TEXT);
+CREATE TABLE IF NOT EXISTS query_exec(name TEXT PRIMARY KEY, started_at TEXT, ended_at TEXT);
+CREATE TABLE IF NOT EXISTS history_repos(repo TEXT PRIMARY KEY, clone_url TEXT, dir TEXT, paths TEXT,
+    status TEXT, message TEXT, bytes INTEGER, cloned_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS history(repo TEXT, path TEXT, commit_sha TEXT, author_date TEXT, blob_sha TEXT,
+    change TEXT, size INTEGER, extracted INTEGER DEFAULT 0, kept INTEGER DEFAULT 0, encrypted INTEGER,
+    markers TEXT, keys_fp TEXT, PRIMARY KEY(repo, path, commit_sha, blob_sha));
 """
+HISTORY_COLS = ("repo", "path", "commit_sha", "author_date", "blob_sha", "change", "size", "extracted", "kept",
+                "encrypted", "markers", "keys_fp")
 
 
 class State:
@@ -173,3 +185,83 @@ class State:
     def save_repo(self, full_name: str, facts) -> None:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO repos VALUES(?,?)", (full_name, json.dumps(facts)))
+
+    # when each query ran (first probe / last page), for the manifest
+    def touch_query(self, name: str, ts: str) -> None:
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO query_exec VALUES(?,?,?)", (name, ts, ts))
+            self.db.execute("UPDATE query_exec SET ended_at=? WHERE name=?", (ts, name))
+
+    def query_exec(self) -> dict:
+        return {n: {"started_at": s, "ended_at": e}
+                for n, s, e in self.db.execute("SELECT name, started_at, ended_at FROM query_exec")}
+
+    # history (history.py)
+    def history_repo(self, repo: str) -> dict | None:
+        row = self.db.execute("SELECT repo, clone_url, dir, paths, status, message, bytes, cloned_at, updated_at "
+                              "FROM history_repos WHERE repo=?", (repo,)).fetchone()
+        if not row:
+            return None
+        d = dict(zip(("repo", "clone_url", "dir", "paths", "status", "message", "bytes", "cloned_at",
+                      "updated_at"), row))
+        d["paths"] = json.loads(d["paths"] or "[]")
+        return d
+
+    def save_history_repo(self, repo: str, **fields) -> None:
+        cur = self.history_repo(repo) or {"repo": repo, "paths": []}
+        cur.update(fields)
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO history_repos VALUES(?,?,?,?,?,?,?,?,?)",
+                            (repo, cur.get("clone_url"), cur.get("dir"), json.dumps(sorted(set(cur["paths"]))),
+                             cur.get("status"), cur.get("message"), cur.get("bytes"), cur.get("cloned_at"),
+                             cur.get("updated_at")))
+
+    def add_history(self, repo: str, rows: list[dict]) -> int:
+        new = 0
+        with self.db:
+            for r in rows:
+                cur = self.db.execute(
+                    "INSERT OR IGNORE INTO history(repo,path,commit_sha,author_date,blob_sha,change) "
+                    "VALUES(?,?,?,?,?,?)", (repo, r["path"], r["commit"], r["author_date"], r["blob_sha"], r["change"]))
+                new += cur.rowcount
+        return new
+
+    def history(self, repo: str, path: str | None = None, pending: bool = False) -> list[dict]:
+        sql = f"SELECT {','.join(HISTORY_COLS)} FROM history WHERE repo=?"
+        args: list = [repo]
+        if path is not None:
+            sql += " AND path=?"
+            args.append(path)
+        if pending:
+            sql += " AND extracted=0 AND blob_sha!=''"
+        sql += " ORDER BY path, author_date, commit_sha"
+        out = []
+        for row in self.db.execute(sql, args):
+            d = dict(zip(HISTORY_COLS, row))
+            d["markers"] = json.loads(d["markers"]) if d["markers"] else None
+            out.append(d)
+        return out
+
+    def blob_done(self, repo: str, blob_sha: str) -> dict | None:
+        row = self.db.execute("SELECT size, kept, encrypted, markers, keys_fp FROM history WHERE repo=? AND "
+                              "blob_sha=? AND extracted=1 LIMIT 1", (repo, blob_sha)).fetchone()
+        return dict(zip(("size", "kept", "encrypted", "markers", "keys_fp"), row)) if row else None
+
+    def mark_blob(self, repo: str, blob_sha: str, size: int, kept: bool, encrypted: bool, markers, keys_fp) -> None:
+        with self.db:
+            self.db.execute("UPDATE history SET extracted=1, size=?, kept=?, encrypted=?, markers=?, keys_fp=? "
+                            "WHERE repo=? AND blob_sha=?",
+                            (size, int(kept), int(encrypted),
+                             markers if isinstance(markers, str) or markers is None else json.dumps(markers,
+                                                                                                     sort_keys=True),
+                             keys_fp, repo, blob_sha))
+
+    def history_counts(self) -> dict:
+        one = lambda sql: self.db.execute(sql).fetchone()[0]  # noqa: E731
+        by_status = dict(self.db.execute("SELECT status, COUNT(*) FROM history_repos GROUP BY status").fetchall())
+        return {"repos": one("SELECT COUNT(*) FROM history_repos"), "repos_by_status": by_status,
+                "versions": one("SELECT COUNT(*) FROM history WHERE blob_sha!=''"),
+                "deletions": one("SELECT COUNT(*) FROM history WHERE blob_sha=''"),
+                "extracted": one("SELECT COUNT(*) FROM history WHERE extracted=1"),
+                "blobs_kept": one("SELECT COUNT(DISTINCT repo || blob_sha) FROM history WHERE kept=1"),
+                "unencrypted_versions": one("SELECT COUNT(*) FROM history WHERE extracted=1 AND encrypted=0")}

@@ -20,6 +20,23 @@ dataset's path and data_guard lets it run. The sample goes to
   email) are pseudonymised, `path`/`file` fields get a pseudonymised path, every other
   string is strict-redacted with the row's `path`/`file`/`name` as hint.
 
+From a parse report (kind dir only):
+
+    python debug_sample.py --vault V --project <slug> --dataset NAME --n N --seed S
+                           --from-report REPORT --error-class C [--glob PAT] [--replace]
+
+draws the N files only among the items whose LAST record in the parse report
+(kairo_collect.parsereport's `parse-report.jsonl`) is `"status": "fail"` with
+`"error_class": C`. A report item is the file's path relative to the dataset's
+registered folder (posix, no `..`); items that are absolute, climb out, are symlinks or
+no longer exist are skipped and counted (`no_encontrados`). REPORT is either the NAME
+of a `file` dataset in the same registry (register the report as sensitive: its item
+ids are real paths, owner/repo included, and the command line then names no path) or
+an absolute path to the report. The sample goes to
+`Projects/<slug>/Datos/depuracion/<NAME>__fallo-<C>/` (`/` in C becomes `_`), with
+the same strict redaction and the same guarantees; its manifest adds
+`informe: {clase_de_error, fallos_de_la_clase, no_encontrados}`, never an item id.
+
 Fail closed: after redaction each item is checked again (strict_redact.residual); an item
 with anything left is dropped whole and only counted. `manifest.json` and stdout hold
 aggregates only (counts by reason and by redaction type): never contents, dropped paths
@@ -62,6 +79,48 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*$")
 
 class Refused(Exception):
     pass
+
+
+_ERROR_CLASS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+\-/]{0,63}$")
+
+
+def _report_path(vault: Path, slug: str, ref: str) -> Path:
+    """A registered `file` dataset's path (ref is its name) or an absolute report path."""
+    if _SAFE_NAME.match(ref) and not Path(ref).is_absolute():
+        d = _dataset(vault, slug, ref)
+        if d["kind"] != "file":
+            raise Refused(f"el informe {ref!r} del registro debe ser de tipo file")
+        return d["path"]
+    p = Path(ref)
+    if not p.is_absolute() or not p.is_file():
+        raise Refused("--from-report debe ser el nombre de un dataset de tipo file del registro o una ruta "
+                      "absoluta a parse-report.jsonl")
+    return p
+
+
+def _failed_items(report: Path, error_class: str) -> list[str]:
+    """Items whose last record is a fail with `error_class` (parsereport's format)."""
+    last: dict[str, dict] = {}
+    try:
+        with open(report, encoding="utf-8") as fh:
+            for ln in fh:
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and isinstance(r.get("item"), str):
+                    last[r["item"]] = r
+    except (OSError, UnicodeDecodeError):
+        raise Refused("no se puede leer el informe de parseo") from None
+    return sorted(i for i, r in last.items() if r.get("status") == "fail" and r.get("error_class") == error_class)
+
+
+def _report_rel(item: str) -> str | None:
+    p = item.replace("\\", "/")
+    parts = [x for x in p.split("/") if x not in ("", ".")]
+    if not parts or p.startswith("/") or ".." in parts or re.match(r"^[A-Za-z]:", p) or "\x00" in p:
+        return None
+    return "/".join(parts)
 
 
 def _dataset(vault: Path, slug: str, name: str) -> dict:
@@ -235,31 +294,57 @@ def _rows(path: Path):
 
 # ---- main ------------------------------------------------------------------
 
-def sample(vault: Path, slug: str, name: str, n: int, seed: int, glob: str | None, replace: bool) -> dict:
+def sample(vault: Path, slug: str, name: str, n: int, seed: int, glob: str | None, replace: bool,
+           from_report: str | None = None, error_class: str | None = None) -> dict:
     if n < 1:
         raise Refused("--n debe ser al menos 1")
+    if (from_report is None) != (error_class is None):
+        raise Refused("--from-report y --error-class van juntos")
+    if error_class is not None and not _ERROR_CLASS.match(error_class):
+        raise Refused("--error-class debe ser un identificador corto (letras, cifras, _ . + - /)")
     ds = _dataset(vault, slug, name)
-    out = vault / "Projects" / slug / "Datos" / "depuracion" / name
+    report_items: list[str] | None = None
+    if from_report is not None:
+        if ds["kind"] != "dir":
+            raise Refused("--from-report solo vale para un dataset de tipo dir")
+        report_items = _failed_items(_report_path(vault, slug, from_report), error_class)
+    folder = name if error_class is None else f"{name}__fallo-{error_class.replace('/', '_')}"
+    out = vault / "Projects" / slug / "Datos" / "depuracion" / folder
     _check_out(vault, out, ds["path"], replace)
     rng = random.Random(seed)
     stats: Counter = Counter()
     kinds: Counter = Counter()
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=".depuracion-", dir=out.parent))
+    stats_report: dict = {}
     try:
         if ds["kind"] == "dir":
             root = ds["path"]
             files = []
-            for d, dirs, names in os.walk(root, followlinks=False):
-                dirs.sort()
-                for fn in sorted(names):
-                    p = Path(d) / fn
-                    if p.is_symlink():
+            if report_items is not None:
+                missing = 0
+                for item in report_items:
+                    rel = _report_rel(item)
+                    p = root / rel if rel else None
+                    if p is None or p.is_symlink() or not p.is_file() or not _inside(p, root):
+                        missing += 1
                         continue
-                    rel = p.relative_to(root).as_posix()
                     if glob and not fnmatch.fnmatch(rel, glob):
                         continue
                     files.append(rel)
+                stats_report = {"clase_de_error": error_class, "fallos_de_la_clase": len(report_items),
+                                "no_encontrados": missing}
+            else:
+                for d, dirs, names in os.walk(root, followlinks=False):
+                    dirs.sort()
+                    for fn in sorted(names):
+                        p = Path(d) / fn
+                        if p.is_symlink():
+                            continue
+                        rel = p.relative_to(root).as_posix()
+                        if glob and not fnmatch.fnmatch(rel, glob):
+                            continue
+                        files.append(rel)
             avail = len(files)
             chosen = rng.sample(files, min(n, avail))
             kept = 0
@@ -306,9 +391,11 @@ def sample(vault: Path, slug: str, name: str, n: int, seed: int, glob: str | Non
             "dataset": name, "proyecto": slug, "unidad": unit, "seed": seed, "n_solicitado": n,
             "disponibles": avail, "conservados": kept, "descartados": dict(sorted(stats.items())),
             "redacciones": dict(sorted(kinds.items())),
-            "salida": f"Projects/{slug}/Datos/depuracion/{name}",
+            "salida": f"Projects/{slug}/Datos/depuracion/{folder}",
             "creado": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        if report_items is not None:
+            manifest["informe"] = stats_report
         (tmp / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                                            encoding="utf-8")
         if out.exists():
@@ -329,11 +416,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--glob")
     ap.add_argument("--replace", action="store_true")
+    ap.add_argument("--from-report")
+    ap.add_argument("--error-class")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     try:
-        m = sample(Path(a.vault), a.project, a.dataset, a.n, a.seed, a.glob, a.replace)
+        m = sample(Path(a.vault), a.project, a.dataset, a.n, a.seed, a.glob, a.replace,
+                   from_report=a.from_report, error_class=a.error_class)
     except Refused as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 3
