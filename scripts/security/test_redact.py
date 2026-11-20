@@ -318,3 +318,33 @@ def test_existing_formats_still_redacted():
     key = "AGE-SECRET-KEY-1" + "".join("QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"[b % 32] for b in os.urandom(58))
     out, findings = redact.redact_text(key)
     assert key not in out and findings[0]["type"] == "age_secret_key"
+
+
+def _sealed(n: int, seed: int = 7) -> str:
+    import random
+    rnd = random.Random(seed)
+    body = bytes(rnd.randrange(256) for _ in range(n + 48))
+    return base64.b64encode(n.to_bytes(2, "big") + body).decode()
+
+
+def test_sealed_secret_ciphertext_kept_under_secret_names():
+    ct = _sealed(512)
+    text = f"spec:\n  encryptedData:\n    password: {ct}\n    api-token: {ct}\n"
+    out, found = redact.redact_text(text)
+    assert out == text and found == []
+    assert redact.is_public_ciphertext(ct)
+
+
+def test_lookalike_not_public_ciphertext():
+    # wrong length prefix, too short, or a real-looking password: still redacted
+    bad = base64.b64encode((300).to_bytes(2, "big") + b"x" * 400).decode()
+    assert not redact.is_public_ciphertext(bad)
+    assert not redact.is_public_ciphertext(_sealed(512)[:120])
+    out, _ = redact.redact_text("password: Zq8!vT2#pL9@wR4m\n")
+    assert "Zq8!vT2" not in out
+
+
+def test_encoded_private_key_never_passes_as_ciphertext():
+    pem = b"-----BEGIN PRIVATE KEY-----\n" + b"A" * 600
+    v = base64.b64encode((256).to_bytes(2, "big") + pem).decode()
+    assert not redact.is_public_ciphertext(v)

@@ -96,8 +96,29 @@ def _b64_private(run: str) -> bool:
     return bool(raw) and bool(_DECODED_PRIVATE_RE.search(raw))
 
 
+# Sealed Secrets ciphertext (`encryptedData` values): base64 of a 2-byte big-endian
+# length, the session key wrapped with RSA-OAEP under the controller's public key (as long
+# as the modulus: 1024-4096 bits), then the AES-GCM payload. It is public by design — the
+# tool tells users to commit it — so a value of exactly that shape is not redacted because
+# of the field name it sits under (`password:`, `api-token:` …). Only the name-based rules
+# below skip it; key blocks, age identities and base64-encoded private keys never do.
+_RSA_WRAP_LENGTHS = (128, 256, 384, 512)
+
+
+def is_public_ciphertext(value: str) -> bool:
+    """True when `value` is a Sealed Secrets ciphertext (see above)."""
+    if len(value) < 200:
+        return False
+    raw = b64_decode_loose(value)
+    if not raw or len(raw) < 2:
+        return False
+    n = int.from_bytes(raw[:2], "big")
+    return n in _RSA_WRAP_LENGTHS and len(raw) >= 2 + n + 16 and not _DECODED_PRIVATE_RE.search(raw)
+
+
 def _spans(text: str) -> list[tuple[int, int, str]]:
     found: list[tuple[int, int, str]] = []
+    named: list[tuple[int, int, str]] = []
     for m in _BLOCK_RE.finditer(text):
         found.append((m.start(), m.end(), "private_key"))
     for m in _AGE_RE.finditer(text):
@@ -108,7 +129,7 @@ def _spans(text: str) -> list[tuple[int, int, str]]:
     for m in _NAMED_KEY_RE.finditer(text):
         v = m.group(2)
         if _HEX_RE.fullmatch(v) or cb.looks_secret(v):
-            found.append((m.start(2), m.end(2), "api_key"))
+            named.append((m.start(2), m.end(2), "api_key"))
     for _name, rx in cb.PROVIDER_RULES:
         for m in rx.finditer(text):
             if cb.provider_ok(m.group(0)):
@@ -120,14 +141,16 @@ def _spans(text: str) -> list[tuple[int, int, str]]:
             found.append((m.start(1), m.end(1), "token"))
     for m in cb.API_ASSIGN_RE.finditer(text):
         if cb.looks_secret(m.group(2)):
-            found.append((m.start(2), m.end(2), "api_key"))
+            named.append((m.start(2), m.end(2), "api_key"))
     for m in cb.TOKEN_ASSIGN_RE.finditer(text):
         if cb.looks_secret(m.group(2)):
-            found.append((m.start(2), m.end(2), "token"))
+            named.append((m.start(2), m.end(2), "token"))
     for m in cb.PASSWORD_ASSIGN_RE.finditer(text):
         for i in (2, 3, 4):
             if m.group(i) is not None and cb.looks_password(m.group(i)):
-                found.append((m.start(i), m.end(i), "token"))
+                named.append((m.start(i), m.end(i), "token"))
+    # name-based hits: a public ciphertext under a secret-sounding name stays
+    found += [f for f in named if not is_public_ciphertext(text[f[0]:f[1]].strip("\"'"))]
     for m in cb.CRED_URL_RE.finditer(text):
         pw = m.group(2)
         if not cb.is_placeholder(pw) and len(pw) >= 8 and pw.lower() not in ("password", "passw0rd"):
