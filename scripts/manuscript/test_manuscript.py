@@ -63,7 +63,11 @@ class TestStudyDesign(Base):
         o, m = ms.init(self.proj, "med", "Estudio inventado", "acm-sigconf", design="medicion", lang="en")
         meta, sections, _ = ms.parse_outline(o)
         self.assertEqual([s["id"] for s in sections], [
-            "introduction", "background", "methodology", "ethics", "results", "discussion", "related-work", "open-science"])
+            "abstract", "introduction", "background", "methodology", "ethics", "results", "discussion",
+            "related-work", "open-science"])
+        place = {s["id"]: s["placement"] for s in sections}
+        self.assertEqual((place["abstract"], place["ethics"], place["open-science"], place["results"]),
+                         ("front", "appendix", "appendix", "body"))
         self.assertEqual((meta["lang"], meta["venue"], meta["design"]), ("en", "acm-sigconf", "medicion"))
         head = o.read_text(encoding="utf-8")
         self.assertIn("\nlang: en\n", head)
@@ -340,7 +344,7 @@ def _real_pandoc():
 REAL_PANDOC = _real_pandoc()
 
 
-class TestExport(CoverageBase):
+class ExportBase(CoverageBase):
     """export --format latex: pandoc and latexmk are fake executables on a temp PATH."""
 
     def setUp(self):
@@ -394,20 +398,25 @@ class TestExport(CoverageBase):
                   f"open('main.log', 'w').write({log!r} + chr(10))\n"
                   f"sys.exit({rc})\n")
 
-    def run_export(self):
+    def run_cmd(self, cmd, *extra):
         import io
         from contextlib import redirect_stderr, redirect_stdout
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            rc = ms.main(["export", "--vault", str(self.vault), "--project-dir", str(self.proj),
-                          "--thread", "t", "--format", "latex"])
+            rc = ms.main([cmd, "--vault", str(self.vault), "--project-dir", str(self.proj), "--thread", "t", *extra])
         return rc, out.getvalue(), err.getvalue()
+
+    def run_export(self, *extra):
+        return self.run_cmd("export", "--format", "latex", *extra)
 
     def set_venue(self, venue):
         import re
         o, _ = ms.paths(self.proj, "t")
         raw = o.read_text(encoding="utf-8")
         o.write_text(re.sub(r"^venue:.*$", f"venue: {venue}", raw, flags=re.M), encoding="utf-8", newline="\n")
+
+
+class TestExport(ExportBase):
 
     def test_export_refuses_without_pandoc(self):
         rc, _, err = self.run_export()

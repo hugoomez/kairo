@@ -116,7 +116,8 @@ class AddUrl(Base):
         m = export_bib.note_meta(fm)
         bib = export_bib.bibtex_entry(m, "ficticia2031invented")
         self.assertTrue(bib.startswith("@misc{ficticia2031invented,"), bib)
-        for field in ("howpublished = {Example Org Research}", f"url = {{{URL}}}", "urldate = {2031-06-01}"):
+        for field in (f"howpublished = {{\\url{{{URL}}}}}", "organization = {Example Org Research}",
+                      "note = {Accedido el 2031-06-01}"):
             self.assertIn(field, bib)
         self.assertNotIn("journal", bib)
         item = export_bib.csl_item(m, "k")

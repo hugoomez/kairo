@@ -27,15 +27,18 @@ gate = ["plan_frozen", "estimates_reproducible", "classifiers_validated", "verif
 plan_prefix = "M"
 plan_folder = "Mediciones"
 plan_template = "templates/measurement-plan-template.md"
+# placement: body (por defecto) | front (el resumen) | appendix (tras la bibliografía, fuera del
+# límite de páginas del cuerpo; USENIX los quiere antes de las referencias: config/venues.toml).
 manuscript_sections = [
+  { id = "abstract", kind = "prosa", placement = "front" },
   { id = "introduction", kind = "prosa" },
   { id = "background", kind = "prosa" },
   { id = "methodology", kind = "prosa" },
-  { id = "ethics", kind = "prosa" },
+  { id = "ethics", kind = "prosa", placement = "appendix" },
   { id = "results", kind = "resultado" },
   { id = "discussion", kind = "cierre" },
   { id = "related-work", kind = "prosa" },
-  { id = "open-science", kind = "prosa" },
+  { id = "open-science", kind = "prosa", placement = "appendix" },
 ]
 
 # Piloto: una exploración antes del estudio (recuentos, muestras manuales, tamaño de las

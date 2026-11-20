@@ -2,7 +2,7 @@
 """Export the vault's paper notes as BibTeX or CSL-JSON — no Zotero needed.
 
     export_bib.py --vault <vault> [--project PROJ-XXX | --only P-0001 P-0002 …]
-                  [--format bibtex|csl-json] [--out refs.bib]
+                  [--format bibtex|csl-json] [--out refs.bib] [--lang es|en]
 
 Built only from each note's frontmatter, which ingest_paper.py / resolve_refs.py
 filled from the fetched records (never typed by a model). One entry per note:
@@ -28,7 +28,11 @@ filled from the fetched records (never typed by a model). One entry per note:
   - `volume`, `number` and `pages` come with the published record when it has
     them; math in a title (`$[[n,k,d]]$`), TeX commands (`\\emph{…}`,
     `\\mathbb`) and accents (`Schr\\"odinger`) are kept as LaTeX, never
-    escaped; a bare &, %, #, _ is escaped.
+    escaped; a bare &, %, #, _ is escaped;
+  - grey literature (`source: web` or `source_type: gris`) with a `url` is a
+    `@misc` with `howpublished = {\\url{…}}` (the URL percent-encoded, so it
+    cannot close the brace) and `note = {Accedido el <fetched_at>}` (`--lang en`:
+    `Accessed <fetched_at>`); its site name goes in `organization`.
 
 A `send: never` note is never read: it is reported by id only. A note whose
 reference is in conflict, retracted or withdrawn (`resolution_status`) is
@@ -52,7 +56,7 @@ sys.path.insert(0, str(HERE.parent / "security"))
 import vaultnotes as vn  # noqa: E402
 from send_guard import is_flagged  # noqa: E402
 
-TOOL = "kairo/export_bib@1.4.0"
+TOOL = "kairo/export_bib@1.5.0"
 WARN = {"mismatch": "ATENCIÓN: referencia en conflicto en Kairo (resolution_status: mismatch); no citar sin revisar",
         "retracted": "ATENCIÓN: paper RETRACTADO", "withdrawn": "ATENCIÓN: preprint RETIRADO por sus autores"}
 PROCEEDINGS = re.compile(r"\b(proc(?:eedings)?|conference|symposium|workshop|SC\d*|IPDPS|ISC|NeurIPS|ICML|ICLR|"
@@ -141,7 +145,8 @@ def note_meta(fm: list[str]) -> dict:
             "published_title": g("published_title"), "citation_key": g("citation_key"),
             "zotero_key": g("zotero_key"), "venue_type": g("venue_type"), "volume": g("volume"),
             "issue": g("issue"), "pages": g("pages"), "openalex": g("openalex"),
-            "status": g("resolution_status"), "source": g("source"), "fetched_at": g("fetched_at")}
+            "status": g("resolution_status"), "source": g("source"), "source_type": g("source_type"),
+            "fetched_at": g("fetched_at")}
 
 
 def effective(m: dict) -> dict:
@@ -179,7 +184,7 @@ def entry_type(m: dict) -> tuple[str, str | None]:
     venue = m.get("published_venue") or (m["venue"] if m.get("venue") and m["venue"] != "arXiv preprint" else "")
     if m.get("source") == "patentsview":
         return "patent", None
-    if m.get("source") == "web":
+    if is_grey(m):
         return "misc", None                     # grey literature: a web page, never a journal
     if not venue:
         return "misc", None
@@ -217,7 +222,22 @@ def notes(m: dict) -> str:
     return "; ".join(n for n in (WARN.get(m.get("status") or ""), m.get("pub_note")) if n)
 
 
-def bibtex_entry(m: dict, key: str, read_field: bool = True) -> str:
+def is_grey(m: dict) -> bool:
+    """A grey-literature note (a web page, a report): `source: web` or `source_type: gris`."""
+    return m.get("source") == "web" or m.get("source_type") == "gris"
+
+
+def bib_url(url: str) -> str:
+    """A URL safe inside `\\url{…}` in a .bib field: every character outside RFC 3986's
+    set (braces, backslash, spaces, non-ASCII …) percent-encoded, then `%` and `#`
+    escaped as \\url needs inside an argument. A page's URL can never close the
+    brace group and reach LaTeX."""
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%")
+    enc = "".join(c if c in allowed else "".join(f"%{b:02X}" for b in c.encode("utf-8")) for c in url.strip())
+    return enc.replace("%", "\\%").replace("#", "\\#")
+
+
+def bibtex_entry(m: dict, key: str, read_field: bool = True, lang: str = "es") -> str:
     m = effective(m)
     kind, venue_field = entry_type(m)
     venue = m.get("published_venue") or ((m.get("venue") or "") if m.get("venue") != "arXiv preprint" else "")
@@ -239,14 +259,25 @@ def bibtex_entry(m: dict, key: str, read_field: bool = True) -> str:
             fields.append(("primaryclass", "{" + m["primary_class"] + "}"))
         if kind == "misc":
             fields.append(("howpublished", "{arXiv preprint arXiv:" + m["arxiv"] + (m.get("arxiv_version") or "") + "}"))
-    if m.get("source") == "web" and venue:
-        fields.append(("howpublished", "{" + _latex(venue) + "}"))
-    if m.get("url") and not doi:
-        fields.append(("url", "{" + m["url"] + "}"))
-    if m.get("source") == "web" and m.get("fetched_at"):
-        fields.append(("urldate", "{" + m["fetched_at"] + "}"))
-    if notes(m):
-        fields.append(("note", "{" + _latex(notes(m)) + "}"))
+    grey_url = is_grey(m) and bool(m.get("url")) and not doi
+    note = notes(m)
+    if grey_url:
+        # grey literature: the page itself, with the day it was read
+        fields.append(("howpublished", "{\\url{" + bib_url(m["url"]) + "}}"))
+        if venue:
+            fields.append(("organization", "{" + _latex(venue) + "}"))
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", m.get("fetched_at") or ""):
+            seen = ("Accessed " if lang == "en" else "Accedido el ") + m["fetched_at"]
+            note = "; ".join(n for n in (note, seen) if n)
+    else:
+        if is_grey(m) and venue:
+            fields.append(("howpublished", "{" + _latex(venue) + "}"))
+        if m.get("url") and not doi:
+            fields.append(("url", "{" + m["url"] + "}"))
+        if is_grey(m) and m.get("fetched_at"):
+            fields.append(("urldate", "{" + m["fetched_at"] + "}"))
+    if note:
+        fields.append(("note", "{" + _latex(note) + "}"))
     if read_field and read_version(m):
         # a field no bibliography style prints: which text the vault's locators refer to
         fields.append(("kairoread", "{" + read_version(m) + "}"))
@@ -279,7 +310,7 @@ def csl_item(m: dict, key: str) -> dict:
             item[dst] = m[src].replace("--", "-")
     if m.get("arxiv"):
         item["number"] = f"arXiv:{m['arxiv']}"
-    if m.get("source") == "web":
+    if is_grey(m):
         item["type"] = "webpage"
         if m.get("url"):
             item["URL"] = m["url"]
@@ -353,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--only", nargs="+")
     ap.add_argument("--format", choices=("bibtex", "csl-json"), default="bibtex")
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--lang", choices=("es", "en"), default="es",
+                    help="language of the access note of a grey-literature entry")
     a = ap.parse_args(argv)
     if not (a.vault / "Papers").is_dir():
         print(json.dumps({"tool": TOOL, "error": "no Papers/ folder"}), file=sys.stderr)
@@ -364,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
     by_id = dict(zip((m["id"] for m in every), keys_for(every)))
     keys = [by_id[m["id"]] for m in metas]
     if a.format == "bibtex":
-        text = "\n".join(bibtex_entry(m, k) for m, k in zip(metas, keys))
+        text = "\n".join(bibtex_entry(m, k, lang=a.lang) for m, k in zip(metas, keys))
     else:
         text = json.dumps([csl_item(m, k) for m, k in zip(metas, keys)], ensure_ascii=False, indent=2) + "\n"
     report = {"tool": TOOL, "entries": len(metas), "skipped_send_never": skipped,
