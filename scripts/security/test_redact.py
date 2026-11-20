@@ -281,6 +281,15 @@ def test_base64_age_secret_key_redacted():
     assert enc not in out
 
 
+def test_post_quantum_age_identity_redacted():
+    key = "AGE-SECRET-KEY-PQ-1" + "".join("QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"[b % 32] for b in os.urandom(58))
+    out, findings = redact.redact_text("# public key: age1pq1inventado\n" + key + "\n")
+    assert key not in out and findings == [{"type": "age_secret_key", "sha256": sha12(key)}]
+    enc = base64.b64encode((key + "\n").encode()).decode()
+    assert enc not in redact.redact_text("pq.txt: " + enc)[0]
+    assert run_cli("check", key).returncode == 3
+
+
 def test_base64_certificate_not_redacted():
     cert = (DASHES + "BEGIN CERTIFICATE" + DASHES + "\n" + base64.b64encode(os.urandom(90)).decode()
             + "\n" + DASHES + "END CERTIFICATE" + DASHES + "\n")
