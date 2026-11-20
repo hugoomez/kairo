@@ -111,3 +111,163 @@ def test_non_utf8_file_says_save_as_utf8(tmp_path):
     assert p.returncode == 3
     assert "guarda el fichero en UTF-8" in json.loads(p.stdout)["error"]
     assert "Traceback" not in p.stderr
+
+
+# ---- unweighted output pinned; weighted validation (invented sample) ------------------
+
+GOLDEN = """{
+  "precision": 0.7142857142857143,
+  "precision_lo": 0.3589344518326194,
+  "precision_hi": 0.9177810759959433,
+  "recall": 0.7142857142857143,
+  "recall_lo": 0.3589344518326194,
+  "recall_hi": 0.9177810759959433,
+  "n": 20,
+  "inputs": {
+    "gold": {
+      "path": "g.jsonl",
+      "sha256": "GSHA"
+    },
+    "pred": {
+      "path": "p.jsonl",
+      "sha256": "PSHA"
+    },
+    "label": "l",
+    "positive": "si",
+    "ci": 0.95
+  }
+}
+"""
+
+
+def _golden_files(tmp_path):
+    import hashlib
+    g = tmp_path / "g.jsonl"
+    p = tmp_path / "p.jsonl"
+    g.write_bytes("\n".join(json.dumps({"id": "a%02d" % i, "l": "si" if i < 7 else "no"})
+                            for i in range(20)).encode("utf-8"))
+    p.write_bytes("\n".join(json.dumps({"id": "a%02d" % i, "l": "si" if (i < 5 or i in (9, 10)) else "no"})
+                            for i in range(20)).encode("utf-8"))
+    sha = {k: hashlib.sha256(f.read_bytes()).hexdigest() for k, f in (("G", g), ("P", p))}
+    return g, p, GOLDEN.replace("GSHA", sha["G"]).replace("PSHA", sha["P"])
+
+
+def test_unweighted_output_is_byte_identical(tmp_path):
+    g, p, expected = _golden_files(tmp_path)
+    r = _cli("validate", "--gold", str(g), "--pred", str(p), "--label", "l", "--positive", "si",
+             "--vault", str(tmp_path))
+    assert r.returncode == 0
+    assert r.stdout == expected
+
+
+def _sample(tmp_path, strata):
+    """strata: list of (name, frame N, [(gold, pred), ...]); writes gold, pred and the
+    draw_sample-style file with _stratum and _weight."""
+    gold, pred, sample = [], [], []
+    for name, big, items in strata:
+        for j, (gv, pv) in enumerate(items):
+            iid = f"{name}-{j}"
+            gold.append({"id": iid, "l": gv})
+            pred.append({"id": iid, "l": pv, "fuente": "clasif-x"})
+            sample.append({"id": iid, "texto": "inventado", "_stratum": name, "_weight": big / len(items)})
+    return (_w(tmp_path, "g.jsonl", gold), _w(tmp_path, "p.jsonl", pred),
+            _w(tmp_path, "muestra.jsonl", sample))
+
+
+def _cli8(*args):
+    """_cli with UTF-8 on both ends (the gate runs agreement.py this way)."""
+    import os
+    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
+                          encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+
+
+def _reference(strata, which, conf=0.95):
+    """Straight re-implementation of the module doc's formulas, for the test."""
+    rows = []
+    for name, big, items in strata:
+        for gv, pv in items:
+            y = float(gv and pv)
+            x = float(pv if which == "precision" else gv)
+            rows.append((name, big, len(items), y, x))
+    ys = sum(big * y / n for _h, big, n, y, _x in rows)
+    xs = sum(big * x / n for _h, big, n, _y, x in rows)
+    r = ys / xs
+    var = 0.0
+    for _name, big, items in strata:
+        d = [float(gv and pv) - r * float(pv if which == "precision" else gv) for gv, pv in items]
+        n = len(d)
+        m = sum(d) / n
+        s2 = sum((v - m) ** 2 for v in d) / (n - 1)
+        var += big * big * (1 - n / big) * s2 / n
+    var /= xs * xs
+    cap = sum(1 for *_a, x in rows if x)
+    n_eff = cap if var == 0 else min(cap, r * (1 - r) / var)
+    return r, wilson(r * n_eff, n_eff, conf), n_eff
+
+
+def _labels(path):
+    return [json.loads(x)["l"] for x in Path(path).read_text(encoding="utf-8").splitlines()]
+
+
+def test_weighted_rare_positives_matches_reference(tmp_path):
+    import hashlib
+    t, f = True, False
+    strata = [
+        ("alta", 40, [(t, t)] * 7 + [(f, t)] * 3 + [(t, f)] * 2),
+        ("media", 300, [(t, t)] * 2 + [(f, t)] * 3 + [(t, f)] * 2 + [(f, f)] * 5),
+        ("baja", 5000, [(t, f)] * 1 + [(f, f)] * 11),
+    ]
+    g, p, s = _sample(tmp_path, strata)
+    args = ("validate", "--gold", g, "--pred", p, "--label", "l", "--positive", "true",
+            "--weights-from", s, "--vault", str(tmp_path))
+    r = _cli8(*args)
+    assert r.returncode == 0, r.stdout
+    out = json.loads(r.stdout)
+    assert out["weighted"] is True and out["method"] == agreement.WEIGHTED_METHOD
+    assert out["strata"] == 3 and out["weights_defaulted"] == 0 and out["n"] == 36
+    for which in ("precision", "recall"):
+        val, (lo, hi), n_eff = _reference(strata, which)
+        assert out[which] == pytest.approx(val)
+        assert out[f"{which}_lo"] == pytest.approx(lo) and out[f"{which}_hi"] == pytest.approx(hi)
+        assert out["n_eff"][which] == pytest.approx(n_eff)
+        assert out[f"{which}_lo"] <= out[which] <= out[f"{which}_hi"]
+    # the over-sampled high-score stratum no longer dominates recall
+    unweighted = agreement.validate([agreement.norm(x) for x in _labels(g)],
+                                    [agreement.norm(x) for x in _labels(p)], "true")
+    assert out["recall"] < unweighted["recall"]
+    assert out["inputs"]["weights"] == {"path": "muestra.jsonl",
+                                        "sha256": hashlib.sha256(Path(s).read_bytes()).hexdigest()}
+    assert _cli8(*args).stdout == r.stdout  # deterministic: no resampling, no seed
+
+
+def test_weighted_with_unit_weights_equals_unweighted(tmp_path):
+    g, p, expected = _golden_files(tmp_path)
+    s = _w(tmp_path, "s.jsonl", [{"id": "a%02d" % i} for i in range(20)])
+    r = json.loads(_cli("validate", "--gold", str(g), "--pred", str(p), "--label", "l",
+                        "--positive", "si", "--weights-from", s).stdout)
+    base = json.loads(expected)
+    for k in ("precision", "precision_lo", "precision_hi", "recall", "recall_lo", "recall_hi"):
+        assert r[k] == pytest.approx(base[k])
+    assert r["weights_defaulted"] == 0 and r["strata"] == 1
+
+
+def test_weighted_ids_missing_from_sample_default_to_one(tmp_path):
+    g, p, _ = _golden_files(tmp_path)
+    s = _w(tmp_path, "s.jsonl", [{"id": "a%02d" % i, "_stratum": "x", "_weight": 1} for i in range(10)])
+    r = json.loads(_cli("validate", "--gold", str(g), "--pred", str(p), "--label", "l",
+                        "--positive", "si", "--weights-from", s).stdout)
+    assert r["weights_defaulted"] == 10 and r["strata"] == 11
+
+
+def test_weighted_refusals(tmp_path):
+    g = _w(tmp_path, "g0.jsonl", [{"l": "x"}, {"l": "y"}])
+    s = _w(tmp_path, "s0.jsonl", [{"id": 1, "_weight": 2}])
+    r = _cli("validate", "--gold", g, "--pred", g, "--label", "l", "--positive", "x", "--weights-from", s)
+    assert r.returncode == 3 and "ids" in json.loads(r.stdout)["error"]
+    t, f = True, False
+    g2, p2, s2 = _sample(tmp_path, [("a", 50, [(t, t)]), ("b", 50, [(t, f), (f, f)])])
+    r = _cli("validate", "--gold", g2, "--pred", p2, "--label", "l", "--positive", "true", "--weights-from", s2)
+    assert r.returncode == 3 and "un solo elemento" in json.loads(r.stdout)["error"]
+    bad = _w(tmp_path, "bad.jsonl", [{"id": "a-0", "_weight": 0.5}])
+    r = _cli("validate", "--gold", g2, "--pred", p2, "--label", "l", "--positive", "true", "--weights-from", bad)
+    assert r.returncode == 3 and "_weight" in json.loads(r.stdout)["error"]
