@@ -215,9 +215,14 @@ _TABLE_ENVS = frozenset(("table", "table*", "tabular"))
 
 
 def table_file_not_allowed(tex: str, math_cs: frozenset, symbols: frozenset) -> str | None:
-    """The first thing in a generated table the strict allow-list does not admit, or None."""
+    """The first thing in a generated table the strict allow-list does not admit, or None.
+
+    Whole-line comments (`%` in column 0, as `estimate.py tabla-latex` writes its provenance
+    line) are dropped before checking: TeX ignores them, so nothing in them can run.
+    """
     if "^^" in tex:
         return "^^"
+    tex = re.sub(r"(?m)^%[^\r\n]*", "", tex)
     depth = 0
     for i, c in enumerate(tex):
         if c in "{}" and (i == 0 or tex[i - 1] != "\\"):

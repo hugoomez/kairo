@@ -593,3 +593,30 @@ class TestCheckVenue(VenueBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TablaLatexIntegracion(unittest.TestCase):
+    """estimate.py tabla-latex output passes the exporter's table allow-list as it is."""
+
+    def test_generated_table_with_provenance_comment_is_allowed(self):
+        import json as _json
+        import subprocess as _sp
+        import tempfile as _tf
+        est = {"plan": "M-9001", "units_sha256": "0" * 64, "estimates": [
+            {"id": "est-1", "type": "proporcion", "value": 0.125, "lo": 0.1, "hi": 0.15, "n": 800,
+             "method": "wilson"}]}
+        with _tf.TemporaryDirectory() as d:
+            f = Path(d) / "e.json"
+            f.write_text(_json.dumps(est), encoding="utf-8")
+            script = Path(__file__).resolve().parents[1] / "analysis" / "estimate.py"
+            r = _sp.run([sys.executable, str(script), "tabla-latex", "--json", str(f), "--id", "est-1"],
+                        capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            tex = r.stdout.decode("utf-8")
+        self.assertIn("Método", tex)
+        self.assertTrue(tex.startswith("%"))
+        self.assertIsNone(lp.table_file_not_allowed(tex, ms._MATH_CS, ms._SYMBOLS))
+
+    def test_comment_inside_a_line_still_refused(self):
+        self.assertEqual(lp.table_file_not_allowed("\begin{tabular}{l}\na % x\n\end{tabular}",
+                                                   ms._MATH_CS, ms._SYMBOLS), "%")

@@ -1085,6 +1085,10 @@ def _units_for(pairs: list[str]) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    # Always UTF-8: the study gate re-runs this script with PYTHONIOENCODING=utf-8 and
+    # compares byte for byte, so a Windows console's cp1252 would break any non-ASCII value.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     if argv[:1] == ["tabla-latex"]:
         return _latex_main(argv[1:])
     if argv[:1] == ["tamano"]:
