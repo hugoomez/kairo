@@ -305,6 +305,49 @@ Limits — say them: a search engine's ranking is not reproducible and not
 exhaustive. Pages behind a login or a bot check are lost. A page's own date
 can be missing, and then it is kept whatever the window says.
 
+#### Documentation corpus — tool docs, format specs, changelogs
+
+Much of a measurement study's background is technical documentation that
+changes while the study runs: the docs of the tool that produced the data, a
+file-format specification, a changelog. Ingest such a page as **versioned
+documentation**, not as a one-off grey item:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" add --vault <vault> --project PROJ-XXX --url <url> --doc --tool <name>
+```
+
+(`docs_corpus.py add … --url <url> --tool <name>` does the same.) The note
+gets `source_type: documentacion`, `tool` (the tool, format or standard, the
+researcher's word), `doc_version` (read from the page — a version tag, a
+labelled version string, else a «last updated» date as `actualizado
+YYYY-MM-DD`; empty when the page says none, never typed by you),
+`accessed_at`, `url`, `sha256` of the page's visible text, and a
+`## Versiones` section. The page bytes are kept like the web pass keeps them,
+and `verify` re-derives its sections. A documentation page is recognised by
+its URL, not its title.
+
+Before relying on the docs (writing the methods, freezing a plan, answering
+from the corpus), refresh them:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/docs_corpus.py" refresh --vault <vault> --project PROJ-XXX [--only P-XXXX …] [--dry-run]
+python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/docs_corpus.py" list --vault <vault> --project PROJ-XXX
+```
+
+`refresh` fetches each documentation note again. Same visible text: only
+`checked_at` moves. Changed text: the previous version (the note as it was
+and its kept bytes) is moved to `Papers/_fuentes/<P-id>/historial/v<n>/`, the
+note is rewritten from the new bytes, and one `## Versiones` line says what
+changed (lines added / removed) and where the old version is — nothing is
+overwritten silently. A page that cannot be fetched is reported (`lost`) and
+left as it was. The output carries ids, titles and counts only: report them,
+never the page text. `ingest_paper.py rebuild` refuses these notes.
+
+ask-corpus and explain cite them like any paper (`check_quotes.py --list`
+shows `source_type`, `tool`, `doc_version`, `accessed_at`): name the version
+a quoted sentence comes from. A quote of a page that has since changed stops
+verifying — re-check after a refresh that reported changes.
+
 ### 4. Retraction / withdrawal check
 
 ```
