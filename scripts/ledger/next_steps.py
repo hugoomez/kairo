@@ -13,6 +13,9 @@ the `target` it is about, a `message`, the `action` that resolves it and the
                              names it → update-confidence.          importante
   hub_sin_valor              a hub field still holds the template's `<value>`
                              (budget fields importante, others menor).
+  estado_del_arte_diferido   the hub says `sota_map: diferido` (light start:
+                             only Novedad.md, no map yet) → «construye el
+                             estado del arte» (create-project step 7). menor
   hipotesis_sin_evaluar      an open hypothesis lacks worth / cost fields
                              (vale_la_pena … evaluado) → hypothesis-cycle
                              «¿Merece la pena?».                     menor
@@ -106,6 +109,22 @@ def hub_placeholders(pdir: Path) -> list[dict]:
                         f"`{key}` sigue en `<value>`{why}.",
                         f"Rellenar `{key}` en _hub.md, o borrar la línea si no aplica.", []))
     return out
+
+
+def sota_deferred(pdir: Path) -> list[dict]:
+    """One reminder while the hub's `sota_map` is `diferido` (the light start)."""
+    v = str(ps.hub_fm(pdir).get("sota_map") or "")
+    if re.split(r"\s+#", v, maxsplit=1)[0].strip().strip("\"'").lower() != "diferido":
+        return []
+    if (pdir / "Estado-del-arte.md").is_file():
+        return [item("estado_del_arte_diferido", "menor", "_hub.md:sota_map",
+                     "Estado-del-arte.md ya existe, pero el hub sigue en `sota_map: diferido`.",
+                     "Poner `sota_map: true` en _hub.md si el mapa pasó sus comprobaciones.", [])]
+    nov = " (el proyecto solo tiene Novedad.md)" if (pdir / "Novedad.md").is_file() else ""
+    return [item("estado_del_arte_diferido", "menor", "_hub.md:sota_map",
+                 f"Estado del arte diferido (`sota_map: diferido`){nov}: todavía no hay mapa.",
+                 "«Construye el estado del arte» cuando haga falta (create-project paso 7); "
+                 "después, `sota_map: true`.", [])]
 
 
 def worth(hyps: list[dict]) -> list[dict]:
@@ -257,7 +276,8 @@ def run(vault: Path, project: str) -> dict:
     pdir, pid = ps.resolve_project(vault, project)
     hyps, sh = ps.hypotheses(pdir)
     exps, se = ps.experiments(pdir)
-    items = unadjudicated(hyps, exps) + hub_placeholders(pdir) + frontier(vault, pdir, pid, hyps) + worth(hyps)
+    items = (unadjudicated(hyps, exps) + hub_placeholders(pdir) + sota_deferred(pdir)
+             + frontier(vault, pdir, pid, hyps) + worth(hyps))
     items.sort(key=lambda i: SEVERITY_ORDER.get(i["severity"], 9))
     counts = {s: sum(1 for i in items if i["severity"] == s) for s in SEVERITY_ORDER}
     summary = [f"Siguientes pasos de {pid} ({pdir.name}): {len(items)} pendiente(s)"

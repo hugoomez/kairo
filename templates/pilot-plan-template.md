@@ -49,4 +49,4 @@ status: borrador
 
 ## Ética
 
-<Qué material de terceros puede aparecer en el piloto y cómo se protege. Los mismos avisos que el estudio si el piloto encuentra algo que lo exija.>
+<El piloto sigue el plan ético del proyecto (el campo `etica:` del hub, Projects/<slug>/Etica.md, hecho desde templates/ethics-plan-template.md), aunque sus datos no se citen. Aquí solo lo que el piloto añade: qué material de terceros puede aparecer y cómo se protege. Los mismos avisos que el estudio si el piloto encuentra algo que lo exija. Ejemplo inventado: igual que Etica.md; la anotación a mano ve solo la huella y el tipo, nunca el valor.>

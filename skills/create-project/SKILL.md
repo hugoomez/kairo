@@ -15,7 +15,9 @@ description: >-
 
 Bootstraps one research project end to end: a `PROJ-XXX` hub note, the folder
 scaffold, a literature sweep, ingested `Papers/` notes, an `Estado-del-arte.md`
-map, and 3–5 seed hypotheses — then one commit.
+map, and 3–5 seed hypotheses — then one commit. With `sota_map: diferido`
+(the light start, `medicion`'s default) the map is replaced by a short novelty
+check, `Novedad.md` (step 6b), and built later on request.
 
 Binding rules (Kairo core principles):
 
@@ -123,7 +125,7 @@ existing fields — never a new `type` value:
 | `revision` (state of the art only) | `ciencia` | `seed_hypotheses: false` | as today; steps 3 and 8 are skipped |
 | `corpus` (search and ingest only) | `ciencia` | `seed_hypotheses: false`, `sota_map: false` | as today; steps 3, 7 and 8 are skipped |
 | `ligero` (search and abstract cards) | `ciencia` | `seed_hypotheses: false`, `sota_map: false`, `fulltext: false` | as today; steps 3, 7 and 8 are skipped |
-| `medicion` (a measurement study) | `ciencia` | `code_repo` (required), `code_remote: none`, `code_visibility: private`, `seed_hypotheses: false` | the repository link as for `aplicado`; then `kairo:plan-study` instead of step 8 |
+| `medicion` (a measurement study) | `ciencia` | `code_repo` (required), `code_remote: none`, `code_visibility: private`, `seed_hypotheses: false`, `sota_map: diferido` (`true` if the researcher wants the map now), `etica: Projects/<slug>/Etica.md` | the repository link as for `aplicado`; `Etica.md` from the ethics template; step 6b instead of 7 and `kairo:plan-study` instead of 8 |
 
 **`revision`** is the light path for a question like "state of the art on X,
 last two years" or "compare A, B and C": Propósito is the question itself and
@@ -156,9 +158,24 @@ collection scripts live there, so create or link it exactly as in "Applied
 projects: the code repository" and refuse to continue without it. Set
 `seed_hypotheses: false`. Ask for `default_linea_publicacion` (does the
 study feed a publication line?) and `deadline`, and record both in the hub.
-`sota_map` stays `true`: a measurement study needs the literature check too,
-so steps 4-7 and the frontier map apply. At the end, instead of step 8, offer
-`kairo:plan-study`; `kairo:estimate` runs later, once the plan is frozen.
+`sota_map: diferido` is the default (the light start): before a two-day pilot
+a measurement study needs to know whether the quantity has been measured
+already, not a full state of the art, so steps 4–6 run as a novelty check and
+step 6b writes `Novedad.md` instead of step 7's map. Set `sota_map: true`
+instead when the researcher asks for the map now; say which in the one-line
+template choice. The map (step 7) and the frontier map come later, when the
+researcher says «construye el estado del arte». Step 2 also copies the ethics
+plan (`Etica.md`, hub field `etica:`). At the end, instead of step 8, offer
+`kairo:plan-study`, a pilot first; `kairo:estimate` runs later, once the plan
+is frozen.
+
+**`sota_map: diferido` with any other template** is the same light start,
+for a researcher who says «empieza ligero», «solo comprobar si está hecho» or
+has a deadline that cannot wait for the map: steps 4–6 run as the novelty
+check, step 6b writes `Novedad.md`, step 7 is skipped and so is step 8 (there
+are no mapped gaps to seed from; hypotheses come after the map, or from the
+researcher's own claim through `hypothesis-cycle`). It makes no difference to
+`corpus` and `ligero`, which build no map anyway.
 
 Set `template:` to the one used. For `teorico`, tell the researcher once, in
 your report: `default_linea_publicacion: true` means every experiment that
@@ -185,6 +202,16 @@ can set it to `false` in the hub.
   (a skeleton whose sections are marked placeholders). No prose is drafted
   here: `assemble-manuscript` (progressive mode) does that later, under its
   gates.
+- **`medicion`: the ethics plan.** Copy
+  `${CLAUDE_PLUGIN_ROOT}/templates/ethics-plan-template.md` to
+  `Projects/<slug>/Etica.md`, set its `project:` to the new id, and set the
+  hub's `etica: Projects/<slug>/Etica.md`. Fill a section only with what the
+  brief states (e.g. «solo agregados», a data-retention date); leave every other
+  placeholder as it is — the ethics decisions are the researcher's — and never
+  set `status: revisado` or `comite:`. Say in the report that `Etica.md` waits
+  for the researcher, and that every measurement and pilot plan's `## Ética`
+  points to it. Any other template may get one the same way when the brief
+  works on third-party data; otherwise delete the hub's `etica:` line.
 
 ### 3. Compute `related_projects`
 
@@ -216,6 +243,24 @@ paper on X alone is in scope, a generic Y paper from another field is not.
 
 Include the **patent search only if `type` is `producto` or `hibrido`** —
 otherwise omit it entirely (matches that skill's own gate).
+
+**`sota_map: diferido` — the novelty-check search.** One question only: has
+this quantity (`medicion`) or this question (any other template) been
+measured or answered before? The plan is narrow: facet A, `"required": true`,
+the quantity or question itself with its synonyms; facet B, optional, the
+population or source it is measured on; synonyms of the measuring itself
+("large-scale measurement", "empirical study", "prevalence", "census") go in
+A's synonyms, not in a facet of their own; `min_facets: 1`. `include`: "reports
+a measurement or estimate of the same or a close quantity on a comparable
+population"; `exclude`: "discusses the phenomenon without measuring it". Add
+the **web pass** (literature-search step 3b): earlier measurements often live
+in reports, tool documentation or servers the APIs miss, and a report that
+measured the quantity counts as prior work as much as a paper. No snowball
+unless the brief names seed papers. The run directory is the usual
+`_busquedas/<YYYY-MM-DD>/`, so lit-watch keeps watching the question. Confirm
+the few papers that really measured it (at most 10; `manual` = the researcher
+picks, as in step 5) — the rest stay listed in `ranked.md` for the later map.
+The estimate before screening still applies; the one before step 7 does not.
 
 **Cost before the heavy passes — an estimate, then the researcher's go-ahead.**
 The screening (one `screener` per page), the map (one `facet-summarizer` per
@@ -441,9 +486,93 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    environment that runs Claude Code (never commit it), and re-run the command
    above.
 
+### 6b. Novelty check — `Projects/<slug>/Novedad.md` (`sota_map: diferido` only)
+
+*(Runs only with `sota_map: diferido`; step 7 is then skipped.)* A short,
+cited answer to one question — has this been measured before? — written from
+the few papers step 4's novelty-check search confirmed. Every rule of step 7's
+citations applies: every claim cites `P-XXXX` + a locator, nothing this
+session did not get from a reader, and this session never reads a paper note.
+
+1. **Read — `facet-summarizer`, one per chunk.** Split the confirmed papers
+   with `facet_assignment.py --vault <vault> --project <PROJ-XXX> --chunks`
+   exactly as in step 7 (usually one chunk; never re-split, never assign a
+   `send: never` note) and dispatch one `facet-summarizer` per chunk, all in
+   the same turn. Give each its note paths and facets, the project `type`,
+   and the facet as «medidas previas de <la cantidad o pregunta>» with facet
+   A's terms, and ask it to contribute only to «5. Lo establecido vs. lo
+   debatido» (what each work measured: quantity, population, period, method,
+   and the result exactly as printed) and «6. Huecos identificados» (what none
+   of these works measures — these works only), plus its `lectura:` lines. No
+   reading cards here: step 7 makes them when the map is built. An
+   abstract-only paper is cited `P-XXXX Resumen` «(solo abstract)», as in
+   step 7.
+2. **Write `Novedad.md`** from those contributions only, in this shape:
+
+   ```markdown
+   ---
+   tipo: novedad
+   project: <PROJ-XXX>
+   generated: <YYYY-MM-DDTHH:MM:SSZ>
+   generated_by: {origin: agent, model: <this session's model id>, skill_version: create-project@<plugin version>, summarizer_model: <facet-summarizer's model>}
+   busqueda: _busquedas/<YYYY-MM-DD>/
+   ---
+
+   # Novedad — <la cantidad o la pregunta>
+
+   ## Pregunta
+   <one sentence from the hub's Propósito: what will be measured, on what population>
+
+   ## Medidas previas
+   - <who measured what, on which population and period, with the result as printed> — P-XXXX §4.2
+   <or exactly «Ninguna en los N trabajos confirmados.»>
+
+   ## Lo que no miden
+   - <what none of these works measures> — P-XXXX §6, P-YYYY §5 (only these works; never «nadie lo ha medido»)
+
+   ## Veredicto
+   <nueva | parcialmente medida | ya medida>: one or two cited sentences, «(inferencia)» when
+   they combine works. A model's judgement over N works from one narrow search, not a proof of
+   novelty — say so in the sentence.
+
+   ## Cobertura de lectura
+   <the `lectura:` lines verbatim, `solo abstract: P-XXXX`, `no citado: P-XXXX (motivo)`>
+
+   ## Búsqueda ejecutada
+   <the run's busqueda.md, appended unchanged>
+   ```
+   A `## ⚠️ Cobertura degradada` block at the top of `busqueda.md` also goes
+   at the very top of `Novedad.md`, as in step 7. Frontmatter `generated_by`
+   follows step 7's rule: omit a key rather than guess it.
+3. **Gate — the same two checks as the map.** Run
+   `check_sota.py --vault <vault> --project-dir Projects/<slug> --file Novedad.md`
+   and fix every problem through `paper-reader` exactly as in step 7 (fix the
+   locator or figure, or drop the sentence) until it exits 0. Then one
+   `fresh-verifier` per cited section (`--file Novedad.md --packet
+   <tmp>/novedad-<n>.md --section "<heading>"`: «Medidas previas», «Lo que no
+   miden», «Veredicto»), its findings handled and its verdicts recorded
+   (`scope: section:<heading>`) as in step 7.
+4. **Hand back.** In the end-of-run message give the verdict line and the
+   number of prior measurements in one or two lines, say that the map is
+   deferred (`sota_map: diferido`; «construye el estado del arte» builds it
+   later), and offer the next step: for `medicion`, `kairo:plan-study` with a
+   pilot first (`Pilotos/QP-XXXX`, see plan-study «A pilot before the study»);
+   a verdict «ya medida» is the researcher's call — say it plainly before
+   offering the pilot, never decide it for them.
+
 ### 7. Generate `Projects/<slug>/Estado-del-arte.md` (map-reduce via subagents)
 
-*(Skipped for the `corpus` template: `sota_map: false`.)*
+*(Skipped for the `corpus` template: `sota_map: false`, and at creation with
+`sota_map: diferido`.)*
+
+**Later — «construye el estado del arte».** On a `sota_map: diferido` project
+this step runs on its own when the researcher asks. The novelty check's
+corpus is small and narrow: first offer a full step 4 search (the project's
+broad facets, a new run directory; the papers already ingested are
+deduplicated), with steps 5–6 on its confirmed papers, then run this step
+whole (cards, map, reduce, both gates). `Novedad.md` stays as written; the
+map may cite the same papers. When the map passes its gates, set
+`sota_map: true` in the hub and commit both.
 
 **Full text before the map.** Run
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/papers/ingest_paper.py" gaps --vault <vault> --project <PROJ-XXX>`
@@ -696,7 +825,12 @@ sha256 inside), so the map's evidence base is auditable and re-runnable.
 
 **`seed_hypotheses: false` (the `revision` and `medicion` templates)?** Skip this step and end
 the run saying the gaps are ready for hypothesis generation when wanted.
-For `medicion`, end by offering `kairo:plan-study` instead of hypotheses.
+For `medicion`, end by offering `kairo:plan-study` instead of hypotheses —
+a pilot first when the study starts with one.
+
+**`sota_map: diferido`?** Skip this step too: there is no map and so no
+mapped gaps. Hypotheses come after «construye el estado del arte», or from
+the researcher's own claim through `hypothesis-cycle`.
 
 **Launched from the Kairo interface?** Skip this step: the prompt says so.
 Hypothesis generation runs on the policy's hard-task model as its own job
@@ -816,6 +950,8 @@ For the `aplicado` and `medicion` templates, in step 2, after the scaffold:
 | Hypothesis id | `H-NNNN`, max existing vault-wide + 1, zero-padded 4 digits |
 | Subfolders | `Hipotesis/`, `Experimentos/`, `Producto/` (+ `.gitkeep` while empty) |
 | SOTA map | `Projects/<slug>/Estado-del-arte.md` |
+| Novelty check (`sota_map: diferido`) | `Projects/<slug>/Novedad.md` |
+| Ethics plan (`medicion`) | `Projects/<slug>/Etica.md` (hub `etica:`) |
 | Digest | `Projects/<slug>/_digest.md` |
 
 ## Paper note format (written by `ingest_paper.py`; no template file exists)
@@ -962,6 +1098,14 @@ When a paper is already ingested for another project, only append this project's
   one that can drift from it.
 - **Renumbering the SOTA sections when §4/§9 are omitted.** Keep the canonical
   titles and order; just leave the conditional ones out.
+- **Building the map at creation with `sota_map: diferido`.** The light start
+  stops at `Novedad.md` (step 6b); step 7 waits for «construye el estado del
+  arte».
+- **Writing `Novedad.md` without its gates, or reading its papers here.** A
+  `facet-summarizer` reads, `check_sota.py --file Novedad.md` and the
+  fresh-verifier check, exactly as for the map.
+- **Deciding the ethics plan.** `Etica.md` is copied and filled only with what
+  the brief states; `status`, `comite` and every decision are the researcher's.
 - **More than 5 seed hypotheses on the first pass.** Cap at 5.
 - **Promoting a seed hypothesis past `propuesta`.** Not this skill's job.
 - **Duplicating a `Papers/` note that already exists for another project.**
