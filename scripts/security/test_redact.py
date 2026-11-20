@@ -348,3 +348,11 @@ def test_encoded_private_key_never_passes_as_ciphertext():
     pem = b"-----BEGIN PRIVATE KEY-----\n" + b"A" * 600
     v = base64.b64encode((256).to_bytes(2, "big") + pem).decode()
     assert not redact.is_public_ciphertext(v)
+
+
+def test_sealed_secret_ciphertext_kept_inside_a_json_line():
+    ct = _sealed(512, seed=9)
+    text = f"spec:\n  encryptedData:\n    password: {ct}\n    api-token: {ct}\n"
+    line = json.dumps({"id": "x", "content": text}, ensure_ascii=False)
+    assert not redact.has_secret(line)
+    assert redact.redact_text(line)[1] == []

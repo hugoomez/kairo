@@ -105,8 +105,16 @@ def _b64_private(run: str) -> bool:
 _RSA_WRAP_LENGTHS = (128, 256, 384, 512)
 
 
+_ESCAPED_EOL_RE = re.compile(r"(?:\\[rn])+$")
+
+
 def is_public_ciphertext(value: str) -> bool:
-    """True when `value` is a Sealed Secrets ciphertext (see above)."""
+    """True when `value` is a Sealed Secrets ciphertext (see above).
+
+    Inside a JSON string (a JSONL sample line) the value's line break is the two
+    characters `\\n`, which the assignment rules take as part of the value: drop them.
+    """
+    value = _ESCAPED_EOL_RE.sub("", value.strip())
     if len(value) < 200:
         return False
     raw = b64_decode_loose(value)
