@@ -797,3 +797,32 @@ def test_pilot_cannot_be_frozen_into_plan_congelado(vault, capsys):
                      "--to", "plan_congelado", "--by", "tester", "--evidence", "x")
     assert code == 3
 
+
+
+def _weighted_validation(vault):
+    """Re-validate the demo classifier as a stratified sample: two strata with weights."""
+    d = vault.proj / SAMPLE
+    rows = [{"id": f"u{i}", "_stratum": "alta" if i < 60 else "baja", "_weight": 1.0 if i < 60 else 9.0}
+            for i in range(100)]
+    (d / "muestra.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    r = subprocess.run([sys.executable, str(AGREEMENT), "validate", "--gold", str(d / "gold.jsonl"),
+                        "--pred", str(d / "pred.jsonl"), "--label", "x", "--positive", "true",
+                        "--vault", str(vault.root), "--weights-from", str(d / "muestra.jsonl")],
+                       capture_output=True, text=True, check=True)
+    v = json.loads(r.stdout)
+    assert v.get("weighted") is True and "weights" in v["inputs"]
+    (d / "validacion-clasif-demo.json").write_text(r.stdout, encoding="utf-8")
+    return d / "muestra.jsonl"
+
+
+def test_gate_weighted_validation_reproduces(vault):
+    vault.question()
+    _weighted_validation(vault)
+    assert not any("clasif-demo" in m for m in missing(vault))
+
+
+def test_gate_weighted_validation_weights_changed(vault):
+    vault.question()
+    w = _weighted_validation(vault)
+    w.write_text(w.read_text(encoding="utf-8").replace('"_weight": 9.0', '"_weight": 3.0'), encoding="utf-8")
+    assert any("clasif-demo" in m and "weights" in m and "cambió" in m for m in missing(vault))

@@ -514,7 +514,8 @@ def _recompute(vault: Path, proj: Path, name: str, sample: str, rel: str, v: dic
         return [f"clasificador {name}: validación sin entradas registradas: vuelve a generarla con agreement.py"]
     files = {}
     sample_dir = (proj / "Datos" / "anotacion" / sample).resolve()
-    for role in ("gold", "pred"):
+    roles = ("gold", "pred", "weights") if isinstance(inp.get("weights"), dict) else ("gold", "pred")
+    for role in roles:  # weights: the sample of a stratified (weighted) validation, agreement.py --weights-from
         meta = inp.get(role) if isinstance(inp.get(role), dict) else {}
         f = _input_file(vault, proj, str(meta.get("path") or ""))
         if f is None:
@@ -540,6 +541,8 @@ def _recompute(vault: Path, proj: Path, name: str, sample: str, rel: str, v: dic
     cmd = [sys.executable, str(AGREEMENT), "validate", "--gold", str(files["gold"]), "--pred", str(files["pred"]),
            "--label", str(inp.get("label", "")), "--positive", str(inp.get("positive", "")),
            "--ci", str(inp.get("ci", 0.95)), "--vault", str(vault)]
+    if "weights" in files:
+        cmd += ["--weights-from", str(files["weights"])]
     try:
         r = _run(cmd, "agreement.py")
     except _Fail as e:
