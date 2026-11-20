@@ -40,9 +40,26 @@ explicit (ADRs). The standards are the repository's `CONVENTIONS.md`.
    `gh` is available; otherwise say CI was not checked and why.
 4. Dependencies: list outdated or vulnerable packages if the toolchain has a
    command for it (`pip-audit`, `npm audit`), else say it was not checked.
-5. Write `Projects/<slug>/_repo-health.md` (vault side, never in the repo):
-   the date, the repository HEAD, a table *check · command · result · detail*,
-   and the concrete next fixes, most important first. Commit it alone.
+5. **Never decrypt** — only when the hub says `no_descifrar: true`, or the
+   project's ethics plan (`etica:` in the hub, `Etica.md`) states that nothing
+   is ever decrypted and no found key is ever used. Run
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/code_repo/no_decrypt_check.py" \
+     --repo <code_repo> --format md
+   ```
+   It scans the tracked files for decryption commands (`sops -d`, `age -d`,
+   `kubeseal --recovery-unseal`, `dotenvx decrypt|get|run`, `git-crypt
+   unlock`, …, also inside `subprocess` argument lists) and library calls that
+   decrypt or use a loaded private key. Exit 4 is a **crítico** finding: put
+   each hit (file, line, rule) in the next fixes. Never add an allow-list
+   entry yourself: the allow-list (`.kairo/no-descifrar.json`, each entry with
+   its `justificacion`) is the researcher's, for lines that only mention a
+   command (a README that forbids it). Paste the `## Nunca descifrar` section
+   it prints into `_repo-health.md`. Exit 1: say why it could not run.
+6. Write `Projects/<slug>/_repo-health.md` (vault side, never in the repo):
+   the date, the repository HEAD, a table *check · command · result · detail*
+   (with a «nunca descifrar» row when step 5 ran, and its section), and the
+   concrete next fixes, most important first. Commit it alone.
 
 ### Repository state
 
