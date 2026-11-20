@@ -14,6 +14,7 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -24,6 +25,9 @@ from vault_fixture import Vault, mapa_example  # noqa: E402
 class NextSteps(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="kairo-next-"))
+        env = mock.patch.dict(os.environ, {"KAIRO_COLLECTIONS_DIR": str(self.tmp / "colecciones")})
+        env.start()
+        self.addCleanup(env.stop)   # never the researcher's real ~/.kairo/collections
         self.v = Vault(self.tmp)
         self.p = self.v.project()
 
