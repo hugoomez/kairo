@@ -320,7 +320,13 @@ records, **never typed or pasted by the model**. For each confirmed paper:
    papers stayed abstract-only. **A paper with no
    DOI and no arXiv id** (many USENIX / workshop papers) is ingested from its
    OpenAlex work: `--openalex W…` (the `openalex` id `lit_search.py accept`
-   prints when OpenAlex found it). No open full text at all → the script
+   prints when OpenAlex found it). **A grey-literature include from the web
+   pass** (a report, a tool's documentation, an IACR ePrint page; `accept`
+   prints its `url` and no other id) is ingested with `--url <url>`: its
+   metadata, `## Resumen` and text come from the page's own bytes
+   (`source_type: gris`); its full text is the PDF the page links when the
+   server hands it to a script, else the page's text (`fulltext: pagina`);
+   list those in the creation report. No open full text at all → the script
    writes `No disponible — solo abstract.` and `fulltext: abstract-only`; list
    it in the creation report as «sin texto: hace falta el PDF». An abstract no
    source returned stays `No disponible — ningún abstract recuperado (…)`.
