@@ -266,6 +266,33 @@ Never `git add -A`. Report:
 - the state now (`estimada`, or the state it stayed in);
 - if the gate failed, the list from step 6.
 
+## Figuras
+
+A figure of an estimated question is drawn **only from estimate.py's JSON**
+(aggregates), never from the units file or a data row.
+
+1. Extract the stored block, byte for byte:
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/figures.py" extract-json
+   --vault <vault> --question Q-XXXX --out <code repo>/figuras/Q-XXXX.json`.
+   It prints `estimate_sha256`, the sha256 of that file.
+2. Write the figure script in the project's **code repository**. It reads only
+   that JSON file and renders a `.pdf` or `.png` (the LaTeX export takes
+   only those). Commit the script there.
+3. Register the rendered file:
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/figures.py" register
+   --vault <vault> --project <slug> --file <abs path of the render> --question Q-XXXX
+   --script <path in the code repo> --commit <code repo sha> --caption "…" [--wide]
+   --by <agent id>`.
+   It copies the file into `Projects/<slug>/Figuras/`, records its sha256 and
+   the question's `estimate_sha256` in `Figuras/registro.json`, and commits
+   only those two files (`--no-commit` leaves them uncommitted). It refuses a
+   question without an `estimate-json` block.
+4. `figures.py check --vault <vault> --project <slug>` before any export.
+   Exit 4 lists figures that are `obsoleta` (the question's estimate changed
+   since the figure was drawn) or whose file changed. Re-extract, re-render
+   and register again with the same `--id F-00N`. Never edit the registry by
+   hand.
+
 ## Common mistakes
 
 - **Reading the units file** "just to check a column". The plan names the

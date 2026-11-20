@@ -142,6 +142,18 @@ at the end. The outline, not this skill, decides the sections: each has a
 4. Fresh verification of each drafted section and the AI-use disclosure work
    exactly as below. Commit the manuscript, the coverage view and the
    verification records together.
+   **Check every number before export.** For a manuscript with sections bound
+   to study questions (`Q-XXXX`), run
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/numbers_check.py" --vault <vault>
+   --project-dir Projects/<slug> --thread <paper_thread>`. Every number in a
+   bound section must come from its questions' `estimate-json` (or their plan,
+   a year, or a section / figure / table number). Exit 4 means an untraced
+   number in a `resultado` section; untraced numbers elsewhere are warnings.
+   Fix each one by re-deriving it from `estimate-json` and rewriting the
+   section with `write-section`. Add a number to
+   `Manuscritos/numeros-permitidos.txt` (`<number><TAB><reason>`) only when it
+   truly does not come from an estimate, always with its reason; never to
+   silence the check. Do not export while it exits 4.
 5. **Export to LaTeX**, once every section is written:
    `python "${CLAUDE_PLUGIN_ROOT}/scripts/manuscript/manuscript.py" export
    --vault <vault> --project-dir Projects/<slug> --thread <paper_thread>
