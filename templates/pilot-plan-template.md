@@ -21,11 +21,14 @@ status: borrador
 
 ## Estimandos
 
-<Mismo formato que el plan de medición (templates/measurement-plan-template.md): proporcion, conteo, mediana, diferencia, reutilizacion, supervivencia, con `filter`, `cluster` y `by`. Lo que el piloto quiere saber para decidir: tasas aproximadas, cuántas unidades hay, cuántas son de cada tipo. Ejemplo inventado.>
+<Mismo formato que el plan de medición (templates/measurement-plan-template.md): proporcion, conteo, mediana, diferencia, reutilizacion, supervivencia, tabla, interseccion, tendencia, cuantiles, con `filter`, `cluster`, `by`, `units` (varias tablas de unidades), `variants` (sensibilidad) y `families` (comparaciones múltiples). Lo que el piloto quiere saber para decidir: tasas aproximadas, cuántas unidades hay, cuántas son de cada tipo, cómo se reparten. Ejemplo inventado.>
 
 ```json
 {"estimands": [
-  {"id": "pil-1", "type": "proporcion", "column": "tiene_x", "filter": {}, "cluster": null, "by": "formato"}
+  {"id": "pil-1", "type": "proporcion", "column": "tiene_x", "filter": {}, "cluster": null, "by": "formato",
+   "variants": [{"id": "solo-activos", "filter": {"activo": "1"}}]},
+  {"id": "pil-2", "type": "tabla", "rows": "formato", "cols": "tipo_propietario", "filter": {}, "cluster": null},
+  {"id": "pil-3", "type": "cuantiles", "column": "dias", "q": [0.5, 0.9], "units": "repos", "filter": {}, "cluster": null}
 ]}
 ```
 

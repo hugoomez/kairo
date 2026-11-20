@@ -93,14 +93,34 @@ data. The dataset must be `kind: file` (estimate.py refuses a folder). Write
 its `name` into `units_dataset`. Never infer the dataset from file names in
 the data folder.
 
+**Several unit tables.** If some estimand of the plan has `"units": "<tabla>"`
+(the study has several units of analysis, e.g. files, repositories, key
+fingerprints), each table is its own registered dataset. Ask the researcher
+which dataset is each table, and write a map: `default` is the table of the
+estimands without `units`, every other key is a table name of the plan.
+
+```
+units_dataset: {default: unidades-ficheros, repos: unidades-repos}
+```
+
+Leave `default` out only when every estimand names its `units`.
+
 ### 3. Run `estimate.py`
 
 ```
 python "${CLAUDE_PLUGIN_ROOT}/scripts/analysis/estimate.py" --vault <vault> --plan <linked_plan> --units <units_dataset>
 ```
 
+With a map, pass `default` as `--units` and every other table as
+`--units-for <tabla>=<dataset>` (sorted by table name), e.g.
+`--units unidades-ficheros --units-for repos=unidades-repos`. estimate.py
+refuses a table the plan uses and you did not pass, and one you passed that no
+estimand uses. It checks each dataset's fingerprint and lists them in its
+output (`units_sha256` for the default table, `tables` for the others).
+
 Exit 3 prints `{"error": …}`, sometimes with `esperada`, the fingerprint the
-registry expected. Report it and stop. A changed fingerprint means the units
+registry expected (and `tabla`, when it is a named table's). Report it and
+stop. A changed fingerprint means the units
 file changed after it was registered. The researcher decides what to do. Never retry with another file
 or another dataset on your own.
 
@@ -116,7 +136,25 @@ earlier result) with:
    `groups` (`by`) gets one more row per group (`est-1 · <group>`). A
    `diferencia` row names its two groups; a `reutilizacion` row is followed
    by its `histogram`; a `supervivencia` with `median_reached: false` shows
-   «no alcanzada» as its value, and its `survival_at` as `S(t)` rows;
+   «no alcanzada» as its value, and its `survival_at` as `S(t)` rows; a
+   `curve` is not tabulated: say how many steps it has and how many were
+   suppressed (`curve_suppressed`, risk set under `curve_min_at_risk`).
+   The newer shapes:
+   - `variants`: one more row per variant (`est-1 [sin-copias]`), with its
+     groups if any, right after the estimand's rows;
+   - `family` (a `diferencia` in a family): add `p`, `p ajustado (<method>)`
+     and the adjusted interval at `ci_adjusted`, all as printed;
+   - `tabla` (value null): a separate table, rows × cols, each cell
+     `count (p [lo, hi])`, plus the row and column totals;
+   - `interseccion`: the row of the all-true share, then one row per
+     `combinations` entry (`a ∧ b ∧ ¬c`: count) and the `marginals`;
+   - `tendencia`: the slope row (`value`, interval), `z` and `p_value`, then
+     one row per level (`est-1 · 2021`) with its score;
+   - `cuantiles` (value null): one row per `quantiles` entry (`q = 0.5`);
+   For a paper, never retype numbers: `estimate.py tabla-latex --json
+   <stdout guardado> --id <estimando> [--variant V] [--caption …]
+   [--decimals N]` prints a booktabs table with the values as printed (or
+   rounded only to the declared `--decimals`);
 2. one plain sentence per estimand: what it measures, from the plan's
    `## Estimandos`, with its interval. Draw no conclusions beyond that;
 3. the block, with `estimate.py`'s stdout **exactly**, nothing added:

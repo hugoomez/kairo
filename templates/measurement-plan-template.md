@@ -29,7 +29,13 @@ frozen_commit: <git-sha>
 - `mediana`: de una `column` numérica, con bootstrap.
 - `diferencia`: p(a) − p(b) de la `column` 0/1 entre dos valores `a` y `b` de la columna `group`. Newcombe, o bootstrap si hay cluster.
 - `reutilizacion`: fracción de valores distintos de `column` (una huella de clave, nunca la clave) que aparecen en al menos `min_groups` (por defecto 2) valores distintos de `across` (repositorio, organización). Wilson sobre las claves, con un histograma de recuentos; nunca imprime una clave ni un grupo.
-- `supervivencia`: mediana de Kaplan-Meier de `column` (tiempo hasta el cambio, p. ej. días), con `event` verdadero si el cambio se vio y falso si seguía sin cambiar al final de la observación (censura). `at`: lista de tiempos en los que dar S(t), [] si ninguno. Si la mediana no se alcanza, `value` es null y `median_reached` false.
+- `supervivencia`: mediana de Kaplan-Meier de `column` (tiempo hasta el cambio, p. ej. días), con `event` verdadero si el cambio se vio y falso si seguía sin cambiar al final de la observación (censura). `at`: lista de tiempos en los que dar S(t), [] si ninguno. Si la mediana no se alcanza, `value` es null y `median_reached` false. `curve: true` (opcional) añade la curva de Kaplan-Meier como escalones agregados (t, S(t), unidades en riesgo); un escalón con menos de 5 unidades en riesgo no se imprime, solo se cuenta en `curve_suppressed`.
+- `tabla`: tabla cruzada de dos columnas categóricas `rows` y `cols` (sin `column`): recuentos y proporción por fila con Wilson. Como mucho 50 valores por columna; se niega con una columna que parezca un identificador (casi un valor por fila, o valores con forma de hash, correo o URL).
+- `interseccion`: fracción de filas con TODAS las `columns` (de 2 a 6 columnas 0/1, sin `column`) verdaderas, p. ej. A ∧ B ∧ C. Wilson, o bootstrap si hay cluster. Añade el recuento de cada combinación verdadero/falso (tipo UpSet) y el de cada columna.
+- `tendencia`: tendencia de la proporción de la `column` 0/1 a lo largo de la columna ordenada `by` (p. ej. el año): estadístico z de Cochran-Armitage y su p bilateral, pendiente por unidad de `by` e intervalo de Wald, y una estimación por nivel. Puntuaciones: el valor del nivel si todos son números; si no, o con `order` (lista de los niveles en su orden), su posición.
+- `cuantiles`: cuantiles `q` (lista de números entre 0 y 1) de una `column` numérica, interpolación lineal (tipo 7 de R), con bootstrap.
+Campos de cualquier estimando: `units` (opcional) nombra la tabla de unidades del estimando cuando el estudio tiene varias unidades de análisis (fichero, repositorio, huella de clave); sin `units`, la tabla por defecto. La pregunta dice qué dataset es cada tabla en `units_dataset`. `variants` (opcional): análisis de sensibilidad, cada uno `{"id", "filter"}`; se calcula como el estimando con su filtro añadido (si chocan, gana el de la variante) y sale bajo el estimando en `variants`.
+`families` (opcional, al nivel de `estimands`): comparaciones múltiples entre estimandos `diferencia`. Cada familia `{"id", "estimands": [...], "method": "holm" | "bonferroni"}`; un estimando, como mucho en una familia. Se informa del p bruto (inversión del intervalo de Newcombe, o bootstrap por conglomerados) y del ajustado, y del intervalo ajustado de Bonferroni.
 Ejemplo inventado.>
 
 ```json
@@ -38,8 +44,16 @@ Ejemplo inventado.>
   {"id": "est-2", "type": "conteo", "column": "es_valida", "filter": {}, "cluster": null},
   {"id": "est-3", "type": "diferencia", "column": "tiene_x", "group": "formato", "a": "f1", "b": "f2", "filter": {}, "cluster": "sitio"},
   {"id": "est-4", "type": "reutilizacion", "column": "huella", "across": "sitio", "min_groups": 2, "filter": {}, "cluster": null},
-  {"id": "est-5", "type": "supervivencia", "column": "dias", "event": "cambio_visto", "at": [365], "by": "formato", "filter": {}, "cluster": null}
-]}
+  {"id": "est-5", "type": "supervivencia", "column": "dias", "event": "cambio_visto", "at": [365], "by": "formato", "curve": true, "filter": {}, "cluster": null},
+  {"id": "est-6", "type": "proporcion", "column": "es_publica", "units": "claves", "filter": {}, "cluster": null,
+   "variants": [{"id": "sin-copias", "filter": {"es_copia": "0"}}]},
+  {"id": "est-7", "type": "diferencia", "column": "tiene_x", "group": "formato", "a": "f1", "b": "f3", "filter": {}, "cluster": "sitio"},
+  {"id": "est-8", "type": "tabla", "rows": "formato", "cols": "tipo_propietario", "filter": {}, "cluster": null},
+  {"id": "est-9", "type": "interseccion", "columns": ["tiene_x", "tiene_y", "tiene_z"], "filter": {}, "cluster": "sitio"},
+  {"id": "est-10", "type": "tendencia", "column": "tiene_x", "by": "anio", "filter": {}, "cluster": null},
+  {"id": "est-11", "type": "cuantiles", "column": "dias", "q": [0.25, 0.5, 0.75], "filter": {}, "cluster": null}
+],
+ "families": [{"id": "fam-1", "estimands": ["est-3", "est-7"], "method": "holm"}]}
 ```
 
 ## Clasificadores
