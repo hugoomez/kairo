@@ -27,6 +27,50 @@ def test_sealed_secret_encrypted_data_kept():
     assert blob in out and findings == []
 
 
+def test_sealed_secret_json_encrypted_data_kept():
+    blobs = ["AgB" + fm.b64(300), "AgC" + fm.b64(200)]
+    doc = {"apiVersion": "bitnami.com/v1alpha1", "kind": "SealedSecret", "metadata": {"name": "inventado"},
+           "spec": {"encryptedData": {"password": blobs[0], "api-token": blobs[1]},
+                    "template": {"metadata": {"name": "inventado"}}}}
+    text = json.dumps(doc, indent=2) + "\n"
+    out, findings = sr.redact_strict(text, "sealed.json")
+    assert out == text, findings
+
+
+def test_pgp_fingerprints_kept_in_every_sops_layout():
+    fps = [os.urandom(20).hex().upper() for _ in range(3)]
+    texts = {
+        "app.enc.json": json.dumps({"sops": {"pgp": [{"created_at": "2031-01-01T00:00:00Z", "fp": fps[0]}]}},
+                                   indent="\t"),
+        "app.enc.ini": f"[sops]\npgp__list_0__map_fp = {fps[0]}\nversion = 3.9.0\n",
+        ".sops.yaml": (f"creation_rules:\n    - path_regex: x/.*\n      pgp: {fps[0]},{fps[1]}\n"
+                       f"      key_groups:\n        - pgp:\n            - {fps[2]}\n"),
+    }
+    for name, text in texts.items():
+        out, findings = sr.redact_strict(text, name)
+        assert out == text, (name, findings)
+
+
+def test_sops_dotenv_keeps_metadata_names_and_armor():
+    armor = fm.block("AGE ENCRYPTED FILE", 200).replace("\n", "\\n") + "\\n"
+    rcpt = fm.age_recipient()
+    text = (f"API_TOKEN={fm.enc()}\nsops_age__list_0__map_enc={armor}\nsops_age__list_0__map_recipient={rcpt}\n"
+            f"sops_mac={fm.enc(128)}\nsops_unencrypted_suffix=_unencrypted\nsops_version=3.9.0\n")
+    out, findings = sr.redact_strict(text, "secrets.enc.env")
+    assert out == text, findings
+    plain = "DB_PASSWORD=clave-en-claro-1\nsops_version=3.9.0\n"
+    assert "clave-en-claro-1" not in sr.redact_strict(plain, ".env")[0]  # not SOPS: no exemption
+
+
+def test_comment_inside_secret_data_is_a_fixed_point():
+    text = ("apiVersion: v1\nkind: Secret\nmetadata:\n    name: inventado\nstringData:\n"
+            "    # rotar cada 90 dias\n    password: clave-en-claro-inventada\n")
+    out, _ = sr.redact_strict(text, "secret.yaml")
+    assert "clave-en-claro-inventada" not in out and "rotar" not in out
+    assert sr.redact_strict(out, "secret.yaml") == (out, [])
+    assert not sr.residual(out, "secret.yaml")
+
+
 def test_plain_k8s_secret_values_redacted():
     pw = base64.b64encode(b"hunter2").decode()
     tok = fm.b64(32)

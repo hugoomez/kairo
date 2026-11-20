@@ -8,7 +8,8 @@ Built on redact.redact_text, and it also:
 
 - env files (hint basename `.env`, `.env.*`, `*.env`, `.env.keys`): redacts the value of
   every `KEY=value` / `export KEY=value` line, except dotenvx ciphertext
-  (`encrypted:...`) and a PUBLIC-named hex/base64 value;
+  (`encrypted:...`), a PUBLIC-named hex/base64 value and, in a SOPS-encrypted dotenv
+  file, its `sops_*` metadata lines (whose high-entropy values the sweep still redacts);
 - a Kubernetes `kind: Secret` (YAML or JSON): redacts every value under `data:` and
   `stringData:` (plaintext secrets); a SealedSecret's `encryptedData:` is ciphertext and
   stays;
@@ -20,8 +21,9 @@ Built on redact.redact_text, and it also:
   digits), except inside public or ciphertext forms the study needs to parse: SOPS
   `ENC[...]`, armored `AGE ENCRYPTED FILE` / `PGP MESSAGE` / `PGP PUBLIC KEY BLOCK` /
   `CERTIFICATE` / `PUBLIC KEY` / `RSA PUBLIC KEY` blocks, ssh public keys, age
-  recipients (`age1...`), SealedSecret `encryptedData:` values, dotenvx `encrypted:`
-  values, SOPS PGP fingerprints (`fp:`), PUBLIC-named secp256k1 public keys, the text
+  recipients (`age1...`), SealedSecret `encryptedData` values (YAML or JSON), dotenvx
+  `encrypted:` values, SOPS PGP fingerprints (`fp:` in YAML, JSON, INI and the flattened
+  dotenv/INI metadata; `.sops.yaml` `pgp:` lists), PUBLIC-named secp256k1 public keys, the text
   header of a binary age file, and base64 runs that decode to a certificate or public
   key. A protected form that overlaps private key material is not protected.
 
@@ -56,7 +58,16 @@ _SIMPLE_PROTECTED = [
     re.compile(r"(?<![A-Za-z0-9])age1[0-9a-z]{20,}"),
     re.compile(r"encrypted:[A-Za-z0-9+/=_\-]+"),
 ]
-_FP_RE = re.compile(r"\bfp:[ \t]*[\"']?([0-9A-Fa-f]{16,40})\b")
+# PGP fingerprints after a key named `fp` / `pgp` in YAML, JSON (`"fp": "..."`), INI and the
+# flattened SOPS dotenv/INI metadata (`pgp__list_0__map_fp`), or a `.sops.yaml` `pgp: A,B` list
+_FP_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z0-9_]*_)?(?:fp|pgp)[\"']?[ \t]*[:=][ \t]*[\"']?"
+                    r"([0-9A-Fa-f]{16,40}(?:[ \t]*,[ \t]*[0-9A-Fa-f]{16,40})*)\b")
+_FP_LIST_RE = re.compile(r"(?m)^([ \t]*)(?:-[ \t]+)?pgp:[ \t]*\r?\n"
+                         r"((?:\1[ \t]+-[ \t]+[\"']?[0-9A-Fa-f]{16,40}[\"']?[ \t]*(?:\r?\n|\Z))+)")
+_FP_ITEM_RE = re.compile(r"(?<=[\"' \t])[0-9A-Fa-f]{16,40}(?=[\"' \t\r\n]|\Z)")
+# a SealedSecret written as JSON (kubeseal's default): the flat `"encryptedData": {...}` object
+_JSON_ENCDATA_RE = re.compile(r"\"encryptedData\"[ \t\r\n]*:[ \t\r\n]*\{([^{}]*)\}")
+_JSON_STR_VALUE_RE = re.compile(r"\"[^\"\\]*\"[ \t\r\n]*:[ \t\r\n]*\"([^\"\\]*)\"")
 _PUB_HEX_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9])[A-Za-z0-9_.\-]*public[A-Za-z0-9_.\-]*[\"']?[ \t]*[:=][ \t]*[\"']?"
     r"(0[23][0-9a-f]{64}|04[0-9a-f]{128})(?![0-9a-f])")
@@ -67,7 +78,9 @@ _PSEUDO_REPO_RE = re.compile(r"github\.com[/:]owner-[0-9a-f]{6}/repo-[0-9a-f]{6}
 
 # ---- rules -----------------------------------------------------------------
 _ENV_LINE_RE = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.\-]*)[ \t]*=[ \t]*)(.*?)[ \t]*\r?$")
-_K8S_SECRET_RE = re.compile(r"(?m)^[ \t]*[\"']?kind[\"']?[ \t]*:[ \t]*[\"']?Secret[\"']?[ \t]*,?[ \t]*\r?$")
+# a SOPS-encrypted dotenv file: its metadata lines are `sops_<flattened key>=...`
+_SOPS_ENV_RE = re.compile(r"(?m)^sops_(?:mac|version)=")
+_K8S_SECRET_RE =re.compile(r"(?m)^[ \t]*[\"']?kind[\"']?[ \t]*:[ \t]*[\"']?Secret[\"']?[ \t]*,?[ \t]*\r?$")
 _GITHUB_RE = re.compile(
     r"(?i)((?:raw\.)?github(?:usercontent)?\.com[/:](?:repos/)?)"
     r"([A-Za-z0-9](?:[A-Za-z0-9\-]{0,38}))/([A-Za-z0-9._\-]+?)(\.git)?(?=[^A-Za-z0-9._\-]|\Z)")
@@ -127,6 +140,9 @@ def _yaml_values(text: str, keys: tuple[str, ...]) -> list[tuple[int, int]]:
             if li <= ind:
                 break
             body = ln.strip()
+            if _MARK_RE.fullmatch(body):  # a line already redacted whole (a comment): keep it, idempotence
+                j += 1
+                continue
             if block_ind is not None and li > block_ind:
                 s = offs[j] + li
                 spans.append((s, s + len(body)))
@@ -156,6 +172,11 @@ def _protected(text: str) -> list[tuple[int, int]]:
     for rx in _SIMPLE_PROTECTED:
         out.extend(m.span() for m in rx.finditer(text))
     out.extend(m.span(1) for m in _FP_RE.finditer(text))
+    for m in _FP_LIST_RE.finditer(text):  # `.sops.yaml` key groups: `pgp:` then `- <fp>` items
+        out.extend((m.start(2) + h.start(), m.start(2) + h.end()) for h in _FP_ITEM_RE.finditer(m.group(2)))
+    for m in _JSON_ENCDATA_RE.finditer(text):
+        base = m.start(1)
+        out.extend((base + v.start(1), base + v.end(1)) for v in _JSON_STR_VALUE_RE.finditer(m.group(1)))
     out.extend(m.span(1) for m in _PUB_HEX_RE.finditer(text))
     out.extend(m.span() for m in _AGE_BIN_HEADER_RE.finditer(text))
     out.extend(m.span() for m in _PSEUDO_REPO_RE.finditer(text))
@@ -194,6 +215,7 @@ def _unmask(text: str, saved: list[str]) -> str:
 
 def _only_mask_or_mark(v: str) -> bool:
     core = v.strip().strip("\"'")
+    core = re.sub(r"(?:\\n)+\Z", "", core)  # an armor in a dotenv value ends with an escaped `\n`
     return not core or bool(_MASK_RE.fullmatch(core)) or bool(_MARK_RE.fullmatch(core))
 
 
@@ -216,10 +238,13 @@ def _replace_spans(text: str, spans: list[tuple[int, int]], kind: str, findings:
 
 def _env(text: str, findings: list[dict]) -> str:
     spans = []
+    sops = bool(_SOPS_ENV_RE.search(text))
     for m in _ENV_LINE_RE.finditer(text):
         name, val = m.group(2), m.group(3)
         if not val or val.lstrip().startswith("#") or _only_mask_or_mark(val):
             continue
+        if sops and name.startswith("sops_"):
+            continue  # SOPS metadata (dates, version, suffixes); its high-entropy values still go to the sweep
         if "public" in name.lower() and re.fullmatch(r"[\"']?[A-Za-z0-9+/=]+[\"']?", val):
             continue
         spans.append(m.span(3))
@@ -301,7 +326,8 @@ def hot_token(tok: str) -> bool:
         return True
     if not (re.search(r"[A-Za-z]", tok) and re.search(r"\d", tok)):
         return False
-    if _pathlike(_PSEUDONYM_SEG.sub("x", tok)):
+    # a trailing `=` is base64 padding or the `=` of a `name=` the token ran into (`sops_age__list_0__map_enc=`)
+    if _pathlike(_PSEUDONYM_SEG.sub("x", tok.rstrip("="))):
         return False
     return cb.entropy(tok) >= 3.0
 

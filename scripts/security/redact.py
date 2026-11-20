@@ -63,14 +63,16 @@ _BLOCK_RE = re.compile(
     + r"(?:[ \t]*" + _NL + _PFX + _B64 + r"{4,}" + _CUT + r")?"
     r"|PuTTY-User-Key-File-\d+:.*?(?:Private-MAC|Private-Hash): *[0-9a-fA-F]+",
     re.S)
-_AGE_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")
+# X25519 identities and the post-quantum hybrid ones (`AGE-SECRET-KEY-PQ-1...`, age >= 1.3):
+# both are Bech32 of a 32-byte seed, 58 characters after the separator.
+_AGE_RE = re.compile(r"AGE-SECRET-KEY-(?:PQ-)?1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")
 _MARK_RE = re.compile(r"\[REDACTADO \w+ sha256:[0-9a-f]{12}\]")
 # A base64 run (standard or URL-safe alphabet) long enough to hold an encoded key
 # header: a Kubernetes / Sealed Secrets `tls.key: LS0tLS1CRUdJTi...` value, a key file
 # pasted through `base64`. It counts when it decodes to private key material.
 _B64_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{40,}={0,2}(?![A-Za-z0-9+/_\-=])")
 _DECODED_PRIVATE_RE = re.compile(
-    rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY|AGE-SECRET-KEY-1|OPENSSH PRIVATE KEY|PuTTY-User-Key-File-")
+    rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY|AGE-SECRET-KEY-(?:PQ-)?1|OPENSSH PRIVATE KEY|PuTTY-User-Key-File-")
 # `DOTENV_PRIVATE_KEY_PRODUCTION="<hex>"` (dotenvx .env.keys) and any other name that
 # carries PRIVATE_KEY / SECRET_KEY with a suffix the plain assignment rule does not reach.
 _NAMED_KEY_RE = re.compile(
