@@ -220,6 +220,9 @@ claude --plugin-dir /path/to/kairo
 | `kairo:explain` | A didactic explanation of one or several papers, of a frontier cell's papers (`M1:fila\|col`, context from `frontier.py cell`) or of the project's own work (hub question, hypotheses with their status and worth, experiments and results, Estado del arte, frontier position): one-page summary, a mermaid concept map and method flowchart, a small checkable worked example, a comparison table, 4–6 self-check questions with folded answers (`<details>`), glossary and how it fits the project. The isolated `explainer` subagent reads and drafts; `scripts/report/check_mermaid.py` lints the diagrams and `scripts/papers/check_review.py --kind explicacion` checks every quote and locator (restricted to the requested papers with `--papers`) and every `[H-XXXX §…]` project-note citation, then writes `Informes/explicacion-<date>-<slug>.md`, `escrito_por: modelo`, `citable: false`. Also the interface's job `explain`. |
 | `kairo:frontier-map` | The frontier of one project's state of the art, in `Projects/<slug>/Frontera/`. Phase 1 proposes a taxonomy (axes, discrete values, an assignment rule, a trial on 2–3 papers, doubts) in `taxonomia-propuesta.md` and stops until the researcher approves it. Phase 2: isolated `frontier-extractor` agents place every paper on the axes with verbatim quotes (`extracciones/P-XXXX.json`, each paper read once per taxonomy); the skill writes `mapa.yaml` — coverage matrices with every empty cell marked `hueco` / `sin_sentido` / `no_buscado` and its reason (`no_buscado` when the recorded search could not tell), the best known result per aspect with comparability notes, prioritised gaps (cheap to test? how they fit the bet?), positioning — and `frontier.py build` checks every quote against the paper and writes the views, `mapa.json` (the app's Frontera tab) and `mapa.html`. Our hypotheses appear in the cells they name (`frontier_cells`), recomputed on every build, never as coverage. `actualizar` extracts only new papers. `escrito_por: modelo`, `citable: false`. |
 | `kairo:lit-watch` | Weekly literature watch for one project. `scripts/watch/lit_watch.py delta` re-runs the project's own recorded queries (the latest `_busquedas/<run>/plan.json`, else Estado-del-arte's "Búsqueda ejecutada → Consultas") on every source the search used that can be windowed, each over its own window (`_vigilancia/cursores.json`) — arXiv by submission date and Crossref by DOI registration date re-read 14 days, OpenAlex and Semantic Scholar (publication date only, indexed late) 60 days — each query read newest first where the source can sort by date (arXiv, OpenAlex), paging up to 500 results (a capped one has its window split in halves until each part is read whole; one still capped is `truncated`: covered up to today, its older unread part kept as a gap that later watches re-read until it is read whole — «quedan sin leer los anteriores a <fecha>»; without `OPENALEX_API_KEY` an OpenAlex query reads its newest 100, one call, so the keyless daily budget lasts); the watch follows the plan recorded in `_vigilancia/plan-seguido.json` — a newer plan is named on the page and adopted only with `delta --adopt-plan`; `delta` exits 0 ok · 2 refused or corrupt state · 4 every query lost (a page says so) · 5 another watch of the project is running, and every run leaves `_vigilancia/estado.json`; it also asks OpenAlex for new works **citing** the project's own papers and its seeds (`cita_a`); a lost query keeps its own window open without holding the others back; it drops papers already in `Papers/` (including the published version of an ingested preprint) or offered before (a weak candidate comes back once, when it turns strong), and marks strong candidates (found by ≥ 2 facets, or citing the project's papers and showing a facet) for triage with a stemmed word-overlap novelty prefilter per hypothesis (plus each hypothesis's three closest candidates, so a Spanish claim still meets an English abstract). Each run leaves a page to read, `_vigilancia/vigilancia-<date>.md` (strong candidates by title, what they cite, lost / truncated / relevance-ranked coverage, triage and threats), so a scheduled watch needs no interface. A published (often retitled) version of a preprint the vault holds or a watch already offered is listed as that version, never offered again as new. It also reports what changed for the project's own papers — a newer arXiv version than the one ingested, a published version arXiv now declares, an acceptance OpenReview shows (ICLR / NeurIPS / ICML have no DOI) — without touching their notes. An isolated `screener` writes one triage line per strong candidate from a packet `lit_watch.py triage-packet` stores (the session never reads the abstracts; `triage --from-store` records the screener's own reply), and a candidate counts as offered only once its line or a decision is recorded — this week's take the triage slots before the backlog. The skill records novelty threats: a model's judgement, written to the hypothesis's `## Revisión de vigencia` only with a sentence that is verbatim in the abstract (the script refuses otherwise). Never changes a status; ingests (create-project step 6) only what the researcher chose, or with `paper_ingestion: autonomo`. |
+| `kairo:plan-study` | Opens a study question that estimates a quantity (`Q-XXXX`, design `medicion`) or a pilot (`QP-XXXX`, design `piloto`), drafts its measurement plan with the researcher and freezes it (`freeze_plan.py`) before any data are registered. |
+| `kairo:estimate` | Runs `estimate.py` on the registered units dataset, writes `## Resultado` verbatim, has the fresh verifier check it and moves the question through its design's gate. Never reads the units file. |
+| `kairo:study` | The study director: `study_brief.py` gives a one-screen daily brief (deadline countdown, each question and pilot with its state and gate, collections, annotation counts, notice counts) and the next step, mapped to the skill or the researcher's action in the interface; it can watch a running collection (`study_brief.py --watch`) from a background Monitor or `/loop`. Never reads data, logs or notices. |
 | `kairo:repo-steward` | Administers an applied project's code repository (outside the vault): health checks against its `CONVENTIONS.md` (tests, lint, types, CI, dependencies) → `_repo-health.md`; the code↔science trace from `Motivated-By:` commit trailers (`trace_code.py` → `_codigo-ciencia.md`); reviews against the project's goals; ADR proposals. Never pushes, never creates a remote. |
 
 ### Subagents
@@ -815,6 +818,48 @@ and every project's `Avisos/` folder, are kept away from every agent by
   sensitive data out of the code repository.
 - It is best effort against the shell: a program can open a path that no
   command line shows.
+
+### Measurement studies: tools for each phase
+
+- **Start light.** A `medicion` project defaults to `sota_map: diferido`:
+  create-project runs only a focused novelty check (`Novedad.md`, verified)
+  and stops before the state-of-the-art map; «construye el estado del arte»
+  runs it later. The project gets an ethics plan, `Etica.md`, from
+  `templates/ethics-plan-template.md`.
+- **Environment.** `python scripts/study/doctor.py --vault V --project P
+  [--json]` checks, without reading any data, that registered datasets lie
+  outside the vault, git trees and synced folders (OneDrive, Dropbox, Google
+  Drive, iCloud), that their volume is encrypted, that the GitHub token file is
+  out of reach and that `GITHUB_TOKEN` / `GH_TOKEN` are not set (agent sessions
+  inherit them), that `KAIRO_VAULT` is set, and disk space. Exit 4 = something
+  critical.
+- **Collection.** `scripts/collect/` (`kairo_collect` + `collect.py`): a
+  standard-library GitHub REST client for collection scripts run by the
+  interface's Recolecciones runner. It honours primary and secondary rate
+  limits, uses ETags, splits searches past the 1000-result cap by `size:`
+  ranges and extensions, keeps every raw response with its sha256 (`replay`
+  rebuilds results offline), resumes from `state.sqlite`, writes
+  `progress.json` (`phase, done, total, unit, waiting_rate_limit_until, eta_s,
+  updated_at, collection_id`) and a `manifest.json` (snapshot dates, API
+  version, queries, shard plan). `collect.py count` gives pilot counts without
+  downloading items. The token is read from `KAIRO_GITHUB_TOKEN_FILE` (default
+  `~/.kairo/github-token`), refused inside a git tree, a vault or a synced
+  folder, and never written anywhere. Raw API JSON is not redacted unless
+  `--redact-raw`.
+- **Parsers on invented data.** `python scripts/security/fixtures_corpus.py
+  --out DIR --seed N` writes a corpus of entirely fake files for SOPS, age
+  (including the `mlkem768x25519` post-quantum recipient), Sealed Secrets,
+  agenix and dotenvx, private-material variants, plaintext twins and
+  near-misses, plus `truth.jsonl` (tool, format, algorithms, recipients,
+  private material, pq, where the public key could be recovered from). Write
+  and test parsers against it; use `debug_sample.py` only to see real formats.
+- **Annotation samples.** `python scripts/security/draw_sample.py --vault V
+  --project P --dataset NAME --n N --seed S --out <abs .jsonl>
+  [--stratify-by COL --per-stratum K] [--filter COL=VAL]` draws a reproducible,
+  redacted random or stratified sample (with `_stratum` / `_weight`) of a
+  registered dataset for the interface's annotation panel. Unlike
+  `debug_sample.py`, repository identity stays readable (`--pseudonymise-repos`
+  to hide it) so the annotator can open the public repository.
 
 ---
 
