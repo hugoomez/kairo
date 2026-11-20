@@ -86,7 +86,7 @@ class TestEthicsTemplate(unittest.TestCase):
     def test_sections_in_order_each_with_an_invented_example(self):
         heads = re.findall(r"^## (.+)$", self.ETHICS, re.M)
         self.assertEqual(tuple(heads), self.SECTIONS)
-        for i, h in enumerate(self.SECTIONS):
+        for h in self.SECTIONS:
             body = self.ETHICS.split(f"## {h}\n", 1)[1].split("\n## ", 1)[0]
             self.assertIn("Ejemplo inventado", body, h)
 
