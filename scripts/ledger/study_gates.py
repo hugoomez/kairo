@@ -19,6 +19,13 @@ puede comprobar (sin git, git o un script fallan o tardan más de TIMEOUT s), fa
     `frozen_commit` ni un antecesor suyo
     («los datos se registraron antes de congelar el plan»). Sin `units_dataset`, falta
     «sin units_dataset».
+    Si el dataset de unidades tiene linaje (`derived_from`, de `lineage.py`), la regla se
+    aplica a las RAÍCES de su linaje (los datasets sin `derived_from`, p. ej. la recolección
+    en bruto), no a la tabla derivada: pasa aunque la tabla se registrara o se volviera a
+    derivar después, si cada raíz se registró por primera vez después de `frozen_commit`
+    (con el mismo mensaje si no). La tabla sigue teniendo que estar en algún commit; un
+    enlace roto (un origen ausente, o con una sha256 registrada distinta de la que se usó al
+    derivar, o un ciclo) falta como «linaje de '<units>': …».
 - `estimates_reproducible`: volver a correr `scripts/analysis/estimate.py --plan <linked_plan>
   --units <units_dataset>` da exactamente el JSON del bloque ```estimate-json de
   `## Resultado`. El nombre del dataset de unidades se guarda en el frontmatter del nodo
@@ -222,12 +229,46 @@ def _frozen_in_git(plan_path: Path, pid: str, sha: str, node_path: Path, fm: dic
     if first is None:
         return out + [f"el dataset {units!r} no está registrado en ningún commit del vault: "
                       "haz commit de Datos/registro.json (después de congelar el plan)"]
-    before = _git(["merge-base", "--is-ancestor", first, sha], top)
+    lineage = _units_lineage(reg, units)
+    if lineage is None:                       # no lineage: the units dataset itself must follow the freeze
+        return out + _registered_before(top, first, sha)
+    roots, problems = lineage
+    if problems:
+        return out + [f"linaje de {units!r}: {p}" for p in problems]
+    checks: list[str] = []
+    for name, root_sha in roots:
+        rfirst = _first_registration(top, reg_rel, name, root_sha)
+        if rfirst is None:
+            out.append(f"el dataset {name!r} (origen de {units!r}) no está registrado en ningún commit del vault: "
+                       "haz commit de Datos/registro.json (después de congelar el plan)")
+            continue
+        checks += [c for c in _registered_before(top, rfirst, sha) if c not in checks]
+    return out + checks
+
+
+def _registered_before(top: Path, first: str, frozen: str) -> list[str]:
+    before = _git(["merge-base", "--is-ancestor", first, frozen], top)
     if before.returncode == 0:
-        out.append(DATA_BEFORE_FREEZE)
-    elif before.returncode != 1:
-        out.append("git merge-base falló; no se puede comprobar que el plan se congeló antes que los datos")
-    return out
+        return [DATA_BEFORE_FREEZE]
+    if before.returncode != 1:
+        return ["git merge-base falló; no se puede comprobar que el plan se congeló antes que los datos"]
+    return []
+
+
+def _units_lineage(reg: Path, units: str) -> tuple[list[tuple[str, str | None]], list[str]] | None:
+    """None when the working-tree registry gives the units dataset no lineage (today's rule
+    applies to it); else its roots `(name, sha256)` and the broken links (lineage.py)."""
+    try:
+        data = json.loads(reg.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, list):
+        return None
+    import lineage  # noqa: PLC0415
+    if not lineage.is_derived(lineage.find(data, units)):
+        return None
+    roots, problems = lineage.lineage_roots(data, units)
+    return [(str(r.get("name")), str(r.get("sha256") or "").strip() or None) for r in roots], problems
 
 
 def plan_frozen(vault: Path, node_path: Path, fm: dict) -> list[str]:

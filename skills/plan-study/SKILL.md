@@ -324,6 +324,71 @@ password in a free-text field of an unknown format could survive. The sample
 is for understanding formats: never cite or publish it, never register it as
 a dataset, and it does not replace annotation.
 
+## Linaje y pipeline
+
+The units table is usually derived from a raw collection (raw → parsed →
+classified → units). Record that derivation in the registry, so the table can
+be re-derived after fixing a parser without losing the freeze-before-data
+guarantee.
+
+**Lineage.** A derived dataset's entry in `Datos/registro.json` carries
+`derived_from: [{name, sha256}]`, `script` (path inside the code repository),
+`commit` (the code repository's sha), optional `params` and `produced_at`.
+Register it with:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/ledger/lineage.py" register-derived --vault <vault> \
+  --project <slug> --name <name> --path <abs output> --from <src>[,<src>] \
+  --script <path in repo> --commit <sha> [--repo <code repo>] [--params '<json>'] [--sensitive]
+```
+
+It fingerprints the output as the app does, re-fingerprints every `--from`
+dataset and refuses if one changed since it was registered, appends the entry
+(it never rewrites another) and commits the registry alone (`--no-commit` to
+skip). The output is sensitive when any source is, unless `--no-sensitive`.
+To re-derive, add `--rederive` and **leave `--path` out**: the registered path
+is reused, so the command never names a sensitive path and the data guard lets
+it run. `lineage.py show --name <n> [--text]` prints the chain (names, sha256s,
+scripts, commits; never paths); `lineage.py verify [--name <n>]` re-hashes the
+chain and reports drift (exit 2).
+
+The `plan_frozen` gate then applies the data-before-freeze rule to the
+**roots** of the units dataset's lineage (the raw datasets, entries with no
+`derived_from`): it passes when every root was first registered after
+`frozen_commit`, however often the table was re-derived. A root registered
+before the freeze fails as before; a broken link (a source re-derived after the
+table, or missing) fails as «linaje de …»: re-derive the table. A units dataset
+without lineage keeps the old rule (the table itself must follow the freeze).
+Lineage is declared, not observed: write it only for what the code really did.
+
+**Pipeline.** In the code repository, declare the stages in `pipeline.toml`:
+
+```toml
+[[stage]]
+name = "parseado"            # its output is registered under this name
+script = ["python", "src/parse.py", "{input:recoleccion}", "{output}"]
+inputs = ["recoleccion"]     # registered datasets or earlier stages
+output = "D:/estudio/parseado.jsonl"   # absolute, outside the vault
+sensitive = true             # optional; default: sensitive when an input is
+```
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/study/pipeline.py" run --vault <vault> --project <slug> \
+  --file <repo>/pipeline.toml [--stage <s> | --from <s>] [--timeout <s>]
+python "${CLAUDE_PLUGIN_ROOT}/scripts/study/pipeline.py" status --vault <vault> --project <slug> \
+  --file <repo>/pipeline.toml [--rehash]
+```
+
+`run` refuses a code repository with uncommitted changes and records its
+commit; each stage runs as an argv (no shell, cwd = the repository), its
+stdout and stderr go to `<output>.log` outside the vault, its output is
+registered with lineage and one line goes to `Datos/pipeline-runs.jsonl`
+(stage, commit, input and output sha256s, start, end, exit code, never the
+stage's output). `status` says which stages are stale (code commit or an
+input changed since the last run, or something upstream is stale). Both name
+datasets only by name, so they work on sensitive data. Never read the `.log`
+of a sensitive stage: the data guard does not cover it.
+
 ## Common mistakes
 
 - **Guessing a column, filter or floor** so the plan "parses". The plan
