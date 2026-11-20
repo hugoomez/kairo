@@ -355,3 +355,13 @@ def test_limits_documented_where_the_researcher_reads_them():
     assert sentence in flat((root / "skills/plan-study/SKILL.md").read_text(encoding="utf-8"))
     assert "not covered" in flat(data_guard.__doc__)
     assert data_guard.__version__ != "1.1.0"
+
+
+def test_stage_log_of_sensitive_dataset_blocked(env):
+    # pipeline.py writes a stage's stdout to `<output>.log`: a parser log can quote the data
+    log = Path(str(env["ds"]) + ".log")
+    log.write_text(SECRET, encoding="utf-8")
+    r = decide(ev("Read", env["vault"], file_path=str(log)), env["vault"])
+    assert r and "encuesta-inventada" in r and SECRET not in r
+    env["register"](dataset("encuesta-inventada", env["ds"], sensitive=False))
+    assert decide(ev("Read", env["vault"], file_path=str(log)), env["vault"]) is None

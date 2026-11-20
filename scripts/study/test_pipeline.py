@@ -277,7 +277,9 @@ def test_data_guard_allows_the_pipeline_on_sensitive_data(env):
     _run(env)                                   # crudo, parseado and unidades are now all sensitive
     data_guard._MEMO.clear()
     v = env["vault"]
-    assert len([r for r in data_guard.sensitive_roots(v) if "fuera" in str(r)]) == 3
+    fuera = [r for r in data_guard.sensitive_roots(v) if "fuera" in str(r)]
+    assert len([r for r in fuera if r.suffix != ".log"]) == 3   # each sensitive output …
+    assert len([r for r in fuera if r.suffix == ".log"]) == 3   # … and its stage log
     for mode in ("run --from unidades", "status --rehash"):
         m, rest = mode.split(" ", 1)
         cmd = f'python "{SCRIPT}" {m} --vault "{v}" --project demo --file "{env["file"]}" {rest}'

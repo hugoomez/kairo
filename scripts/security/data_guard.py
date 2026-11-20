@@ -253,6 +253,10 @@ def _roots(vault: Path) -> list[Root]:
         for p, name, kind in reg_entries:
             roots.append(Root(_resolve(p, vault), f"el dataset sensible «{name}» del proyecto {proj.name}",
                               p, name, proj.name, kind))
+            # pipeline.py writes a stage's stdout/stderr to `<output>.log`, next to the
+            # output: a parser's log on sensitive data can quote that data.
+            roots.append(Root(_resolve(p + ".log", vault), f"el registro de la etapa que produjo «{name}» "
+                              f"(proyecto {proj.name})", p + ".log", name, proj.name, "file"))
         try:
             children = list(proj.iterdir())
         except OSError:

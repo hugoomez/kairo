@@ -42,9 +42,9 @@ re-fingerprints inputs and outputs against the registry.
 
 Datasets are named by name; no path of a dataset ever appears on the command line, so the
 data guard lets both commands run when the data are registered sensitive. Contents are
-hashed and handed to the stage's own code, never read or printed here. Limit: the data
-guard protects a sensitive output, not its `.log`; a stage on sensitive data should not
-print rows, and nobody (no model) should read that log.
+hashed and handed to the stage's own code, never read or printed here. The data guard
+protects a sensitive output's `.log` too (it can quote the data); a stage should still not
+print rows.
 
 Exit 0 ok · 2 a stage failed · 3 refused ({"error": ...}) · 1 unexpected error.
 Python 3.11+ (tomllib). Standard library only.
