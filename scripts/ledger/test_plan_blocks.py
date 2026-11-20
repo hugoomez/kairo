@@ -32,7 +32,8 @@ def plan(tmp_path, est=None, cls=None, ivl=None, raw_est=None):
 
 def test_reads_template_example():
     r = read_plan(TEMPLATE)
-    assert [e["id"] for e in r["estimands"]] == ["est-1", "est-2", "est-3", "est-4", "est-5"]
+    assert [e["id"] for e in r["estimands"]] == [f"est-{i}" for i in range(1, 12)]
+    assert r["estimands"][2]["family"] == {"id": "fam-1", "method": "holm", "estimands": ["est-3", "est-7"]}
     assert r["estimands"][0]["filter"] == {"grupo": "a"}
     assert r["classifiers"][0]["min_recall_lo"] == 0.80
     assert r["intervals"] == {"ci": 0.95, "bootstrap": 2000, "seed": 12345}
@@ -106,7 +107,7 @@ def test_bootstrap_must_be_positive(tmp_path):
 
 @pytest.mark.parametrize("typ", ["conteo", "mediana"])
 def test_cluster_only_on_proportions(tmp_path, typ):
-    with pytest.raises(PlanError, match="Estimandos: a: cluster solo se admite en proporcion y diferencia"):
+    with pytest.raises(PlanError, match="Estimandos: a: cluster solo se admite en proporcion, diferencia e interseccion"):
         read_plan(plan(tmp_path, est=[{"id": "a", "type": typ, "column": "c", "filter": {}, "cluster": "g"}]))
 
 
@@ -118,7 +119,70 @@ def test_template_passes_plan_blocks_show():
     assert r.returncode == 0, r.stdout
     est = {e["id"]: e for e in json.loads(r.stdout)["estimands"]}
     assert est["est-2"]["type"] == "conteo" and not est["est-2"]["column"].startswith("id")
-    assert all(e["cluster"] is None for e in est.values() if e["type"] not in ("proporcion", "diferencia"))
+    assert all(e["cluster"] is None for e in est.values()
+               if e["type"] not in ("proporcion", "diferencia", "interseccion"))
+
+
+def test_pilot_template_passes_plan_blocks_show():
+    r = subprocess.run([sys.executable, str(HERE / "plan_blocks.py"), "show",
+                        str(ROOT / "templates" / "pilot-plan-template.md")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout
+
+
+@pytest.mark.parametrize("extra, msg", [
+    ({"type": "tabla", "column": None}, "'rows'"),
+    ({"type": "tabla", "rows": "a", "cols": "a"}, "misma columna"),
+    ({"type": "interseccion", "columns": ["a"]}, "entre 2 y 6"),
+    ({"type": "interseccion", "columns": ["a", "a"]}, "entre 2 y 6"),
+    ({"type": "tendencia"}, "'by'"),
+    ({"type": "tendencia", "by": "y", "order": ["2020"]}, "'order'"),
+    ({"type": "tendencia", "by": "y", "cluster": "g"}, "cluster solo"),
+    ({"type": "cuantiles"}, "'q'"),
+    ({"type": "cuantiles", "q": [0.5, 1]}, "'q'"),
+    ({"type": "supervivencia", "event": "ev", "curve": "sí"}, "'curve'"),
+    ({"units": "default"}, "omite 'units'"),
+    ({"units": "con espacio"}, "'units'"),
+    ({"variants": []}, "'variants'"),
+    ({"variants": [{"id": "v", "filter": {}}]}, "'filter'"),
+    ({"variants": [{"id": "v", "filter": {"a": 1}, "cluster": "g"}]}, "nada más"),
+    ({"variants": [{"id": "v", "filter": {"a": 1}}, {"id": "v", "filter": {"b": 1}}]}, "repetida"),
+    ({"family": {"id": "x"}}, "families"),
+])
+def test_extended_fields_are_validated(tmp_path, extra, msg):
+    with pytest.raises(PlanError, match=msg):
+        read_plan(plan(tmp_path, est=[_est(**extra)]))
+
+
+def test_tabla_and_interseccion_need_no_column(tmp_path):
+    r = read_plan(plan(tmp_path, est=[
+        {"id": "t", "type": "tabla", "rows": "a", "cols": "b", "filter": {}, "cluster": None},
+        {"id": "i", "type": "interseccion", "columns": ["a", "b"], "filter": {}, "cluster": "g"}]))
+    assert [e["id"] for e in r["estimands"]] == ["t", "i"]
+
+
+def _fam_plan(tmp_path, fams, extra=()):
+    d = [_est(id="d1", type="diferencia", group="t", a="x", b="y"),
+         _est(id="d2", type="diferencia", group="t", a="x", b="z"), *extra]
+    return plan(tmp_path, raw_est=json.dumps({"estimands": d, "families": fams}))
+
+
+@pytest.mark.parametrize("fams, msg", [
+    ([], "families"),
+    ([{"id": "f", "estimands": ["d1", "d2"], "method": "fdr"}], "method"),
+    ([{"id": "f", "estimands": ["d1"], "method": "holm"}], "al menos dos"),
+    ([{"id": "f", "estimands": ["d1", "nope"], "method": "holm"}], "no existe"),
+    ([{"id": "f", "estimands": ["d1", "p"], "method": "holm"}], "solo agrupan"),
+    ([{"id": "f", "estimands": ["d1", "d2"], "method": "holm"},
+      {"id": "g", "estimands": ["d1", "d2"], "method": "holm"}], "dos familias"),
+])
+def test_families_are_validated(tmp_path, fams, msg):
+    with pytest.raises(PlanError, match=msg):
+        read_plan(_fam_plan(tmp_path, fams, extra=[_est(id="p")]))
+
+
+def test_family_marks_its_members(tmp_path):
+    r = read_plan(_fam_plan(tmp_path, [{"id": "f", "estimands": ["d1", "d2"], "method": "bonferroni"}]))
+    assert [e.get("family", {}).get("method") for e in r["estimands"]] == ["bonferroni", "bonferroni"]
 
 
 def _est(**kw):

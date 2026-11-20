@@ -11,7 +11,10 @@ linea_publicacion: false
 # linked_plan — plan de medición congelado (M-XXXX); vacío hasta que se congele.
 linked_plan:
 # units_dataset — nombre (en Datos/registro.json) del dataset de unidades con el que se
-# corrió estimate.py; la puerta vuelve a correrlo con él. Vacío hasta estimar.
+# corrió estimate.py; la puerta vuelve a correrlo con él. Vacío hasta estimar. Si el plan
+# tiene varias tablas de unidades (estimandos con "units"), un mapa tabla: dataset, con
+# `default` para la de los estimandos sin "units". Ejemplo inventado:
+# units_dataset: {default: unidades-ficheros, repos: unidades-repos}
 units_dataset:
 history: []
 ---

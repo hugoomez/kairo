@@ -1,0 +1,234 @@
+{
+  "plan": "M-9002",
+  "units_sha256": "39e86dfdc0d2af30350580eddc7651b86c1d9d5bc14dd9567734d2057bc18b7d",
+  "estimates": [
+    {
+      "id": "est-1",
+      "type": "proporcion",
+      "value": 0.375,
+      "lo": 0.28125,
+      "hi": 0.46875,
+      "n": 32,
+      "method": "cluster-bootstrap"
+    },
+    {
+      "id": "est-2",
+      "type": "conteo",
+      "value": 19,
+      "lo": 19,
+      "hi": 19,
+      "n": 48,
+      "method": "exacto",
+      "groups": [
+        {
+          "group": "f1",
+          "value": 10,
+          "lo": 10,
+          "hi": 10,
+          "n": 24,
+          "method": "exacto"
+        },
+        {
+          "group": "f2",
+          "value": 9,
+          "lo": 9,
+          "hi": 9,
+          "n": 24,
+          "method": "exacto"
+        }
+      ]
+    },
+    {
+      "id": "est-3",
+      "type": "diferencia",
+      "value": 0.041666666666666685,
+      "lo": -0.33333333333333326,
+      "hi": 0.375,
+      "n": 48,
+      "method": "cluster-bootstrap",
+      "a": {
+        "group": "f1",
+        "n": 24,
+        "value": 0.4166666666666667
+      },
+      "b": {
+        "group": "f2",
+        "n": 24,
+        "value": 0.375
+      }
+    },
+    {
+      "id": "est-3b",
+      "type": "diferencia",
+      "value": 0.041666666666666685,
+      "lo": -0.22052665722853865,
+      "hi": 0.29607073534200173,
+      "n": 48,
+      "method": "newcombe",
+      "a": {
+        "group": "f1",
+        "n": 24,
+        "value": 0.4166666666666667
+      },
+      "b": {
+        "group": "f2",
+        "n": 24,
+        "value": 0.375
+      }
+    },
+    {
+      "id": "est-4",
+      "type": "reutilizacion",
+      "value": 1.0,
+      "lo": 0.8156818649911481,
+      "hi": 1.0,
+      "n": 17,
+      "method": "wilson",
+      "histogram": {
+        "1": 0,
+        "2": 3,
+        "3-5": 14,
+        "6-10": 0,
+        ">10": 0
+      },
+      "max_groups": 3,
+      "rows": 48,
+      "rows_with_shared_key": 48
+    },
+    {
+      "id": "est-5",
+      "type": "supervivencia",
+      "value": 26.0,
+      "lo": 20.0,
+      "hi": 33.0,
+      "n": 48,
+      "method": "kaplan-meier-bootstrap",
+      "skipped": 0,
+      "events": 36,
+      "median_reached": true,
+      "survival_at": [
+        {
+          "t": 10,
+          "s": 0.8663838812301166,
+          "lo": 0.7464114832535885,
+          "hi": 0.9565217391304348
+        },
+        {
+          "t": 30,
+          "s": 0.3861529933271368,
+          "lo": 0.24315974323613754,
+          "hi": 0.5516860789175266
+        }
+      ],
+      "groups": [
+        {
+          "group": "f1",
+          "value": 22.0,
+          "lo": 16.0,
+          "hi": 32.0,
+          "n": 24,
+          "method": "kaplan-meier-bootstrap",
+          "skipped": 0,
+          "events": 24,
+          "median_reached": true,
+          "survival_at": [
+            {
+              "t": 10,
+              "s": 0.8333333333333334,
+              "lo": 0.6666666666666666,
+              "hi": 1.0
+            },
+            {
+              "t": 30,
+              "s": 0.3333333333333333,
+              "lo": 0.12500000000000003,
+              "hi": 0.5000000000000002
+            }
+          ]
+        },
+        {
+          "group": "f2",
+          "value": 29.0,
+          "lo": 25.0,
+          "hi": 41.0,
+          "n": 24,
+          "method": "kaplan-meier-bootstrap",
+          "skipped": 0,
+          "events": 12,
+          "median_reached": true,
+          "survival_at": [
+            {
+              "t": 10,
+              "s": 0.9043062200956938,
+              "lo": 0.7575757575757576,
+              "hi": 1.0
+            },
+            {
+              "t": 30,
+              "s": 0.44995837261528226,
+              "lo": 0.20312500000000003,
+              "hi": 0.7170607170607172
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "est-6",
+      "type": "mediana",
+      "value": 11.5,
+      "lo": 3.5,
+      "hi": 20.0,
+      "n": 16,
+      "method": "bootstrap",
+      "skipped": 0,
+      "groups": [
+        {
+          "group": "f1",
+          "value": 11.0,
+          "lo": 3.0,
+          "hi": 17.5,
+          "n": 8,
+          "method": "bootstrap",
+          "skipped": 0
+        },
+        {
+          "group": "f2",
+          "value": 12.0,
+          "lo": 2.0,
+          "hi": 21.0,
+          "n": 8,
+          "method": "bootstrap",
+          "skipped": 0
+        }
+      ]
+    },
+    {
+      "id": "est-7",
+      "type": "proporcion",
+      "value": 0.3958333333333333,
+      "lo": 0.2702082786059137,
+      "hi": 0.5368959150745274,
+      "n": 48,
+      "method": "wilson",
+      "groups": [
+        {
+          "group": "org",
+          "value": 0.375,
+          "lo": 0.22933887309454212,
+          "hi": 0.5474559264692255,
+          "n": 32,
+          "method": "wilson"
+        },
+        {
+          "group": "per",
+          "value": 0.4375,
+          "lo": 0.23098652405492354,
+          "hi": 0.6682144360118809,
+          "n": 16,
+          "method": "wilson"
+        }
+      ]
+    }
+  ]
+}

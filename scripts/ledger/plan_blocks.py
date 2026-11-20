@@ -3,7 +3,9 @@
     plan_blocks.py show <path>   prints the plan blocks as JSON; exit 3 with {"error": ...}
 
 Each of `## Estimandos`, `## Clasificadores`, `## Intervalos` holds a fenced json block;
-the first one under the heading is read. Standard library only.
+the first one under the heading is read. The Estimandos block may also hold a plan-level
+`"families"` list (multiple comparisons); each member estimand then carries `family`
+({id, method, estimands}). Standard library only.
 """
 from __future__ import annotations
 
@@ -18,9 +20,17 @@ if str(HERE) not in sys.path:
 
 import notes  # noqa: E402
 
-TYPES = ("proporcion", "conteo", "mediana", "diferencia", "reutilizacion", "supervivencia")
-CLUSTER_TYPES = ("proporcion", "diferencia")
-BY_TYPES = ("proporcion", "conteo", "mediana", "supervivencia")
+TYPES = ("proporcion", "conteo", "mediana", "diferencia", "reutilizacion", "supervivencia",
+         "tabla", "interseccion", "tendencia", "cuantiles")
+CLUSTER_TYPES = ("proporcion", "diferencia", "interseccion")
+BY_TYPES = ("proporcion", "conteo", "mediana", "supervivencia", "interseccion", "cuantiles")
+NO_COLUMN_TYPES = ("tabla", "interseccion")   # they name their columns in rows/cols, columns
+FAMILY_TYPES = ("diferencia",)
+FAMILY_METHODS = ("holm", "bonferroni")
+MAX_INTERSECTION = 6   # 2**6 combinations at most
+MAX_QUANTILES = 20
+_TABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")   # a units table name (`units`, --units-for)
+DEFAULT_TABLE = "default"
 _FENCE = re.compile(r"```json[ \t]*\n(.*?)\n[ \t]*```", re.S)
 
 
@@ -60,9 +70,11 @@ def _estimands(data) -> list[dict]:
     for e in items:
         if not isinstance(e, dict):
             raise PlanError(f"{h}: cada estimando debe ser un objeto")
-        for k in ("id", "type", "column"):
+        for k in ("id", "type"):
             if not isinstance(e.get(k), str) or not e[k]:
                 raise PlanError(f"{h}: el estimando {e.get('id')!r} necesita '{k}' (texto)")
+        if e["type"] not in NO_COLUMN_TYPES and (not isinstance(e.get("column"), str) or not e["column"]):
+            raise PlanError(f"{h}: el estimando {e.get('id')!r} necesita 'column' (texto)")
         if e["type"] not in TYPES:
             raise PlanError(f"{h}: type {e['type']!r} no es uno de {', '.join(TYPES)}")
         if e["id"] in seen:
@@ -74,9 +86,79 @@ def _estimands(data) -> list[dict]:
         if c is not None and not (isinstance(c, str) and c):
             raise PlanError(f"{h}: cluster de {e['id']} debe ser una columna o null")
         if c is not None and e["type"] not in CLUSTER_TYPES:
-            raise PlanError(f"{h}: {e['id']}: cluster solo se admite en {' y '.join(CLUSTER_TYPES)}")
+            raise PlanError(f"{h}: {e['id']}: cluster solo se admite en proporcion, diferencia e interseccion")
         _type_fields(h, e)
+        _units_and_variants(h, e)
+    _families(h, data, items)
     return items
+
+
+def _units_and_variants(h: str, e: dict) -> None:
+    """`units` (which units table, F2d) and `variants` (sensitivity analyses, F2e)."""
+    if "family" in e:
+        raise PlanError(f"{h}: {e['id']}: 'family' lo pone plan_blocks desde \"families\"; "
+                        "declara la familia en \"families\", al nivel de \"estimands\"")
+    u = e.get("units")
+    if u is not None:
+        if not isinstance(u, str) or not _TABLE.match(u):
+            raise PlanError(f"{h}: {e['id']}: 'units' debe ser el nombre de una tabla de unidades "
+                            "(letras, cifras, '-' o '_')")
+        if u == DEFAULT_TABLE:
+            raise PlanError(f"{h}: {e['id']}: omite 'units' para la tabla por defecto (no escribas "
+                            f"\"units\": \"{DEFAULT_TABLE}\")")
+    if "variants" not in e:
+        return
+    vs = e["variants"]
+    if not isinstance(vs, list) or not vs:
+        raise PlanError(f"{h}: {e['id']}: 'variants' debe ser una lista no vacía de "
+                        "{\"id\": ..., \"filter\": {...}}")
+    ids: set[str] = set()
+    for v in vs:
+        if not isinstance(v, dict) or set(v) - {"id", "filter"}:
+            raise PlanError(f"{h}: {e['id']}: cada variante es {{\"id\": ..., \"filter\": {{...}}}} y nada más")
+        if not isinstance(v.get("id"), str) or not v["id"]:
+            raise PlanError(f"{h}: {e['id']}: cada variante necesita 'id' (texto)")
+        if v["id"] in ids:
+            raise PlanError(f"{h}: {e['id']}: variante {v['id']!r} repetida")
+        ids.add(v["id"])
+        if not isinstance(v.get("filter"), dict) or not v["filter"]:
+            raise PlanError(f"{h}: {e['id']}: la variante {v['id']} necesita 'filter' (un objeto no vacío)")
+
+
+def _families(h: str, data: dict, items: list[dict]) -> None:
+    """Plan-level `families` (multiple comparisons, F3b): each member estimand gets
+    `family` = {id, method, estimands}, so a change to a family after the freeze shows as
+    a change of the Estimandos."""
+    fams = data.get("families")
+    if fams is None:
+        return
+    if not isinstance(fams, list) or not fams:
+        raise PlanError(f"{h}: 'families' debe ser una lista no vacía de "
+                        "{\"id\": ..., \"estimands\": [...], \"method\": \"holm\"}")
+    by_id = {e["id"]: e for e in items}
+    seen: set[str] = set()
+    for f in fams:
+        if not isinstance(f, dict) or not isinstance(f.get("id"), str) or not f["id"]:
+            raise PlanError(f"{h}: cada familia es un objeto con 'id' (texto)")
+        if f["id"] in seen:
+            raise PlanError(f"{h}: familia {f['id']!r} repetida")
+        seen.add(f["id"])
+        if f.get("method") not in FAMILY_METHODS:
+            raise PlanError(f"{h}: familia {f['id']}: method debe ser uno de {', '.join(FAMILY_METHODS)}")
+        members = f.get("estimands")
+        if (not isinstance(members, list) or len(members) < 2 or len(set(map(str, members))) != len(members)
+                or not all(isinstance(m, str) for m in members)):
+            raise PlanError(f"{h}: familia {f['id']}: 'estimands' debe nombrar al menos dos estimandos distintos")
+        for m in members:
+            e = by_id.get(m)
+            if e is None:
+                raise PlanError(f"{h}: familia {f['id']}: el estimando {m!r} no existe")
+            if e["type"] not in FAMILY_TYPES:
+                raise PlanError(f"{h}: familia {f['id']}: {m} es {e['type']}; las familias solo "
+                                f"agrupan {', '.join(FAMILY_TYPES)}")
+            if "family" in e:
+                raise PlanError(f"{h}: el estimando {m} está en dos familias ({e['family']['id']} y {f['id']})")
+            e["family"] = {"id": f["id"], "method": f["method"], "estimands": list(members)}
 
 
 def _col(h: str, e: dict, k: str, required: bool = True) -> None:
@@ -90,7 +172,15 @@ def _col(h: str, e: dict, k: str, required: bool = True) -> None:
 def _type_fields(h: str, e: dict) -> None:
     """The fields each type adds (docs: templates/measurement-plan-template.md)."""
     t = e["type"]
-    if "by" in e and e["by"] is not None:
+    if t == "tendencia":
+        _col(h, e, "by")   # the ordered column of the trend, not a grouping
+        order = e.get("order")
+        if order is not None and (not isinstance(order, list) or len(order) < 2
+                                  or not all(isinstance(x, (str, int)) and not isinstance(x, bool) for x in order)
+                                  or len({str(x) for x in order}) != len(order)):
+            raise PlanError(f"{h}: {e['id']}: 'order' debe ser una lista de al menos dos valores distintos "
+                            f"de '{e['by']}', en su orden")
+    elif "by" in e and e["by"] is not None:
         if t not in BY_TYPES:
             raise PlanError(f"{h}: {e['id']}: 'by' solo se admite en {', '.join(BY_TYPES)}")
         _col(h, e, "by")
@@ -115,6 +205,25 @@ def _type_fields(h: str, e: dict) -> None:
         at = e.setdefault("at", [])
         if not isinstance(at, list) or not all(_is_num(x) and x >= 0 for x in at):
             raise PlanError(f"{h}: {e['id']}: 'at' debe ser una lista de números >= 0 ([] si no hay)")
+        if "curve" in e and not isinstance(e["curve"], bool):
+            raise PlanError(f"{h}: {e['id']}: 'curve' debe ser true o false")
+    if t == "tabla":
+        _col(h, e, "rows")
+        _col(h, e, "cols")
+        if e["rows"] == e["cols"]:
+            raise PlanError(f"{h}: {e['id']}: 'rows' y 'cols' no pueden ser la misma columna")
+    if t == "interseccion":
+        cols = e.get("columns")
+        if (not isinstance(cols, list) or not 2 <= len(cols) <= MAX_INTERSECTION
+                or not all(isinstance(c, str) and c for c in cols) or len(set(cols)) != len(cols)):
+            raise PlanError(f"{h}: {e['id']}: interseccion necesita 'columns', entre 2 y {MAX_INTERSECTION} "
+                            "columnas 0/1 distintas")
+    if t == "cuantiles":
+        q = e.get("q")
+        if (not isinstance(q, list) or not 1 <= len(q) <= MAX_QUANTILES
+                or not all(_is_num(x) and 0 < x < 1 for x in q) or len(set(q)) != len(q)):
+            raise PlanError(f"{h}: {e['id']}: cuantiles necesita 'q', de 1 a {MAX_QUANTILES} números "
+                            "distintos entre 0 y 1 (p. ej. [0.25, 0.5, 0.75])")
 
 
 def _classifiers(data) -> list[dict]:
