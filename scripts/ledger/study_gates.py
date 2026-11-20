@@ -73,6 +73,8 @@ _ID = re.compile(r"^[A-Z]+-\d{4}$")
 _EST_BLOCK = re.compile(r"```estimate-json[ \t]*\n(.*?)\n[ \t]*```", re.S)
 PLAN_PARTS = (("estimands", "Estimandos"), ("classifiers", "Clasificadores"), ("intervals", "Intervalos"))
 CLOSED = {"respondido", "resuelto", "sin_respuesta"}
+# plan_frozen's line for a units dataset registered before the freeze (next_steps.py matches it).
+DATA_BEFORE_FREEZE = "los datos se registraron antes de congelar el plan"
 
 
 class _Fail(Exception):
@@ -222,7 +224,7 @@ def _frozen_in_git(plan_path: Path, pid: str, sha: str, node_path: Path, fm: dic
                       "haz commit de Datos/registro.json (después de congelar el plan)"]
     before = _git(["merge-base", "--is-ancestor", first, sha], top)
     if before.returncode == 0:
-        out.append("los datos se registraron antes de congelar el plan")
+        out.append(DATA_BEFORE_FREEZE)
     elif before.returncode != 1:
         out.append("git merge-base falló; no se puede comprobar que el plan se congeló antes que los datos")
     return out
@@ -449,23 +451,29 @@ def _iso(v) -> date | None:
         return None
 
 
-def avisos_cerrados(vault: Path, node_path: Path, fm: dict) -> list[str]:
-    reg = Path(node_path).parents[1] / "Avisos" / "registro.json"
+def count_avisos(project_dir: Path, today: date | None = None) -> tuple[dict | None, str | None]:
+    """Counts by state of `<project>/Avisos/registro.json`: `(counts, None)` or `(None, problem)`.
+
+    counts = {total, cerrados, pendiente, sin_fecha, embargo, desconocido}; `cerrados` holds
+    the closed states and `enviado` past its embargo. Only `estado` and `embargo_hasta` are
+    looked at: never who, how or what. The one reader of the registry for models (the gate
+    and next_steps.py)."""
+    reg = Path(project_dir) / "Avisos" / "registro.json"
     if not reg.is_file():
-        return ["sin registro de avisos"]
+        return None, "sin registro de avisos"
     try:
         data = json.loads(reg.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ["Avisos/registro.json ilegible: ábrelo desde el panel Avisos y corrígelo"]
+        return None, "Avisos/registro.json ilegible: ábrelo desde el panel Avisos y corrígelo"
     if not isinstance(data, list):
-        return ["Avisos/registro.json no es una lista de avisos"]
-    today = date.today()
-    counts = {"pendiente": 0, "sin_fecha": 0, "embargo": 0, "desconocido": 0}
+        return None, "Avisos/registro.json no es una lista de avisos"
+    today = today or date.today()
+    counts = {"total": len(data), "cerrados": 0, "pendiente": 0, "sin_fecha": 0, "embargo": 0, "desconocido": 0}
     for a in data:
         estado = a.get("estado") if isinstance(a, dict) else None
         if estado in CLOSED:
-            continue
-        if estado == "pendiente":
+            counts["cerrados"] += 1
+        elif estado == "pendiente":
             counts["pendiente"] += 1
         elif estado == "enviado":
             until = _iso(a.get("embargo_hasta"))
@@ -473,8 +481,17 @@ def avisos_cerrados(vault: Path, node_path: Path, fm: dict) -> list[str]:
                 counts["sin_fecha"] += 1
             elif until >= today:
                 counts["embargo"] += 1
+            else:
+                counts["cerrados"] += 1
         else:
             counts["desconocido"] += 1
+    return counts, None
+
+
+def avisos_cerrados(vault: Path, node_path: Path, fm: dict) -> list[str]:
+    counts, problem = count_avisos(Path(node_path).parents[1])
+    if problem:
+        return [problem]
     parts = [txt for key, txt in (
         ("pendiente", f"{counts['pendiente']} pendiente(s)"),
         ("sin_fecha", f"{counts['sin_fecha']} enviado(s) sin fecha de embargo"),
