@@ -412,13 +412,25 @@ def study_nodes(vault: Path, pdir: Path) -> list[dict]:
                 "path": p, "fm": fm, "status": status,
                 "terminal": status in design["terminal"],
                 "linea_publicacion": str(fm.get("linea_publicacion") or "").strip().lower() in ("true", "sí", "si", "yes"),
-                "units_dataset": "" if _blank(fm.get("units_dataset")) else str(fm.get("units_dataset")).strip(),
+                "units_dataset": _units_names(p, fm),
                 "has_result": bool(_EST_BLOCK.search(section(body, "Resultado"))),
                 "plan_id": plan_id, "plan_path": plan_path, "plan_problem": plan_problem,
                 "plan_frozen": not _blank(plan_fm.get("frozen_at")) and not _blank(plan_fm.get("frozen_commit")),
                 "plan_decision_blank": _placeholder_text(section(plan_body, "Decisión")) if plan_path else None,
             })
     return out
+
+
+def _units_names(path: Path, fm: dict) -> str:
+    """The question's units datasets as one line ("a" or "a, b" for a map of tables).
+    A malformed value keeps its raw text, so the item reads as written (the gate says
+    what is wrong) instead of «sin units_dataset»."""
+    spec, problem = sg._units_spec(path)
+    if spec:
+        import estimate  # noqa: PLC0415  (on sys.path through sg._units_spec)
+        return ", ".join(estimate.units_datasets(spec))
+    raw = fm.get("units_dataset")
+    return "" if problem is None or _blank(raw) else str(raw).strip()
 
 
 def _leads_to_publishable(n: dict) -> bool:

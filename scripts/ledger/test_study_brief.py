@@ -211,6 +211,15 @@ def test_collecting_question(st):
     assert sev == sorted(sev)
 
 
+def test_units_map_in_block_form_is_not_missing(st):
+    q = st.question("Q-9107", status="en_recoleccion", linked="M-9107",
+                    units="\n  default: unidades-inv\n  repos: repos-inv")
+    st.plan("M-9107", "Q-9107", frozen=True)
+    r = st.run()
+    assert kinds(r, "en_recoleccion_sin_units_dataset") == []
+    assert ns._units_names(q, {"units_dataset": ""}) == "unidades-inv, repos-inv"
+
+
 def test_notice_counts_only(st):
     st.question("Q-9106", status="en_recoleccion", linked="M-9106", units="unidades-inv")
     st.plan("M-9106", "Q-9106", frozen=True)
