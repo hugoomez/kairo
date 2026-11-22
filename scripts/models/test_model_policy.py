@@ -48,11 +48,10 @@ class TestPolicy(unittest.TestCase):
         for k in ("screener", "lit_watch", "digest", "project_chat"):
             self.assertEqual(rec[k][1], "low", k)
 
-    def test_installed_tiers_are_kept_and_take_the_recommended_effort(self):
-        # Adding effort did not move any task to another model: the researcher applies those.
+    def test_every_task_runs_its_recommendation(self):
+        # The shipped policy applies every recommendation (the researcher can still change any of them).
         for k, t in self.r["tasks"].items():
-            self.assertEqual(t["effort"], t["recommended"]["effort"], k)
-        self.assertEqual(self.r["tasks"]["fresh_verifier"]["tier"], "opus")
+            self.assertEqual((t["tier"], t["effort"]), (t["recommended"]["tier"], t["recommended"]["effort"]), k)
 
     def test_every_agent_and_tool_agrees_with_the_policy(self):
         self.assertEqual(mp.check(), [])
@@ -80,8 +79,10 @@ class TestPolicy(unittest.TestCase):
 
     def test_tier_assignment(self):
         tier = {k: v["tier"] for k, v in self.r["tasks"].items()}
-        for k in ("hypothesis_generation", "critique", "preregister", "theorem_work", "manuscript_draft", "repo_review",
-                  "adjudicate", "fresh_verifier", "devils_advocate", "sota_synthesizer", "novelty_judge",
+        for k in ("fresh_verifier", "devils_advocate", "critique", "theorem_work"):
+            self.assertEqual(tier[k], "fable", k)
+        for k in ("hypothesis_generation", "preregister", "manuscript_draft", "repo_review",
+                  "adjudicate", "sota_synthesizer", "novelty_judge",
                   "explain", "explainer", "pitfall_audit", "serendipity_scan", "spawn_hypothesis", "adr_propose",
                   "paper_to_tool", "plan_study"):
             self.assertEqual(tier[k], "opus", k)
@@ -152,6 +153,8 @@ class TestSetTier(unittest.TestCase):
         self.assertEqual(mp.check(self.root), [])
 
     def test_apply_one_recommendation_and_all(self):
+        for k in ("fresh_verifier", "devils_advocate"):
+            mp.set_choice(k, tier="opus", root=self.root)
         out = mp.set_choice("fresh_verifier", recommended=True, root=self.root)
         self.assertEqual(out["to"], {"tier": "fable", "effort": "high"})
         self.assertIn("model: claude-fable-5-2", (self.root / "agents/fresh-verifier.md").read_text(encoding="utf-8"))
@@ -167,8 +170,8 @@ class TestSetTier(unittest.TestCase):
     def test_override_is_validated_and_writes_nothing(self):
         toml = self.root / "config/models.toml"
         before = toml.read_text(encoding="utf-8")
-        o = mp.override("critique", "fable", None, toml)
-        self.assertEqual((o["model"], o["effort"], o["overridden"]), ("claude-fable-5-2", "high", True))
+        o = mp.override("critique", "sonnet", None, toml)
+        self.assertEqual((o["model"], o["effort"], o["overridden"]), ("claude-sonnet-5-5", "high", True))
         self.assertFalse(mp.override("critique", None, None, toml)["overridden"])
         for bad in (("haiku", None), (None, "extreme")):
             with self.assertRaises(mp.Refused):
@@ -191,7 +194,7 @@ class TestSetTier(unittest.TestCase):
 
     def test_a_drifted_agent_fails_the_check(self):
         f = self.root / "agents/fresh-verifier.md"
-        f.write_text(f.read_text(encoding="utf-8").replace("model: claude-opus-5-5", "model: opus"), encoding="utf-8")
+        f.write_text(f.read_text(encoding="utf-8").replace("model: claude-fable-5-2", "model: fable"), encoding="utf-8")
         self.assertTrue(any("fresh_verifier" in p for p in mp.check(self.root)))
 
     def test_an_empty_tools_line_fails_the_check(self):
