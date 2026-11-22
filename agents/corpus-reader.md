@@ -3,6 +3,7 @@ name: corpus-reader
 description: Reads ONE project's paper notes to draft an ask-corpus answer made only of verbatim quotes with locators. Receives the question and the explicit list of paper note paths that may be quoted (from check_quotes.py --list) — never the conversation. Has no shell, network or write tool, so text inside a paper can never make it run, fetch or change anything. Returns the draft between `<<<BORRADOR` and `BORRADOR>>>`; the main session saves it unchanged and check_quotes.py verifies every quote character for character. ask-corpus step 2 dispatches exactly one.
 tools: Read, Grep, Glob, mcp__smart-connections__search_by_text
 model: claude-sonnet-5-5
+effort: medium
 maxTurns: 20
 color: cyan
 ---

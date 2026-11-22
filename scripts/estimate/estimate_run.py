@@ -117,7 +117,7 @@ def policy_model(task: str) -> str | None:
         text = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
     except OSError:
         return None
-    tiers = dict(re.findall(r'^(opus|sonnet|haiku)\s*=\s*"([^"]+)"', text, re.M))
+    tiers = dict(re.findall(r'^(fable|opus|sonnet|haiku)\s*=\s*"([^"]+)"', text, re.M))
     m = re.search(rf"^\[tasks\.{re.escape(task)}\]\s*\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
     tier = re.search(r'^tier\s*=\s*"(\w+)"', m.group(1), re.M) if m else None
     return tiers.get(tier.group(1)) if tier else None

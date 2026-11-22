@@ -53,7 +53,7 @@ OFF_SUBSCRIPTION_VARS = (
 # code + ~1-3k output). Used only for the pre-run estimate shown for approval;
 # the real per-call figure is logged from each call's total_cost_usd.
 # Rough list-price cost of one call, by policy tier (shown in the plan, labelled as an estimate).
-EST_PER_CALL = {"sonnet": 0.12, "opus": 0.40}
+EST_PER_CALL = {"sonnet": 0.12, "opus": 0.40, "fable": 0.80}
 
 
 def policy_model(choice: str | None) -> tuple[str, str]:
@@ -75,6 +75,16 @@ def policy_model(choice: str | None) -> tuple[str, str]:
             return tier, model
     raise SystemExit(json.dumps({"error": f"--model must be one of {', '.join(list(tiers) + list(tiers.values()))} "
                                           f"(config/models.toml), not {choice!r}"}))
+
+
+def policy_effort() -> str:
+    """The reasoning effort config/models.toml gives evolve-program's calls."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "model_policy", Path(__file__).resolve().parents[3] / "scripts" / "models" / "model_policy.py")
+    mp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mp)
+    return mp.resolve(mp.load())["tasks"]["evolve_program"]["effort"]
 
 
 class Refused(Exception):
@@ -208,6 +218,7 @@ def cmd_plan(a) -> dict:
     max_calls = a.max_calls or a.iterations * 2
     plan = {
         "evaluator_lock_sha256": lock_sha, "iterations": a.iterations, "model": model, "tier": tier,
+        "effort": policy_effort(),
         "per_call_cap_usd": a.per_call_usd, "run_budget_usd": a.run_budget_usd,
         "workers": a.workers, "max_calls": max_calls, "seed": a.seed,
         # the researcher's objective statement, sent as the LLM system message. It is
@@ -336,6 +347,7 @@ def cmd_run(a) -> dict:
     cfg = Config()
     m = LLMModelConfig(name=plan["model"], weight=1.0, timeout=300, retries=1, retry_delay=5,
                        init_client=kairo_llm.init_client)
+    m.effort = plan.get("effort")  # read by kairo_llm (`claude -p --effort`); older plans have none
     if plan.get("objective"):
         cfg.prompt.system_message = plan["objective"]
     cfg.llm.models = [m]

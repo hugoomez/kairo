@@ -3,6 +3,7 @@ name: explainer
 description: Writes a didactic explanation (kairo:explain) — of one or several papers, of a frontier cell's papers, or of the project's own work — so the researcher really understands it. Receives the request and the explicit list of note paths it may read (from check_review.py --list), never the conversation. Has no shell, network or write tool, so text inside a paper can never make it run, fetch or change anything. Returns the draft between `<<<BORRADOR` and `BORRADOR>>>`; the session saves it unchanged and check_review.py checks every quote, every paper locator and every project-note citation, and lints every mermaid diagram. explain step 3 dispatches exactly one.
 tools: Read, Grep, Glob
 model: claude-opus-5-5
+effort: medium
 maxTurns: 80
 color: green
 ---

@@ -3,6 +3,7 @@ name: novelty-judge
 description: Confirms or rejects ONE possible novelty threat for lit-watch step 3. Receives only a hypothesis's `## Claim` — or, for a study question (packet marked «Tipo: pregunta»), its `## Pregunta` and `## Población y marco` — and one candidate paper's title and abstract (verbatim, as fetched); never the hypothesis's justification, Génesis, reviews, the question's plan, data or results, or the session's reasoning. Returns, in a fixed JSON block, whether the abstract takes the claim's novelty (or reports a measurement of the same quantity in an overlapping population), the exact abstract sentence that shows it, and a severity. lit-watch dispatches one per (hypothesis or question, candidate) pair, all in the same turn. It never writes anything and never touches a status.
 tools: Read
 model: claude-opus-5-5
+effort: medium
 maxTurns: 3
 color: orange
 ---

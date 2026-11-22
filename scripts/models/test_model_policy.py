@@ -27,8 +27,32 @@ class TestPolicy(unittest.TestCase):
     def setUp(self):
         self.r = mp.resolve(mp.load())
 
-    def test_two_tiers_pinned_to_exact_ids(self):
-        self.assertEqual(self.r["tiers"], {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5"})
+    def test_three_tiers_pinned_to_exact_ids(self):
+        self.assertEqual(self.r["tiers"], {"fable": "claude-fable-5-2", "opus": "claude-opus-5-5",
+                                           "sonnet": "claude-sonnet-5-5"})
+
+    def test_every_task_has_an_effort_and_a_reasoned_recommendation(self):
+        for k, t in self.r["tasks"].items():
+            self.assertIn(t["effort"], mp.EFFORTS, k)
+            rec = t["recommended"]
+            self.assertIn(rec["tier"], self.r["tiers"], k)
+            self.assertIn(rec["effort"], ("low", "medium", "high"), k)  # xhigh / max offered, never recommended
+            self.assertTrue(rec["why"].strip(), k)
+
+    def test_recommendations_follow_the_evidence(self):
+        rec = {k: (v["recommended"]["tier"], v["recommended"]["effort"]) for k, v in self.r["tasks"].items()}
+        # verifiers and critics: a different, stronger model than Opus, which writes what they check
+        for k in ("fresh_verifier", "devils_advocate", "critique"):
+            self.assertEqual(rec[k], ("fable", "high"), k)
+        # classification and short summaries: low effort
+        for k in ("screener", "lit_watch", "digest", "project_chat"):
+            self.assertEqual(rec[k][1], "low", k)
+
+    def test_installed_tiers_are_kept_and_take_the_recommended_effort(self):
+        # Adding effort did not move any task to another model: the researcher applies those.
+        for k, t in self.r["tasks"].items():
+            self.assertEqual(t["effort"], t["recommended"]["effort"], k)
+        self.assertEqual(self.r["tasks"]["fresh_verifier"]["tier"], "opus")
 
     def test_every_agent_and_tool_agrees_with_the_policy(self):
         self.assertEqual(mp.check(), [])
@@ -120,6 +144,51 @@ class TestSetTier(unittest.TestCase):
         toml = (self.root / "config/models.toml").read_text(encoding="utf-8")
         self.assertIn('[tasks.facet_summarizer]\nkind = "agent"\nfile = "agents/facet-summarizer.md"\ntier = "opus"', toml)
 
+    def test_changing_effort_rewrites_the_agent_frontmatter(self):
+        out = mp.set_choice("screener", effort="medium", root=self.root)
+        self.assertEqual(out["from"], {"tier": "sonnet", "effort": "low"})
+        self.assertEqual(out["to"], {"tier": "sonnet", "effort": "medium"})
+        self.assertIn("effort: medium", (self.root / "agents/screener.md").read_text(encoding="utf-8"))
+        self.assertEqual(mp.check(self.root), [])
+
+    def test_apply_one_recommendation_and_all(self):
+        out = mp.set_choice("fresh_verifier", recommended=True, root=self.root)
+        self.assertEqual(out["to"], {"tier": "fable", "effort": "high"})
+        self.assertIn("model: claude-fable-5-2", (self.root / "agents/fresh-verifier.md").read_text(encoding="utf-8"))
+        out = mp.set_all_recommended(self.root)
+        self.assertIn("devils_advocate", out["tasks_changed"])
+        self.assertNotIn("fresh_verifier", out["tasks_changed"])
+        r = mp.resolve(mp.load(self.root / "config/models.toml"))
+        for k, t in r["tasks"].items():
+            self.assertEqual((t["tier"], t["effort"]), (t["recommended"]["tier"], t["recommended"]["effort"]), k)
+        self.assertEqual(mp.check(self.root), [])
+        self.assertEqual(mp.set_all_recommended(self.root)["tasks_changed"], [])
+
+    def test_override_is_validated_and_writes_nothing(self):
+        toml = self.root / "config/models.toml"
+        before = toml.read_text(encoding="utf-8")
+        o = mp.override("critique", "fable", None, toml)
+        self.assertEqual((o["model"], o["effort"], o["overridden"]), ("claude-fable-5-2", "high", True))
+        self.assertFalse(mp.override("critique", None, None, toml)["overridden"])
+        for bad in (("haiku", None), (None, "extreme")):
+            with self.assertRaises(mp.Refused):
+                mp.override("critique", *bad, toml)
+        with self.assertRaises(mp.Refused):
+            mp.override("nope", None, None, toml)
+        self.assertEqual(toml.read_text(encoding="utf-8"), before)
+
+    def test_bad_effort_in_the_policy_is_refused(self):
+        toml = self.root / "config/models.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('effort = "low"', 'effort = "minimal"', 1),
+                        encoding="utf-8")
+        with self.assertRaises(mp.Refused):
+            mp.load(toml)
+
+    def test_a_drifted_effort_fails_the_check(self):
+        f = self.root / "agents/screener.md"
+        f.write_text(f.read_text(encoding="utf-8").replace("effort: low", "effort: max"), encoding="utf-8")
+        self.assertTrue(any("screener" in p and "effort" in p for p in mp.check(self.root)))
+
     def test_a_drifted_agent_fails_the_check(self):
         f = self.root / "agents/fresh-verifier.md"
         f.write_text(f.read_text(encoding="utf-8").replace("model: claude-opus-5-5", "model: opus"), encoding="utf-8")
@@ -178,6 +247,11 @@ class TestSetTier(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(mp.model_for("critique", self.root / "config/models.toml"), "claude-sonnet-5-5")
         self.assertEqual(mp.main(["--root", str(self.root), "set", "--task", "nope", "--tier", "opus"]), 3)
+        self.assertEqual(mp.main(["--root", str(self.root), "set", "--task", "critique"]), 3)
+        self.assertEqual(mp.main(["--root", str(self.root), "set", "--all"]), 3)
+        self.assertEqual(mp.main(["--root", str(self.root), "set", "--task", "critique", "--effort", "low"]), 0)
+        self.assertEqual(mp.main(["--root", str(self.root), "set", "--all", "--recommended"]), 0)
+        self.assertEqual(mp.main(["--root", str(self.root), "override", "--task", "critique", "--tier", "sonnet"]), 0)
         self.assertEqual(json.loads(json.dumps({"ok": True}))["ok"], True)
 
 

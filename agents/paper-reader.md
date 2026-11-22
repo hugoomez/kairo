@@ -3,6 +3,7 @@ name: paper-reader
 description: Reads paper notes FOR the main session, which may not (the vault hook refuses a main-thread Read of Papers/P-*.md, since paper text can carry instructions aimed at a model and the main session can run commands). Receives a list of requests — paper note paths with a locator and the sentence that cites it, or a claim to locate in named papers — and returns, per request, the verbatim text under the locator, whether it supports the sentence, and a better locator when another heading of the same paper says it. No shell, network or write tool. Used by hypothesis-cycle, create-project step 7 (fixing a locator or figure check_sota.py flagged), update-confidence, assemble-manuscript and theorem whenever a paper's text must be looked at.
 tools: Read, Grep, Glob
 model: claude-sonnet-5-5
+effort: medium
 maxTurns: 15
 color: cyan
 ---

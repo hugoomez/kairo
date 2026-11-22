@@ -3,6 +3,7 @@ name: sota-synthesizer
 description: The Reduce pass of create-project step 7. Receives every facet-summarizer contribution (already cited, paper id + section/table/figure on every claim), the project's purpose and scope, and the canonical Estado-del-arte section list; returns the merged document, drafting the cross-facet sections itself (§4 competing schools, §8 reading order, the gaps). Reads paper notes only to check a locator it is unsure of. Never invents a citation, never paraphrases a paper as if quoting it. create-project dispatches exactly one, after the Map pass; the main session writes what it returns.
 tools: Read, Grep, Glob
 model: claude-opus-5-5
+effort: high
 maxTurns: 30
 color: purple
 ---

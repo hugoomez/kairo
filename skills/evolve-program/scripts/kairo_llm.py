@@ -53,10 +53,12 @@ def scrubbed_env() -> dict:
     return env
 
 
-def build_cmd(model: str, per_call_usd: float, system_message: str | None) -> list[str]:
+def build_cmd(model: str, per_call_usd: float, system_message: str | None, effort: str | None = None) -> list[str]:
     cmd = ["claude", "-p", "--model", model, "--output-format", "json",
            "--no-session-persistence", "--tools", "", "--setting-sources", "",
            "--strict-mcp-config", "--max-budget-usd", f"{per_call_usd:.4f}"]
+    if effort:
+        cmd += ["--effort", effort]
     if system_message:
         cmd += ["--system-prompt", system_message]
     assert "--bare" not in cmd  # bare mode = API-key-only auth
@@ -104,6 +106,7 @@ class KairoClaudeCodeLLM(LLMInterface):
         if not self.model:
             raise ValueError("kairo_llm: no model in the run plan (config/models.toml decides it)")
         self.system_message = getattr(model_cfg, "system_message", None)
+        self.effort = getattr(model_cfg, "effort", None)
         self.timeout = getattr(model_cfg, "timeout", None) or 300
         self.ledger = Path(os.environ["KAIRO_EVOLVE_LEDGER"])
         self.run_budget = float(os.environ["KAIRO_EVOLVE_RUN_BUDGET_USD"])
@@ -136,7 +139,7 @@ class KairoClaudeCodeLLM(LLMInterface):
                "cost_known": False, "is_error": True}
         text, proc = "", None
         try:
-            proc = subprocess.run(build_cmd(self.model, self.per_call, system_message),
+            proc = subprocess.run(build_cmd(self.model, self.per_call, system_message, self.effort),
                                   input=user, capture_output=True, text=True, encoding="utf-8",
                                   timeout=self.timeout, env=scrubbed_env(), cwd=self.cwd)
             rec["returncode"] = proc.returncode

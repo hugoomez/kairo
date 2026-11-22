@@ -265,6 +265,27 @@ check` (run in the tests) fails if an isolated agent gains a tool or the hook
 does not know it, and if an agent that reads paper text (`reads_papers = true`:
 corpus-reader, explainer, facet-summarizer, frontier-extractor, paper-carder, paper-reader, sota-synthesizer)
 gains any tool beyond Read, Grep, Glob and Smart Connections' read tools.
+
+**Model and effort per task.** `config/models.toml` gives every task (interface
+job, subagent, tool) a model — Fable 5.2, Opus 5.5 or Sonnet 5.5, each pinned
+to an exact id — and a reasoning effort (`low`, `medium`, `high`, `xhigh`,
+`max`), plus a recommended model and effort with a one-line reason. The
+subagents' `model:` and `effort:` frontmatter lines are generated from it
+(`model_policy.py sync`; `check` fails on drift). Change a task with
+`model_policy.py set --task T [--tier X] [--effort E]`, apply its
+recommendation with `--recommended`, or every recommendation with
+`set --all --recommended`; the interface's Modelos page does the same and
+commits the change locally. A job launched from the interface may run on
+another model or effort for that one run (`model_policy.py override` checks
+such a choice without writing anything). The recommendations follow Anthropic's
+guidance — start on Opus 5.5 and keep Fable 5.2 for open-ended hard work; high
+effort where reasoning or verification pays, low for classification and short
+summaries, where more effort does not help — and the research on LLM judges: a
+verifier does better as a different, stronger model than the one whose output
+it checks, so the fresh verifier, the devil's advocate and the theorem work are
+recommended on Fable 5.2. `xhigh` and `max` are offered, never recommended.
+Inside a Claude Code session the skills run on the session's model and effort
+(`/model`, `/effort`); only the subagents take theirs from the policy.
 Packets and stored replies in `~/.kairo` are pruned after 90 days
 (`python scripts/security/isolation.py prune [--older-than DAYS]`; SessionEnd
 runs it at most once a day).

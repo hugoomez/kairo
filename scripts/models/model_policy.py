@@ -10,7 +10,12 @@ runs on the model the policy names, never on an account default.
                                                (isolated agents: Read only; reads_papers agents:
                                                read and search tools only)
     model_policy.py sync                       rewrite each agent's `model:` line from the policy
-    model_policy.py set --task T --tier X      change one task's tier (edits the toml, then sync)
+    model_policy.py set --task T [--tier X] [--effort E]
+                                               change one task's tier and/or effort (edits the toml, then sync)
+    model_policy.py set --task T --recommended apply the task's recommended tier and effort
+    model_policy.py set --all --recommended    apply every recommendation
+    model_policy.py override --task T [--tier X] [--effort E]
+                                               one run's model and effort (validated, nothing written)
 
 Exit codes: 0 ok · 1 the repo disagrees with the policy · 3 refused (bad policy
 or bad request). Standard library only (Python ≥ 3.11 for tomllib).
@@ -24,13 +29,15 @@ import sys
 import tomllib
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "config" / "models.toml"
 KINDS = ("job", "agent", "tool")
 # A pinned Claude model id: family + version digits, no alias, no "latest".
-PINNED = re.compile(r"^claude-(opus|sonnet|haiku)-\d+(-\d+)*$")
+PINNED = re.compile(r"^claude-(fable|opus|sonnet|haiku)-\d+(-\d+)*$")
+# Reasoning effort levels (Claude Code `--effort` and agent frontmatter `effort:`).
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # An `isolated = true` agent must see only its packet: no shell or network
 # tool, and one file tool, `Read`, which the vault hook
 # (scripts/security/isolation.py) limits to its packet in the packet store —
@@ -65,6 +72,12 @@ def load(path: Path = POLICY) -> dict:
             raise Refused(f"task {tid!r}: kind must be one of {', '.join(KINDS)}")
         if t.get("tier") not in tiers:
             raise Refused(f"task {tid!r}: tier {t.get('tier')!r} is not one of {', '.join(tiers)}")
+        for key in ("effort", "recommended_effort"):
+            if t.get(key) not in EFFORTS:
+                raise Refused(f"task {tid!r}: {key} must be one of {', '.join(EFFORTS)}, not {t.get(key)!r}")
+        if t.get("recommended_tier") not in tiers:
+            raise Refused(f"task {tid!r}: recommended_tier {t.get('recommended_tier')!r} is not one of "
+                          f"{', '.join(tiers)}")
         if t["kind"] == "agent" and not t.get("file"):
             raise Refused(f"task {tid!r}: an agent task needs `file`")
         for flag in ("isolated", "reads_papers"):
@@ -77,8 +90,12 @@ def resolve(data: dict) -> dict:
     tiers = data["tiers"]
     return {
         "tiers": dict(tiers),
+        "efforts": list(EFFORTS),
         "tasks": {
-            tid: {"kind": t["kind"], "tier": t["tier"], "model": tiers[t["tier"]], "label": t.get("label", tid),
+            tid: {"kind": t["kind"], "tier": t["tier"], "model": tiers[t["tier"]], "effort": t["effort"],
+                  "recommended": {"tier": t["recommended_tier"], "model": tiers[t["recommended_tier"]],
+                                  "effort": t["recommended_effort"], "why": t.get("why", "")},
+                  "label": t.get("label", tid),
                   **({"file": t["file"]} if t.get("file") else {})}
             for tid, t in data["tasks"].items()
         },
@@ -97,6 +114,14 @@ def _frontmatter_model(text: str) -> str | None:
     if not m:
         return None
     hit = re.search(r"^model:\s*(\S+)\s*$", m.group(1), re.M)
+    return hit.group(1) if hit else None
+
+
+def _frontmatter_effort(text: str) -> str | None:
+    m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.S)
+    if not m:
+        return None
+    hit = re.search(r"^effort:\s*(\S+)\s*$", m.group(1), re.M)
     return hit.group(1) if hit else None
 
 
@@ -132,6 +157,9 @@ def check(root: Path = ROOT, path: Path | None = None) -> list[str]:
         have = _frontmatter_model(text)
         if have != t["model"]:
             problems.append(f"{tid}: {t['file']} has model {have!r}, the policy says {t['model']!r}")
+        eff = _frontmatter_effort(text)
+        if eff != t["effort"]:
+            problems.append(f"{tid}: {t['file']} has effort {eff!r}, the policy says {t['effort']!r}")
         tools = _frontmatter_tools(text)
         if not tools:
             problems.append(f"{tid}: {t['file']} has no explicit `tools:` list — an absent or empty "
@@ -169,32 +197,97 @@ def sync(root: Path = ROOT, path: Path | None = None) -> list[str]:
             new_fm = re.sub(r"^model:.*$", f"model: {t['model']}", fm, count=1, flags=re.M)
         else:
             new_fm = fm + f"\nmodel: {t['model']}"
+        if re.search(r"^effort:", new_fm, re.M):
+            new_fm = re.sub(r"^effort:.*$", f"effort: {t['effort']}", new_fm, count=1, flags=re.M)
+        else:
+            new_fm = re.sub(r"^(model:.*)$", lambda h: f"{h.group(1)}\neffort: {t['effort']}", new_fm,
+                            count=1, flags=re.M)
         if new_fm != fm:
             f.write_text(m.group(1) + new_fm + m.group(3) + text[m.end():], encoding="utf-8", newline="")
             changed.append(t["file"])
     return changed
 
 
-def set_tier(task: str, tier: str, root: Path = ROOT, path: Path | None = None) -> dict:
-    p = path or root / "config" / "models.toml"
-    data = load(p)
+def _validate_choice(data: dict, task: str, tier: str | None, effort: str | None) -> None:
     if task not in data["tasks"]:
         raise Refused(f"task {task!r} is not in the model policy")
-    if tier not in data["tiers"]:
+    if tier is not None and tier not in data["tiers"]:
         raise Refused(f"tier must be one of {', '.join(data['tiers'])}")
-    text = p.read_text(encoding="utf-8")
-    block = re.search(rf"^\[tasks\.{re.escape(task)}\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
-    if not block:
-        raise Refused(f"[tasks.{task}] not found as a table in {p.name}")
-    body = block.group(1)
-    new_body, n = re.subn(r'^tier\s*=\s*"[^"]*"', f'tier = "{tier}"', body, count=1, flags=re.M)
+    if effort is not None and effort not in EFFORTS:
+        raise Refused(f"effort must be one of {', '.join(EFFORTS)}")
+
+
+def _set_line(body: str, key: str, value: str, task: str) -> str:
+    new_body, n = re.subn(rf'^{key}\s*=\s*"[^"]*"', f'{key} = "{value}"', body, count=1, flags=re.M)
     if n != 1:
-        raise Refused(f"[tasks.{task}] has no tier line")
-    before = data["tasks"][task]["tier"]
-    p.write_text(text[:block.start(1)] + new_body + text[block.end(1):], encoding="utf-8", newline="")
-    load(p)  # still valid
+        raise Refused(f"[tasks.{task}] has no {key} line")
+    return new_body
+
+
+def _write_choices(p: Path, choices: dict[str, tuple[str | None, str | None]]) -> None:
+    """Rewrite the tier / effort lines of the named tasks in one pass."""
+    text = p.read_text(encoding="utf-8")
+    for task, (tier, effort) in choices.items():
+        block = re.search(rf"^\[tasks\.{re.escape(task)}\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+        if not block:
+            raise Refused(f"[tasks.{task}] not found as a table in {p.name}")
+        body = block.group(1)
+        if tier is not None:
+            body = _set_line(body, "tier", tier, task)
+        if effort is not None:
+            body = _set_line(body, "effort", effort, task)
+        text = text[:block.start(1)] + body + text[block.end(1):]
+    p.write_text(text, encoding="utf-8", newline="")
+
+
+def set_choice(task: str, tier: str | None = None, effort: str | None = None, *, recommended: bool = False,
+               root: Path = ROOT, path: Path | None = None) -> dict:
+    """Change one task's tier and/or effort (or apply its recommendation)."""
+    p = path or root / "config" / "models.toml"
+    data = load(p)
+    _validate_choice(data, task, tier, effort)
+    t = data["tasks"][task]
+    if recommended:
+        if tier is not None or effort is not None:
+            raise Refused("--recommended takes no --tier or --effort")
+        tier, effort = t["recommended_tier"], t["recommended_effort"]
+    if tier is None and effort is None:
+        raise Refused("nothing to change: give --tier, --effort or --recommended")
+    before = {"tier": t["tier"], "effort": t["effort"]}
+    _write_choices(p, {task: (tier, effort)})
+    after = load(p)["tasks"][task]  # still valid
     changed = sync(root, p)
-    return {"task": task, "from": before, "to": tier, "model": data["tiers"][tier], "agents_changed": changed}
+    return {"task": task, "from": before, "to": {"tier": after["tier"], "effort": after["effort"]},
+            "model": data["tiers"][after["tier"]], "agents_changed": changed}
+
+
+def set_tier(task: str, tier: str, root: Path = ROOT, path: Path | None = None) -> dict:
+    """Kept for callers of the 1.1 interface: change one task's tier only."""
+    out = set_choice(task, tier=tier, root=root, path=path)
+    return {**out, "from": out["from"]["tier"], "to": out["to"]["tier"]}
+
+
+def set_all_recommended(root: Path = ROOT, path: Path | None = None) -> dict:
+    """Apply every task's recommended tier and effort."""
+    p = path or root / "config" / "models.toml"
+    data = load(p)
+    changes = {tid: (t["recommended_tier"], t["recommended_effort"]) for tid, t in data["tasks"].items()
+               if (t["tier"], t["effort"]) != (t["recommended_tier"], t["recommended_effort"])}
+    if changes:
+        _write_choices(p, changes)
+        load(p)
+    changed = sync(root, p)
+    return {"tasks_changed": sorted(changes), "agents_changed": changed}
+
+
+def override(task: str, tier: str | None = None, effort: str | None = None, path: Path = POLICY) -> dict:
+    """One run's model and effort: the task's own, with the given tier / effort in their place."""
+    data = load(path)
+    _validate_choice(data, task, tier, effort)
+    t = data["tasks"][task]
+    tier = tier or t["tier"]
+    return {"task": task, "tier": tier, "model": data["tiers"][tier], "effort": effort or t["effort"],
+            "overridden": tier != t["tier"] or (effort or t["effort"]) != t["effort"]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -207,8 +300,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check")
     sub.add_parser("sync")
     p = sub.add_parser("set")
+    p.add_argument("--task")
+    p.add_argument("--all", action="store_true", help="with --recommended: every task")
+    p.add_argument("--tier")
+    p.add_argument("--effort")
+    p.add_argument("--recommended", action="store_true")
+    p = sub.add_parser("override")
     p.add_argument("--task", required=True)
-    p.add_argument("--tier", required=True)
+    p.add_argument("--tier")
+    p.add_argument("--effort")
     a = ap.parse_args(argv)
     path = a.root / "config" / "models.toml"
     try:
@@ -222,8 +322,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if not problems else 1
         elif a.cmd == "sync":
             out = {"changed": sync(a.root, path)}
+        elif a.cmd == "override":
+            out = override(a.task, a.tier, a.effort, path)
+        elif a.all:
+            if not a.recommended or a.task or a.tier or a.effort:
+                raise Refused("--all goes only with --recommended")
+            out = set_all_recommended(a.root, path)
         else:
-            out = set_tier(a.task, a.tier, a.root, path)
+            if not a.task:
+                raise Refused("set needs --task (or --all --recommended)")
+            out = set_choice(a.task, a.tier, a.effort, recommended=a.recommended, root=a.root, path=path)
     except Refused as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 3

@@ -1,10 +1,23 @@
-# Kairo model policy: the one source of truth for which Claude model each
-# Kairo task uses. Two tiers, each pinned to an exact model id (no aliases).
+# Kairo model policy: the one source of truth for which Claude model, and at
+# which reasoning effort, each Kairo task runs. Three tiers, each pinned to an
+# exact model id (no aliases).
 #
 #   python scripts/models/model_policy.py show     # the resolved policy (JSON)
 #   python scripts/models/model_policy.py check    # agents/ and evolve agree with it
-#   python scripts/models/model_policy.py set --task <id> --tier opus|sonnet
+#   python scripts/models/model_policy.py set --task <id> [--tier fable|opus|sonnet] [--effort low|…|max]
+#   python scripts/models/model_policy.py set --task <id> --recommended   # or --all --recommended
 #                                                   # edits this file and the agent frontmatter
+#
+# Per task: `tier` and `effort` are what it runs on; `recommended_tier`,
+# `recommended_effort` and `why` are Kairo's recommendation, shown next to the
+# choice in the interface. A job launched from the interface may override the
+# tier and effort for that one run. Effort: low | medium | high | xhigh | max.
+# The recommendations follow Anthropic's guidance (start on Opus 5.5, Fable 5.2
+# for open-ended hard work; high effort where reasoning or verification pays,
+# low for classification and short summaries, where more effort does not help)
+# and the research on LLM judges (a verifier is better a different, stronger
+# model than the one whose output it checks). xhigh and max are offered, never
+# recommended: past high the gains are uneven and the cost is not.
 #
 # kind = "job"   a task the Kairo interface launches (backend job kind = task id)
 # kind = "agent" a subagent; `file` is its definition, whose `model:` line is
@@ -26,6 +39,7 @@
 # policy; only its Claude wrapper is listed.
 
 [tiers]
+fable = "claude-fable-5-2"
 opus = "claude-opus-5-5"
 sonnet = "claude-sonnet-5-5"
 
@@ -36,46 +50,82 @@ sonnet = "claude-sonnet-5-5"
 [tasks.hypothesis_generation]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "juicio de novedad y falsabilidad: el esfuerzo alto rinde donde hay que razonar"
 label = "Generar hipótesis (ciclo, críticos y torneo)"
 
 [tasks.critique]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "fable"
+recommended_effort = "high"
+why = "distinto y más fuerte que Opus, que escribe lo que revisa: un modelo tiende a dar por buena su propia salida"
 label = "Abogado del diablo (crítica)"
 
 [tasks.preregister]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "diseño con umbrales y controles: un error aquí invalida el experimento"
 label = "Diseñar y preregistrar el experimento"
 
 [tasks.theorem_work]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "fable"
+recommended_effort = "high"
+why = "demostraciones: razonamiento largo y difícil, donde Fable rinde más"
 label = "Lemas y teoremas: enunciado, demostración y verificación"
 
 [tasks.manuscript_draft]
 kind = "job"
 tier = "opus"
+effort = "medium"
+recommended_tier = "opus"
+recommended_effort = "medium"
+why = "redacción con criterio; luego la revisa el verificador"
 label = "Redactar el paper"
 
 [tasks.repo_review]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "encontrar errores en código ajeno pide esfuerzo alto"
 label = "Revisar cambios del código (repo-steward)"
 
 [tasks.adjudicate]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "decide un cambio de estado: verificación"
 label = "Adjudicar: auditoría de trampas y cambio de estado (update-confidence)"
 
 [tasks.literature_review]
 kind = "job"
 tier = "opus"
+effort = "medium"
+recommended_tier = "opus"
+recommended_effort = "medium"
+why = "síntesis didáctica sobre citas ya comprobadas"
 label = "Revisión didáctica de la literatura"
 
 [tasks.explain]
 kind = "job"
 tier = "opus"
+effort = "medium"
+recommended_tier = "opus"
+recommended_effort = "medium"
+why = "explicación con citas que se comprueban mecánicamente"
 label = "Explicar papers, una casilla de la frontera o el proyecto (explicación didáctica)"
 
 # opus: the job's own work is judgement, not reading — proposing the taxonomy,
@@ -86,6 +136,10 @@ label = "Explicar papers, una casilla de la frontera o el proyecto (explicación
 [tasks.frontier_map]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "taxonomía y huecos: juicio, se ejecuta pocas veces"
 label = "Mapa de la frontera (taxonomía, matrices, huecos y posicionamiento)"
 
 # sonnet: same work as create-project's search stage (facets, queries, screening
@@ -93,102 +147,182 @@ label = "Mapa de la frontera (taxonomía, matrices, huecos y posicionamiento)"
 [tasks.literature_search]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "facetas y consultas; el cribado lo hacen los screener"
 label = "Buscar en la literatura (desde una casilla de la frontera o un tema)"
 
 [tasks.repo_change]
 kind = "job"
 tier = "opus"
+effort = "medium"
+recommended_tier = "opus"
+recommended_effort = "medium"
+why = "programación del día a día; sube a alto si es un fallo difícil"
 label = "Cambio en el código del repositorio vinculado (propuesta y revisión)"
 
 [tasks.pr_history]
 kind = "job"
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "resumir PR: tarea sencilla, el esfuerzo alto no mejora"
 label = "Historia de los PR fusionados (qué cambió y por qué)"
 
 [tasks.create_project]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "orquesta búsqueda, ingesta y agentes; el juicio va en los agentes"
 label = "Crear proyecto (búsqueda, ingesta, mapa del Estado del arte)"
 
 [tasks.lit_watch]
 kind = "job"
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "triage repetitivo: el esfuerzo alto no mejora la clasificación"
 label = "Vigilancia de literatura (primera pasada y triage)"
 
 [tasks.project_chat]
 kind = "job"
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "conversación: rápida y barata"
 label = "Preguntar sobre el proyecto"
 
 [tasks.ask_corpus]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "citas literales que comprueba check_quotes.py"
 label = "Preguntar a los papers"
 
 [tasks.digest]
 kind = "job"
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "resumen corto"
 label = "Resumen narrativo"
 
 [tasks.run_local]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "ejecuta un plan congelado: mecánico"
 label = "Ejecutar el experimento en esta máquina"
 
 [tasks.kaggle_prepare]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "preparar una ejecución: mecánico"
 label = "Preparar la ejecución en Kaggle"
 
 [tasks.slurm_prepare]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "preparar una ejecución: mecánico"
 label = "Preparar la ejecución en el clúster"
 
 [tasks.run_analysis]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "aplica un plan congelado: mecánico"
 label = "Analizar una ejecución remota (plan congelado)"
 
 [tasks.repo_health]
 kind = "job"
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "pasa tests y lint y resume"
 label = "Salud del repositorio de código"
 
 # On-request skills the interface launches from a form (its src/skillJobs.ts).
 [tasks.pitfall_audit]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "buscar trampas es verificación"
 label = "Auditar las trampas de los experimentos (pitfall-audit, simulacro)"
 
 [tasks.serendipity_scan]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "conexiones no obvias: juicio"
 label = "Búsqueda de serendipia (serendipity-scan)"
 
 [tasks.spawn_hypothesis]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "pasa por el mismo ciclo que una hipótesis"
 label = "Abrir una hipótesis desde una duda técnica (spawn-hypothesis)"
 
 [tasks.adr_check]
 kind = "job"
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "comparar estados: mecánico"
 label = "Revisar los ADR contra sus hipótesis (adr-check)"
 
 [tasks.adr_propose]
 kind = "job"
 tier = "opus"
+effort = "medium"
+recommended_tier = "opus"
+recommended_effort = "medium"
+why = "juicio de arquitectura, sin verificación"
 label = "¿Debería esto ser un ADR? (repo-steward)"
 
 [tasks.evolve_program_job]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "orquesta; las llamadas de evolución usan evolve_program"
 label = "Orquestar evolve-program (las llamadas de evolución usan el modelo de evolve_program)"
 
 [tasks.paper_to_tool]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "reproducir código ajeno con tolerancia congelada"
 label = "Extraer y validar un método del código de un paper (paper-to-tool)"
 
 # Study questions (designs in config/designs.toml). opus: writing the plan with
@@ -198,11 +332,19 @@ label = "Extraer y validar un método del código de un paper (paper-to-tool)"
 [tasks.plan_study]
 kind = "job"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "población, marco, estimandos y umbrales: juicio"
 label = "Plan de medición de una pregunta: redactarlo, criticarlo y congelarlo (plan-study)"
 
 [tasks.estimate_study]
 kind = "job"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "estimate.py calcula; el verificador comprueba"
 label = "Estimar una pregunta: estimate.py, verificador y puerta (estimate)"
 
 # --- subagents ----------------------------------------------------------------
@@ -211,6 +353,10 @@ kind = "agent"
 file = "agents/fresh-verifier.md"
 isolated = true          # reads only its packet file (hook-enforced): no shell or network tool
 tier = "opus"
+effort = "high"
+recommended_tier = "fable"
+recommended_effort = "high"
+why = "distinto y más fuerte que Opus, que escribe lo que revisa: un modelo tiende a dar por buena su propia salida"
 label = "Verificador independiente (fresh-verifier)"
 
 [tasks.devils_advocate]
@@ -218,12 +364,20 @@ kind = "agent"
 file = "agents/devils-advocate.md"
 isolated = true          # reads only its packet file (hook-enforced): no shell or network tool
 tier = "opus"
+effort = "high"
+recommended_tier = "fable"
+recommended_effort = "high"
+why = "distinto y más fuerte que Opus, que escribe lo que revisa: un modelo tiende a dar por buena su propia salida"
 label = "Abogado del diablo (subagente)"
 
 [tasks.sota_synthesizer]
 kind = "agent"
 file = "agents/sota-synthesizer.md"
 tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "fusiona facetas y escribe escuelas y huecos"
 label = "Síntesis final del Estado del arte (escuelas, huecos)"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
@@ -232,12 +386,20 @@ kind = "agent"
 file = "agents/novelty-judge.md"
 isolated = true          # reads only its packet file (hook-enforced): no shell or network tool
 tier = "opus"
+effort = "medium"
+recommended_tier = "opus"
+recommended_effort = "medium"
+why = "un abstract contra una afirmación: juicio acotado"
 label = "Confirmar una amenaza de novedad"
 
 [tasks.facet_summarizer]
 kind = "agent"
 file = "agents/facet-summarizer.md"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "resumen citado de un lote de papers"
 label = "Resumen por faceta (pasada map)"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
@@ -245,12 +407,20 @@ reads_papers = true     # reads paper text: read and search tools only (check)
 kind = "agent"
 file = "agents/second-critic.md"
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "solo envuelve la llamada a DeepSeek"
 label = "Envoltorio del segundo crítico (el juicio lo da DeepSeek en DeepInfra)"
 
 [tasks.corpus_reader]
 kind = "agent"
 file = "agents/corpus-reader.md"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "citas literales que se comprueban carácter a carácter"
 label = "Lector del corpus (ask-corpus): lee los papers y redacta citas literales, sin shell ni red"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
@@ -258,6 +428,10 @@ reads_papers = true     # reads paper text: read and search tools only (check)
 kind = "agent"
 file = "agents/paper-reader.md"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "localizar y citar texto: extracción"
 label = "Lector de papers para la sesión principal (sin shell ni red)"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
@@ -265,6 +439,10 @@ reads_papers = true     # reads paper text: read and search tools only (check)
 kind = "agent"
 file = "agents/paper-carder.md"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "ficha con citas que se comprueban"
 label = "Ficha de un paper (una vez por paper; citas comprobadas literales)"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
@@ -272,6 +450,10 @@ reads_papers = true     # reads paper text: read and search tools only (check)
 kind = "agent"
 file = "agents/frontier-extractor.md"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "extracción por ejes con citas que se comprueban"
 label = "Extractor de la frontera: valores por eje con citas literales, por lote de papers"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
@@ -280,6 +462,10 @@ kind = "agent"
 file = "agents/screener.md"
 isolated = true          # reads only its page packet (hook-enforced): no shell or network tool
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "cribado: lo que importa es no perder papers; el esfuerzo alto no mejora y a veces empeora"
 label = "Cribado de una página de candidatos (literature-search)"
 
 [tasks.pr_historian]
@@ -287,12 +473,20 @@ kind = "agent"
 file = "agents/pr-historian.md"
 isolated = true          # reads only its PR packet (hook-enforced): no shell or network tool
 tier = "sonnet"
+effort = "low"
+recommended_tier = "sonnet"
+recommended_effort = "low"
+why = "resumir PR: tarea sencilla"
 label = "Historiador de PR: qué cambió y por qué, desde un paquete de PR fusionados"
 
 [tasks.explainer]
 kind = "agent"
 file = "agents/explainer.md"
 tier = "opus"
+effort = "medium"
+recommended_tier = "opus"
+recommended_effort = "medium"
+why = "explicación didáctica con citas comprobadas"
 label = "Redactor de explicaciones didácticas (kairo:explain): lee los papers, sin shell ni red"
 reads_papers = true     # reads paper text: read and search tools only (check)
 
@@ -300,4 +494,8 @@ reads_papers = true     # reads paper text: read and search tools only (check)
 [tasks.evolve_program]
 kind = "tool"
 tier = "sonnet"
+effort = "medium"
+recommended_tier = "sonnet"
+recommended_effort = "medium"
+why = "muchas llamadas cortas: coste por llamada"
 label = "evolve-program (OpenEvolve); Opus se puede elegir por ejecución"

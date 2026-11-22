@@ -3,6 +3,7 @@ name: frontier-extractor
 description: Reads a batch of ingested Papers/ notes against ONE project's approved frontier taxonomy and returns, per paper, the value of every axis with verbatim quotes and locators, plus the paper's results (numbers as printed, with their conditions), the limitations it states, and the ideas it uses — "no está en el texto" when the text does not say. Never from memory. No shell, network or write tool. scripts/frontier/frontier.py save-extraction then checks every quote character for character against its locator and keeps only what passes, in Projects/<slug>/Frontera/extracciones/<P-id>.json. kairo:frontier-map phase 2 dispatches one per batch of papers without a current extraction, all in the same turn.
 tools: Read, Grep, Glob
 model: claude-sonnet-5-5
+effort: medium
 maxTurns: 40
 color: cyan
 ---

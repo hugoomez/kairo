@@ -3,6 +3,7 @@ name: pr-historian
 description: Describes merged pull requests of a project's linked code repository. Receives only a packet built by scripts/code_repo/pr_packet.py (per PR: title, author, body, commit messages, changed files, a clipped diff and `ids_en_el_texto`) — never the conversation, the vault or the repository. Returns, in a fixed JSON block, what each PR changed, why, how sure that why is, and which project ids the PR's own text names. It never writes anything and never links a PR to a hypothesis by itself.
 tools: Read
 model: claude-sonnet-5-5
+effort: low
 maxTurns: 3
 color: blue
 ---
