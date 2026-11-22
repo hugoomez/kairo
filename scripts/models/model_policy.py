@@ -200,7 +200,8 @@ def sync(root: Path = ROOT, path: Path | None = None) -> list[str]:
         if re.search(r"^effort:", new_fm, re.M):
             new_fm = re.sub(r"^effort:.*$", f"effort: {t['effort']}", new_fm, count=1, flags=re.M)
         else:
-            new_fm = re.sub(r"^(model:.*)$", lambda h: f"{h.group(1)}\neffort: {t['effort']}", new_fm,
+            effort_line = f"\neffort: {t['effort']}"
+            new_fm = re.sub(r"^(model:.*)$", lambda h, line=effort_line: h.group(1) + line, new_fm,
                             count=1, flags=re.M)
         if new_fm != fm:
             f.write_text(m.group(1) + new_fm + m.group(3) + text[m.end():], encoding="utf-8", newline="")
