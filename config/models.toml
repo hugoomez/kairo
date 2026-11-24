@@ -347,6 +347,15 @@ recommended_effort = "medium"
 why = "estimate.py calcula; el verificador comprueba"
 label = "Estimar una pregunta: estimate.py, verificador y puerta (estimate)"
 
+[tasks.director]
+kind = "job"
+tier = "opus"
+effort = "high"
+recommended_tier = "opus"
+recommended_effort = "high"
+why = "reflexiona entre tramos y propone vías: razonamiento abierto donde pesa la calidad"
+label = "Investigador: parte del tramo y vías para seguir (app)"
+
 # --- subagents ----------------------------------------------------------------
 [tasks.fresh_verifier]
 kind = "agent"

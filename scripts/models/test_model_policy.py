@@ -91,6 +91,11 @@ class TestPolicy(unittest.TestCase):
                   "evolve_program", "adr_check", "evolve_program_job", "estimate_study"):
             self.assertEqual(tier[k], "sonnet", k)
 
+    def test_director_task(self):
+        t = self.r["tasks"]["director"]
+        self.assertEqual((t["kind"], t["tier"], t["effort"]), ("job", "opus", "high"))
+        self.assertEqual((t["recommended"]["tier"], t["recommended"]["effort"]), ("opus", "high"))
+
     def test_study_jobs_are_interface_jobs(self):
         for k in ("plan_study", "estimate_study"):
             self.assertEqual(self.r["tasks"][k]["kind"], "job", k)
